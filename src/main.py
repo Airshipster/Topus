@@ -73,6 +73,43 @@ def load_youtube_channels(client, project):
         print(f"  Error loading channels: {e}")
         return []
 
+def get_published_videos(sheet):
+    try:
+        worksheet = sheet.worksheet(SHEET_NAME_VIDEOS)
+        records = worksheet.get_all_records()
+        return set(row.get('Video ID', '') for row in records if row.get('Video ID'))
+    except:
+        return set()
+
+def save_video_to_global(sheet, video, project, tg_message_id=None, error=None):
+    try:
+        worksheet = sheet.worksheet(SHEET_NAME_VIDEOS)
+        
+        video_id = video['url'].split('v=')[1].split('&')[0] if 'v=' in video['url'] else ''
+        
+        row = [
+            video_id,
+            video['title'],
+            video['url'],
+            video['channel'],
+            video.get('channel_id', ''),
+            project['name'],
+            video['published'],
+            '',
+            '',
+            '',
+            '1' if tg_message_id else '0',
+            str(tg_message_id) if tg_message_id else '',
+            datetime.utcnow().isoformat() if tg_message_id else '',
+            'published' if tg_message_id else 'failed',
+            error or ''
+        ]
+        
+        worksheet.append_row(row)
+        print(f"    Saved to global sheet")
+    except Exception as e:
+        print(f"    Error saving to global: {e}")
+
 def check_rss_feed(channel_id):
     rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
     
@@ -82,16 +119,24 @@ def check_rss_feed(channel_id):
         
         cutoff_time = datetime.now() - timedelta(hours=MAX_VIDEO_AGE_HOURS)
         
+        total_entries = len(feed.entries)
+        
         for entry in feed.entries:
             published = datetime(*entry.published_parsed[:6])
             
             if published > cutoff_time:
+                video_id = entry.link.split('v=')[1] if 'v=' in entry.link else ''
                 videos.append({
                     'title': entry.title,
                     'url': entry.link,
                     'channel': feed.feed.title,
+                    'channel_id': channel_id,
+                    'video_id': video_id,
                     'published': published.isoformat()
                 })
+        
+        if total_entries > 0:
+            print(f"    RSS: {total_entries} total, {len(videos)} new")
         
         return videos
     except Exception as e:
@@ -110,10 +155,11 @@ def send_to_telegram(bot_token, channel_id, message):
     try:
         response = requests.post(url, json=payload, timeout=10)
         response.raise_for_status()
-        return True
+        result = response.json()
+        return result.get('result', {}).get('message_id')
     except Exception as e:
         print(f"  Telegram error: {e}")
-        return False
+        return None
 
 def main():
     print("Starting...")
@@ -122,6 +168,12 @@ def main():
     master_sheet = client.open_by_key(SPREADSHEET_ID)
     
     projects = load_projects(master_sheet)
+    
+    published_videos = get_published_videos(master_sheet)
+    print(f"Already published: {len(published_videos)} videos")
+    
+    total_found = 0
+    total_published = 0
     
     for project in projects:
         print(f"\nProcessing: {project['name']}")
@@ -134,21 +186,34 @@ def main():
             videos = check_rss_feed(yt_channel)
             
             for video in videos:
+                total_found += 1
+                
+                if video['video_id'] in published_videos:
+                    print(f"    Skipped (duplicate): {video['title'][:50]}...")
+                    continue
+                
                 message = f"🎥 <b>{video['title']}</b>\n\n" \
                          f"📺 {video['channel']}\n" \
                          f"🔗 {video['url']}"
                 
-                success = send_to_telegram(
+                tg_message_id = send_to_telegram(
                     project['bot_token'],
                     project['channel_id'],
                     message
                 )
                 
-                if success:
+                if tg_message_id:
                     print(f"    Published: {video['title'][:50]}...")
+                    save_video_to_global(master_sheet, video, project, tg_message_id)
+                    published_videos.add(video['video_id'])
+                    total_published += 1
                 else:
                     print(f"    Failed: {video['title'][:50]}...")
+                    save_video_to_global(master_sheet, video, project, error="Telegram send failed")
     
+    print(f"\nSummary:")
+    print(f"  Videos found: {total_found}")
+    print(f"  Published: {total_published}")
     print("\nDone")
 
 if __name__ == "__main__":
