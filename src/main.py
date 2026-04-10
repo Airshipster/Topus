@@ -1,7 +1,3 @@
-"""
-Topus: YouTube → Telegram агрегатор
-Главный скрипт для GitHub Actions
-"""
 import gspread
 import feedparser
 import requests
@@ -11,9 +7,8 @@ from google.oauth2.service_account import Credentials
 from config import *
 
 def authenticate_google_sheets():
-    """Аутентификация в Google Sheets через Service Account"""
     if not SERVICE_ACCOUNT_JSON:
-        raise ValueError("❌ GOOGLE_SERVICE_ACCOUNT_JSON не найден в secrets")
+        raise ValueError("GOOGLE_SERVICE_ACCOUNT_JSON not found")
     
     credentials_dict = json.loads(SERVICE_ACCOUNT_JSON)
     credentials = Credentials.from_service_account_info(
@@ -24,7 +19,6 @@ def authenticate_google_sheets():
     return client
 
 def load_projects(sheet):
-    """Загрузка проектов из листа 'Проекты'"""
     worksheet = sheet.worksheet(SHEET_NAME_PROJECTS)
     records = worksheet.get_all_records()
     
@@ -38,11 +32,10 @@ def load_projects(sheet):
                 'youtube_channels': row.get('YouTube каналы', '').split(',')
             })
     
-    print(f"✅ Загружено проектов: {len(projects)}")
+    print(f"Projects loaded: {len(projects)}")
     return projects
 
 def check_rss_feed(channel_id):
-    """Проверка RSS-ленты YouTube канала"""
     rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id.strip()}"
     
     try:
@@ -64,11 +57,10 @@ def check_rss_feed(channel_id):
         
         return videos
     except Exception as e:
-        print(f"⚠️ Ошибка RSS для {channel_id}: {e}")
+        print(f"RSS error for {channel_id}: {e}")
         return []
 
 def send_to_telegram(bot_token, channel_id, message):
-    """Отправка сообщения в Telegram"""
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
         'chat_id': channel_id,
@@ -82,29 +74,25 @@ def send_to_telegram(bot_token, channel_id, message):
         response.raise_for_status()
         return True
     except Exception as e:
-        print(f"❌ Ошибка отправки в Telegram: {e}")
+        print(f"Telegram error: {e}")
         return False
 
 def main():
-    """Основной цикл обработки"""
-    print("🚀 Запуск Topus агрегатора...")
+    print("Starting...")
     
-    # 1. Подключение к Google Sheets
     client = authenticate_google_sheets()
     sheet = client.open_by_key(SPREADSHEET_ID)
     
-    # 2. Загрузка проектов
     projects = load_projects(sheet)
     
-    # 3. Проверка каналов и публикация
     for project in projects:
-        print(f"\n📂 Обработка проекта: {project['name']}")
+        print(f"\nProcessing: {project['name']}")
         
         for yt_channel in project['youtube_channels']:
             if not yt_channel.strip():
                 continue
                 
-            print(f"  🔍 Проверка канала: {yt_channel.strip()}")
+            print(f"  Checking: {yt_channel.strip()}")
             videos = check_rss_feed(yt_channel)
             
             for video in videos:
@@ -119,11 +107,11 @@ def main():
                 )
                 
                 if success:
-                    print(f"    ✅ Опубликовано: {video['title'][:50]}...")
+                    print(f"    Published: {video['title'][:50]}...")
                 else:
-                    print(f"    ❌ Ошибка публикации: {video['title'][:50]}...")
+                    print(f"    Failed: {video['title'][:50]}...")
     
-    print("\n✅ Работа завершена!")
+    print("\nDone")
 
 if __name__ == "__main__":
     main()
