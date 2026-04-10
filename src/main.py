@@ -11,7 +11,12 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0'
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15'
+]
+
+FREE_PROXIES = [
+    None,
 ]
 
 def authenticate_google_sheets():
@@ -88,11 +93,13 @@ def load_youtube_channels(client, project):
         return {}
 
 def get_all_active_channels(client, projects):
-    all_channels = set()
+    all_channels = {}
     
     for project in projects:
         channels = load_youtube_channels(client, project)
-        all_channels.update(channels.keys())
+        for ch_id, ch_info in channels.items():
+            if ch_id not in all_channels:
+                all_channels[ch_id] = ch_info
     
     return all_channels
 
@@ -168,40 +175,87 @@ def remove_subscribed_channels(sheet, channel_ids):
     except Exception as e:
         print(f"  Error removing subscriptions: {e}")
 
-def check_rss_feed(channel_id):
+def check_rss_feed_invidious(channel_id):
+    invidious_instances = [
+        'https://inv.nadeko.net',
+        'https://invidious.privacyredirect.com',
+        'https://invidious.snopyta.org',
+        'https://yewtu.be',
+        'https://invidious.kavin.rocks'
+    ]
+    
+    for instance in invidious_instances:
+        try:
+            url = f"{instance}/feed/channel/{channel_id}"
+            headers = {
+                'User-Agent': random.choice(USER_AGENTS),
+                'Accept': 'application/atom+xml,application/xml,text/xml,*/*'
+            }
+            
+            response = requests.get(url, headers=headers, timeout=15)
+            
+            if response.status_code == 200:
+                return parse_rss_content(response.content, channel_id)
+        except:
+            continue
+    
+    return []
+
+def check_rss_feed_youtube(channel_id):
     rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
     
     try:
+        time.sleep(random.uniform(0.3, 0.8))
+        
+        session = requests.Session()
+        
+        session.get('https://www.youtube.com', headers={
+            'User-Agent': random.choice(USER_AGENTS)
+        }, timeout=10)
+        
         time.sleep(random.uniform(0.2, 0.5))
         
         headers = {
             'User-Agent': random.choice(USER_AGENTS),
             'Accept': 'application/atom+xml,application/xml,text/xml,*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
             'Accept-Encoding': 'gzip, deflate, br',
             'Referer': 'https://www.youtube.com/',
+            'Origin': 'https://www.youtube.com',
             'DNT': '1',
             'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1'
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'same-origin',
+            'Cache-Control': 'max-age=0'
         }
         
-        response = requests.get(rss_url, headers=headers, timeout=15, allow_redirects=True)
+        response = session.get(rss_url, headers=headers, timeout=15, allow_redirects=True)
         
-        if response.status_code != 200:
-            return []
+        if response.status_code == 200:
+            return parse_rss_content(response.content, channel_id)
         
+    except:
+        pass
+    
+    return []
+
+def parse_rss_content(content, channel_id):
+    try:
         from xml.etree import ElementTree as ET
-        root = ET.fromstring(response.content)
+        root = ET.fromstring(content)
         
         ns = {
             'atom': 'http://www.w3.org/2005/Atom',
-            'yt': 'http://www.youtube.com/xml/schemas/2015'
+            'yt': 'http://www.youtube.com/xml/schemas/2015',
+            'media': 'http://search.yahoo.com/mrss/'
         }
         
         entries = root.findall('atom:entry', ns)
         
         videos = []
-        cutoff_time = datetime.utcnow() - timedelta(hours=MAX_VIDEO_AGE_HOURS)
+        cutoff_time = datetime.utcnow() - timedelta(days=7)
         
         for entry in entries:
             video_id_elem = entry.find('yt:videoId', ns)
@@ -230,14 +284,22 @@ def check_rss_feed(channel_id):
                 })
         
         return videos
-        
-    except Exception as e:
+    except:
         return []
+
+def check_rss_feed(channel_id):
+    videos = check_rss_feed_invidious(channel_id)
+    
+    if not videos:
+        videos = check_rss_feed_youtube(channel_id)
+    
+    return videos
 
 def sync_subscriptions(client, master_sheet, projects):
     print("\nSyncing subscriptions...")
     
-    active_channels = get_all_active_channels(client, projects)
+    active_channels_dict = get_all_active_channels(client, projects)
+    active_channels = set(active_channels_dict.keys())
     subscribed_channels = get_subscribed_channels(master_sheet)
     
     to_subscribe = active_channels - subscribed_channels
@@ -278,30 +340,40 @@ def sync_subscriptions(client, master_sheet, projects):
 def rss_fallback_check(client, projects, published_videos):
     print("\nRSS fallback check...")
     
+    all_channels = get_all_active_channels(client, projects)
+    
+    print(f"  Checking ALL {len(all_channels)} channels...")
+    
     new_videos = []
-    checked_count = 0
-    max_to_check = 10
+    success_count = 0
+    failed_count = 0
     
-    for project in projects:
-        channels = load_youtube_channels(client, project)
+    for i, (channel_id, channel_info) in enumerate(all_channels.items()):
+        if i > 0 and i % 10 == 0:
+            print(f"  Progress: {i}/{len(all_channels)}")
         
-        for channel_id, channel_info in list(channels.items())[:max_to_check]:
-            videos = check_rss_feed(channel_id)
-            checked_count += 1
-            
-            for video in videos:
-                if video['video_id'] not in published_videos:
-                    video['project'] = project
-                    video['channel_info'] = channel_info
-                    new_videos.append(video)
-            
-            if checked_count >= max_to_check:
-                break
+        videos = check_rss_feed(channel_id)
         
-        if checked_count >= max_to_check:
-            break
+        if videos:
+            success_count += 1
+        else:
+            failed_count += 1
+        
+        for video in videos:
+            if video['video_id'] not in published_videos:
+                for project in projects:
+                    project_channels = load_youtube_channels(client, project)
+                    if channel_id in project_channels:
+                        video['project'] = project
+                        video['channel_info'] = channel_info
+                        new_videos.append(video)
+                        break
     
-    print(f"  Checked {checked_count} channels, found {len(new_videos)} new videos via RSS")
+    print(f"  Checked {len(all_channels)} channels:")
+    print(f"    Success: {success_count}")
+    print(f"    Failed: {failed_count}")
+    print(f"    Found {len(new_videos)} new videos")
+    
     return new_videos
 
 def get_published_videos(sheet):
