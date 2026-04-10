@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from config import *
 
+CALLBACK_URL = "https://script.google.com/macros/s/AKfycbwqySnqlEYAMTTQNkcUy9RU-B6UkikW9o-v5lzLxtthnpOE_52XRZThoe2b1xjIj1Zm/exec"
+
 def authenticate_google_sheets():
     if not SERVICE_ACCOUNT_JSON:
         raise ValueError("GOOGLE_SERVICE_ACCOUNT_JSON not found")
@@ -72,6 +74,79 @@ def load_youtube_channels(client, project):
     except Exception as e:
         print(f"  Error loading channels: {e}")
         return {}
+
+def get_all_active_channels(client, projects):
+    all_channels = set()
+    
+    for project in projects:
+        channels = load_youtube_channels(client, project)
+        all_channels.update(channels.keys())
+    
+    return all_channels
+
+def get_subscribed_channels(sheet):
+    try:
+        worksheet = sheet.worksheet('Подписки')
+        records = worksheet.get_all_records()
+        return set(row.get('Channel ID', '') for row in records if row.get('Channel ID'))
+    except:
+        return set()
+
+def save_subscribed_channel(sheet, channel_id):
+    try:
+        worksheet = sheet.worksheet('Подписки')
+    except:
+        worksheet = sheet.add_worksheet('Подписки', rows=1000, cols=3)
+        worksheet.append_row(['Channel ID', 'Subscribed At', 'Last Renewed'])
+    
+    worksheet.append_row([channel_id, datetime.utcnow().isoformat(), datetime.utcnow().isoformat()])
+
+def subscribe_channel(channel_id):
+    hub_url = "https://pubsubhubbub.appspot.com/subscribe"
+    topic_url = f"https://www.youtube.com/xml/feeds/videos.xml?channel_id={channel_id}"
+    
+    data = {
+        'hub.callback': CALLBACK_URL,
+        'hub.topic': topic_url,
+        'hub.mode': 'subscribe',
+        'hub.verify': 'async'
+    }
+    
+    try:
+        response = requests.post(hub_url, data=data, timeout=10)
+        if response.status_code in [202, 204]:
+            return True
+        else:
+            print(f"    Subscribe failed: HTTP {response.status_code}")
+            return False
+    except Exception as e:
+        print(f"    Subscribe error: {e}")
+        return False
+
+def sync_subscriptions(client, master_sheet, projects):
+    print("\nSyncing subscriptions...")
+    
+    active_channels = get_all_active_channels(client, projects)
+    subscribed_channels = get_subscribed_channels(master_sheet)
+    
+    new_channels = active_channels - subscribed_channels
+    
+    print(f"  Active channels: {len(active_channels)}")
+    print(f"  Already subscribed: {len(subscribed_channels)}")
+    print(f"  New to subscribe: {len(new_channels)}")
+    
+    if len(new_channels) == 0:
+        print("  No new subscriptions needed")
+        return
+    
+    subscribed_count = 0
+    for channel_id in new_channels:
+        print(f"  Subscribing: {channel_id}")
+        if subscribe_channel(channel_id):
+            save_subscribed_channel(master_sheet, channel_id)
+            subscribed_count += 1
+    
+    print(f"  Successfully subscribed: {subscribed_count}/{len(new_channels)}")
 
 def get_published_videos(sheet):
     try:
@@ -154,16 +229,14 @@ def get_video_info(video_id):
         oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
         response = requests.get(oembed_url, timeout=10)
         
-        print(f"    oEmbed status: {response.status_code}")
-        
         if response.status_code == 200:
             data = response.json()
             return {
                 'title': data.get('title', 'Unknown'),
                 'channel': data.get('author_name', 'Unknown')
             }
-    except Exception as e:
-        print(f"    oEmbed error: {e}")
+    except:
+        pass
     
     return {
         'title': f"Video {video_id}",
@@ -180,12 +253,7 @@ def send_to_telegram(bot_token, channel_id, message):
     }
     
     try:
-        print(f"    Sending to TG channel: {channel_id}")
         response = requests.post(url, json=payload, timeout=10)
-        
-        print(f"    TG response status: {response.status_code}")
-        print(f"    TG response: {response.text[:200]}")
-        
         response.raise_for_status()
         result = response.json()
         return result.get('result', {}).get('message_id')
@@ -200,6 +268,8 @@ def main():
     master_sheet = client.open_by_key(SPREADSHEET_ID)
     
     projects = load_projects(master_sheet)
+    
+    sync_subscriptions(client, master_sheet, projects)
     
     published_videos = get_published_videos(master_sheet)
     print(f"Already published: {len(published_videos)} videos")
@@ -217,16 +287,10 @@ def main():
         print(f"  Channels found: {len(yt_channels)}")
         
         for event in push_events:
-            print(f"\n  Event: video_id={event['video_id']}, channel_id={event['channel_id']}")
-            
             if event['channel_id'] not in yt_channels:
-                print(f"    Channel NOT in project channel list")
                 continue
             
-            print(f"    Channel IS in project: {yt_channels[event['channel_id']]}")
-            
             if event['video_id'] in published_videos:
-                print(f"    Already published, marking as processed")
                 mark_push_event_processed(master_sheet, event['row_index'], project['name'])
                 continue
             
@@ -255,13 +319,13 @@ def main():
             )
             
             if tg_message_id:
-                print(f"    Published! Message ID: {tg_message_id}")
+                print(f"    Published!")
                 save_video_to_global(master_sheet, video, project, tg_message_id)
                 published_videos.add(video['video_id'])
                 mark_push_event_processed(master_sheet, event['row_index'], project['name'])
                 total_published += 1
             else:
-                print(f"    Failed to publish!")
+                print(f"    Failed!")
                 save_video_to_global(master_sheet, video, project, error="Telegram send failed")
                 mark_push_event_processed(master_sheet, event['row_index'], project['name'])
     
