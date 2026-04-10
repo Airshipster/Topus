@@ -24,19 +24,47 @@ def load_projects(sheet):
     
     projects = []
     for row in records:
-        if row.get('Статус') == 'Активен':
+        status = row.get('Активен', '')
+        if status == '🟢':
+            sheet_id = row.get('Ссылка на документ проекта', '')
+            if '/d/' in sheet_id:
+                sheet_id = sheet_id.split('/d/')[1].split('/')[0]
+            
             projects.append({
-                'name': row.get('Название проекта'),
-                'bot_token': row.get('Токен бота'),
-                'channel_id': row.get('Channel ID'),
-                'youtube_channels': row.get('YouTube каналы', '').split(',')
+                'code': row.get('Код проекта'),
+                'name': row.get('Название'),
+                'sheet_id': sheet_id,
+                'bot_token': row.get('Telegram bot token'),
+                'channel_id': str(row.get('Telegram канал ID')),
+                'template': row.get('Шаблон по умолчанию'),
+                'stop_words': row.get('Стоп-слова (через запятую)', '').split(',')
             })
     
     print(f"Projects loaded: {len(projects)}")
     return projects
 
+def load_youtube_channels(client, project):
+    sheet = client.open_by_key(project['sheet_id'])
+    worksheet = sheet.worksheet('Список. YouTube')
+    values = worksheet.get_all_values()
+    
+    channels = []
+    for row in values[1:]:
+        if len(row) < 8:
+            continue
+        
+        status = row[7]
+        if status == '🔵':
+            break
+        if status == '🟢':
+            channel_id = row[4] if len(row) > 4 else ''
+            if channel_id:
+                channels.append(channel_id.strip())
+    
+    return channels
+
 def check_rss_feed(channel_id):
-    rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id.strip()}"
+    rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
     
     try:
         feed = feedparser.parse(rss_url)
@@ -81,18 +109,18 @@ def main():
     print("Starting...")
     
     client = authenticate_google_sheets()
-    sheet = client.open_by_key(SPREADSHEET_ID)
+    master_sheet = client.open_by_key(SPREADSHEET_ID)
     
-    projects = load_projects(sheet)
+    projects = load_projects(master_sheet)
     
     for project in projects:
         print(f"\nProcessing: {project['name']}")
         
-        for yt_channel in project['youtube_channels']:
-            if not yt_channel.strip():
-                continue
-                
-            print(f"  Checking: {yt_channel.strip()}")
+        yt_channels = load_youtube_channels(client, project)
+        print(f"  Channels found: {len(yt_channels)}")
+        
+        for yt_channel in yt_channels:
+            print(f"  Checking: {yt_channel}")
             videos = check_rss_feed(yt_channel)
             
             for video in videos:
