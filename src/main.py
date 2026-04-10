@@ -1,9 +1,7 @@
 import gspread
-import feedparser
 import requests
 import json
 import time
-import traceback
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from config import *
@@ -87,14 +85,12 @@ def save_video_to_global(sheet, video, project, tg_message_id=None, error=None):
     try:
         worksheet = sheet.worksheet(SHEET_NAME_VIDEOS)
         
-        video_id = video['url'].split('v=')[1].split('&')[0] if 'v=' in video['url'] else ''
-        
         row = [
-            video_id,
+            video['video_id'],
             video['title'],
             video['url'],
             video['channel'],
-            video.get('channel_id', ''),
+            video['channel_id'],
             project['name'],
             video['published'],
             '',
@@ -116,40 +112,65 @@ def check_rss_feed(channel_id):
     rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
     
     try:
-        time.sleep(0.5)
+        time.sleep(0.3)
         
-        feed = feedparser.parse(rss_url)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+        }
         
-        print(f"    DEBUG: status={feed.get('status', 'N/A')}, entries={len(feed.entries)}")
-        if len(feed.entries) > 0:
-            first_entry = feed.entries[0]
-            print(f"    DEBUG: first_title={first_entry.get('title', 'N/A')[:30]}")
-            print(f"    DEBUG: first_published={first_entry.get('published', 'N/A')}")
+        response = requests.get(rss_url, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            print(f"    RSS: HTTP {response.status_code}")
+            return []
+        
+        from xml.etree import ElementTree as ET
+        root = ET.fromstring(response.content)
+        
+        ns = {
+            'atom': 'http://www.w3.org/2005/Atom',
+            'yt': 'http://www.youtube.com/xml/schemas/2015',
+            'media': 'http://search.yahoo.com/mrss/'
+        }
+        
+        entries = root.findall('atom:entry', ns)
         
         videos = []
-        cutoff_time = datetime.now() - timedelta(hours=MAX_VIDEO_AGE_HOURS)
+        cutoff_time = datetime.utcnow() - timedelta(hours=MAX_VIDEO_AGE_HOURS)
         
-        for entry in feed.entries:
-            published = datetime(*entry.published_parsed[:6])
+        for entry in entries:
+            video_id_elem = entry.find('yt:videoId', ns)
+            title_elem = entry.find('atom:title', ns)
+            published_elem = entry.find('atom:published', ns)
+            author_elem = entry.find('atom:author/atom:name', ns)
+            
+            if video_id_elem is None or title_elem is None or published_elem is None:
+                continue
+            
+            video_id = video_id_elem.text
+            title = title_elem.text
+            published_str = published_elem.text
+            channel_name = author_elem.text if author_elem is not None else 'Unknown'
+            
+            published = datetime.fromisoformat(published_str.replace('Z', '+00:00')).replace(tzinfo=None)
             
             if published > cutoff_time:
-                video_id = entry.link.split('v=')[1] if 'v=' in entry.link else ''
                 videos.append({
-                    'title': entry.title,
-                    'url': entry.link,
-                    'channel': feed.feed.title,
-                    'channel_id': channel_id,
                     'video_id': video_id,
+                    'title': title,
+                    'url': f"https://www.youtube.com/watch?v={video_id}",
+                    'channel': channel_name,
+                    'channel_id': channel_id,
                     'published': published.isoformat()
                 })
         
-        if len(feed.entries) > 0:
-            print(f"    RSS: {len(feed.entries)} total, {len(videos)} new")
+        if len(entries) > 0:
+            print(f"    RSS: {len(entries)} total, {len(videos)} new")
         
         return videos
+        
     except Exception as e:
         print(f"    RSS error: {e}")
-        print(f"    {traceback.format_exc()}")
         return []
 
 def send_to_telegram(bot_token, channel_id, message):
