@@ -83,7 +83,7 @@ def get_published_videos(sheet):
 
 def get_push_events(sheet):
     try:
-        worksheet = sheet.worksheet('Push events')
+        worksheet = sheet.worksheet(SHEET_NAME_PUSH_EVENTS)
         values = worksheet.get_all_values()
         
         events = []
@@ -95,7 +95,7 @@ def get_push_events(sheet):
                 continue
             
             status = row[3] if len(row) > 3 else ''
-            if status == '❌':
+            if status == '' or status == '❌':
                 video_id = row[1] if len(row) > 1 else ''
                 channel_id = row[2] if len(row) > 2 else ''
                 if video_id and channel_id:
@@ -110,10 +110,15 @@ def get_push_events(sheet):
         print(f"Error loading push events: {e}")
         return []
 
-def mark_push_event_processed(sheet, row_index):
+def mark_push_event_processed(sheet, row_index, project_name):
     try:
-        worksheet = sheet.worksheet('Push events')
+        worksheet = sheet.worksheet(SHEET_NAME_PUSH_EVENTS)
         worksheet.update_cell(row_index, 4, '✅')
+        
+        current_projects = worksheet.cell(row_index, 5).value or ''
+        if project_name not in current_projects:
+            new_projects = (current_projects + ', ' + project_name).strip(', ')
+            worksheet.update_cell(row_index, 5, new_projects)
     except Exception as e:
         print(f"  Error marking event: {e}")
 
@@ -146,7 +151,6 @@ def save_video_to_global(sheet, video, project, tg_message_id=None, error=None):
 
 def get_video_info(video_id):
     try:
-        import urllib.parse
         oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
         response = requests.get(oembed_url, timeout=10)
         
@@ -210,7 +214,7 @@ def main():
                 continue
             
             if event['video_id'] in published_videos:
-                mark_push_event_processed(master_sheet, event['row_index'])
+                mark_push_event_processed(master_sheet, event['row_index'], project['name'])
                 continue
             
             total_found += 1
@@ -241,7 +245,7 @@ def main():
                 print(f"    Published!")
                 save_video_to_global(master_sheet, video, project, tg_message_id)
                 published_videos.add(video['video_id'])
-                mark_push_event_processed(master_sheet, event['row_index'])
+                mark_push_event_processed(master_sheet, event['row_index'], project['name'])
                 total_published += 1
             else:
                 print(f"    Failed!")
