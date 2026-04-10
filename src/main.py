@@ -6,8 +6,6 @@ from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from config import *
 
-CALLBACK_URL = "https://script.google.com/macros/s/AKfycbwqySnqlEYAMTTQNkcUy9RU-B6UkikW9o-v5lzLxtthnpOE_52XRZThoe2b1xjIj1Zm/exec"
-
 def authenticate_google_sheets():
     if not SERVICE_ACCOUNT_JSON:
         raise ValueError("GOOGLE_SERVICE_ACCOUNT_JSON not found")
@@ -39,7 +37,7 @@ def load_projects(sheet):
                 'sheet_id': sheet_id,
                 'bot_token': row.get('Telegram bot token'),
                 'channel_id': str(row.get('Telegram канал ID')),
-                'template': row.get('Шаблон по умолчанию'),
+                'default_template': row.get('Шаблон по умолчанию', DEFAULT_MESSAGE_TEMPLATE),
                 'stop_words': row.get('Стоп-слова (через запятую)', '').split(',')
             })
     
@@ -68,8 +66,13 @@ def load_youtube_channels(client, project):
             if status == '🟢':
                 channel_id = row[4].strip() if len(row) > 4 else ''
                 channel_name = row[3].strip() if len(row) > 3 else ''
+                channel_template = row[20].strip() if len(row) > 20 else ''
+                
                 if channel_id and channel_id.startswith('UC'):
-                    channels[channel_id] = channel_name
+                    channels[channel_id] = {
+                        'name': channel_name,
+                        'template': channel_template
+                    }
         
         return channels
     except Exception as e:
@@ -119,10 +122,7 @@ def subscribe_channel(channel_id):
     
     try:
         response = requests.post(hub_url, data=data, timeout=10)
-        if response.status_code in [202, 204]:
-            return True
-        else:
-            return False
+        return response.status_code in [202, 204]
     except:
         return False
 
@@ -159,6 +159,65 @@ def remove_subscribed_channels(sheet, channel_ids):
             worksheet.delete_rows(row_index)
     except Exception as e:
         print(f"  Error removing subscriptions: {e}")
+
+def check_rss_feed(channel_id):
+    rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+    
+    try:
+        time.sleep(0.3)
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = requests.get(rss_url, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            return []
+        
+        from xml.etree import ElementTree as ET
+        root = ET.fromstring(response.content)
+        
+        ns = {
+            'atom': 'http://www.w3.org/2005/Atom',
+            'yt': 'http://www.youtube.com/xml/schemas/2015'
+        }
+        
+        entries = root.findall('atom:entry', ns)
+        
+        videos = []
+        cutoff_time = datetime.utcnow() - timedelta(hours=MAX_VIDEO_AGE_HOURS)
+        
+        for entry in entries:
+            video_id_elem = entry.find('yt:videoId', ns)
+            title_elem = entry.find('atom:title', ns)
+            published_elem = entry.find('atom:published', ns)
+            author_elem = entry.find('atom:author/atom:name', ns)
+            
+            if not all([video_id_elem, title_elem, published_elem]):
+                continue
+            
+            video_id = video_id_elem.text
+            title = title_elem.text
+            published_str = published_elem.text
+            channel_name = author_elem.text if author_elem is not None else 'Unknown'
+            
+            published = datetime.fromisoformat(published_str.replace('Z', '+00:00')).replace(tzinfo=None)
+            
+            if published > cutoff_time:
+                videos.append({
+                    'video_id': video_id,
+                    'title': title,
+                    'url': f"https://www.youtube.com/watch?v={video_id}",
+                    'channel': channel_name,
+                    'channel_id': channel_id,
+                    'published': published.isoformat()
+                })
+        
+        return videos
+        
+    except:
+        return []
 
 def sync_subscriptions(client, master_sheet, projects):
     print("\nSyncing subscriptions...")
@@ -200,6 +259,25 @@ def sync_subscriptions(client, master_sheet, projects):
     
     if len(to_subscribe) == 0 and len(to_unsubscribe) == 0:
         print("  No changes needed")
+
+def rss_fallback_check(client, projects):
+    print("\nRSS fallback check...")
+    
+    new_videos = []
+    
+    for project in projects:
+        channels = load_youtube_channels(client, project)
+        
+        for channel_id, channel_info in list(channels.items())[:5]:
+            videos = check_rss_feed(channel_id)
+            
+            for video in videos:
+                video['project'] = project
+                video['channel_info'] = channel_info
+                new_videos.append(video)
+    
+    print(f"  Found {len(new_videos)} videos via RSS")
+    return new_videos
 
 def get_published_videos(sheet):
     try:
@@ -295,6 +373,17 @@ def get_video_info(video_id):
         'channel': 'Unknown'
     }
 
+def format_message(template, video, channel_info):
+    if not template:
+        template = DEFAULT_MESSAGE_TEMPLATE
+    
+    message = template.replace('{channel_title}', video.get('channel', channel_info.get('name', 'Unknown')))
+    message = message.replace('{video_title}', video['title'])
+    message = message.replace('{video_url}', video['url'])
+    message = message.replace('{video_title_link}', f"<a href=\"{video['url']}\">{video['title']}</a>")
+    
+    return message
+
 def send_to_telegram(bot_token, channel_id, message):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
@@ -349,6 +438,7 @@ def main():
             total_found += 1
             
             video_info = get_video_info(event['video_id'])
+            channel_info = yt_channels[event['channel_id']]
             
             video = {
                 'video_id': event['video_id'],
@@ -360,9 +450,8 @@ def main():
             
             print(f"  Publishing: {video['title'][:50]}...")
             
-            message = f"🎥 <b>{video['title']}</b>\n\n" \
-                     f"📺 {video['channel']}\n" \
-                     f"🔗 {video['url']}"
+            template = channel_info.get('template') or project['default_template']
+            message = format_message(template, video, channel_info)
             
             tg_message_id = send_to_telegram(
                 project['bot_token'],
@@ -380,6 +469,38 @@ def main():
                 print(f"    Failed!")
                 save_video_to_global(master_sheet, video, project, error="Telegram send failed")
                 mark_push_event_processed(master_sheet, event['row_index'], project['name'])
+    
+    if len(push_events) == 0:
+        rss_videos = rss_fallback_check(client, projects)
+        
+        for video in rss_videos:
+            if video['video_id'] in published_videos:
+                continue
+            
+            total_found += 1
+            
+            project = video['project']
+            channel_info = video['channel_info']
+            
+            print(f"  Publishing (RSS): {video['title'][:50]}...")
+            
+            template = channel_info.get('template') or project['default_template']
+            message = format_message(template, video, channel_info)
+            
+            tg_message_id = send_to_telegram(
+                project['bot_token'],
+                project['channel_id'],
+                message
+            )
+            
+            if tg_message_id:
+                print(f"    Published!")
+                save_video_to_global(master_sheet, video, project, tg_message_id)
+                published_videos.add(video['video_id'])
+                total_published += 1
+            else:
+                print(f"    Failed!")
+                save_video_to_global(master_sheet, video, project, error="Telegram send failed")
     
     print(f"\nSummary:")
     print(f"  Videos found: {total_found}")
