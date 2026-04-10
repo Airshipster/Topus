@@ -1,6 +1,7 @@
 import gspread
 import requests
 import json
+import time
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from config import *
@@ -92,14 +93,18 @@ def get_subscribed_channels(sheet):
     except:
         return set()
 
-def save_subscribed_channel(sheet, channel_id):
+def save_subscribed_channels_batch(sheet, channel_ids):
     try:
         worksheet = sheet.worksheet('Подписки')
     except:
-        worksheet = sheet.add_worksheet('Подписки', rows=1000, cols=3)
+        worksheet = sheet.add_worksheet('Подписки', rows=5000, cols=3)
         worksheet.append_row(['Channel ID', 'Subscribed At', 'Last Renewed'])
     
-    worksheet.append_row([channel_id, datetime.utcnow().isoformat(), datetime.utcnow().isoformat()])
+    timestamp = datetime.utcnow().isoformat()
+    rows = [[channel_id, timestamp, timestamp] for channel_id in channel_ids]
+    
+    if rows:
+        worksheet.append_rows(rows)
 
 def subscribe_channel(channel_id):
     hub_url = "https://pubsubhubbub.appspot.com/subscribe"
@@ -117,11 +122,43 @@ def subscribe_channel(channel_id):
         if response.status_code in [202, 204]:
             return True
         else:
-            print(f"    Subscribe failed: HTTP {response.status_code}")
             return False
-    except Exception as e:
-        print(f"    Subscribe error: {e}")
+    except:
         return False
+
+def unsubscribe_channel(channel_id):
+    hub_url = "https://pubsubhubbub.appspot.com/subscribe"
+    topic_url = f"https://www.youtube.com/xml/feeds/videos.xml?channel_id={channel_id}"
+    
+    data = {
+        'hub.callback': CALLBACK_URL,
+        'hub.topic': topic_url,
+        'hub.mode': 'unsubscribe',
+        'hub.verify': 'async'
+    }
+    
+    try:
+        response = requests.post(hub_url, data=data, timeout=10)
+        return response.status_code in [202, 204]
+    except:
+        return False
+
+def remove_subscribed_channels(sheet, channel_ids):
+    try:
+        worksheet = sheet.worksheet('Подписки')
+        all_values = worksheet.get_all_values()
+        
+        rows_to_delete = []
+        for i, row in enumerate(all_values):
+            if i == 0:
+                continue
+            if len(row) > 0 and row[0] in channel_ids:
+                rows_to_delete.append(i + 1)
+        
+        for row_index in sorted(rows_to_delete, reverse=True):
+            worksheet.delete_rows(row_index)
+    except Exception as e:
+        print(f"  Error removing subscriptions: {e}")
 
 def sync_subscriptions(client, master_sheet, projects):
     print("\nSyncing subscriptions...")
@@ -129,24 +166,40 @@ def sync_subscriptions(client, master_sheet, projects):
     active_channels = get_all_active_channels(client, projects)
     subscribed_channels = get_subscribed_channels(master_sheet)
     
-    new_channels = active_channels - subscribed_channels
+    to_subscribe = active_channels - subscribed_channels
+    to_unsubscribe = subscribed_channels - active_channels
     
     print(f"  Active channels: {len(active_channels)}")
     print(f"  Already subscribed: {len(subscribed_channels)}")
-    print(f"  New to subscribe: {len(new_channels)}")
+    print(f"  New to subscribe: {len(to_subscribe)}")
+    print(f"  To unsubscribe: {len(to_unsubscribe)}")
     
-    if len(new_channels) == 0:
-        print("  No new subscriptions needed")
-        return
+    if len(to_subscribe) > 0:
+        print(f"\n  Subscribing to {len(to_subscribe)} new channels...")
+        subscribed = []
+        for channel_id in to_subscribe:
+            if subscribe_channel(channel_id):
+                subscribed.append(channel_id)
+            time.sleep(0.1)
+        
+        if subscribed:
+            save_subscribed_channels_batch(master_sheet, subscribed)
+            print(f"  Successfully subscribed: {len(subscribed)}")
     
-    subscribed_count = 0
-    for channel_id in new_channels:
-        print(f"  Subscribing: {channel_id}")
-        if subscribe_channel(channel_id):
-            save_subscribed_channel(master_sheet, channel_id)
-            subscribed_count += 1
+    if len(to_unsubscribe) > 0:
+        print(f"\n  Unsubscribing from {len(to_unsubscribe)} inactive channels...")
+        unsubscribed = []
+        for channel_id in to_unsubscribe:
+            if unsubscribe_channel(channel_id):
+                unsubscribed.append(channel_id)
+            time.sleep(0.1)
+        
+        if unsubscribed:
+            remove_subscribed_channels(master_sheet, unsubscribed)
+            print(f"  Successfully unsubscribed: {len(unsubscribed)}")
     
-    print(f"  Successfully subscribed: {subscribed_count}/{len(new_channels)}")
+    if len(to_subscribe) == 0 and len(to_unsubscribe) == 0:
+        print("  No changes needed")
 
 def get_published_videos(sheet):
     try:
@@ -220,7 +273,6 @@ def save_video_to_global(sheet, video, project, tg_message_id=None, error=None):
         ]
         
         worksheet.append_row(row)
-        print(f"    Saved to global sheet")
     except Exception as e:
         print(f"    Error saving to global: {e}")
 
@@ -272,7 +324,7 @@ def main():
     sync_subscriptions(client, master_sheet, projects)
     
     published_videos = get_published_videos(master_sheet)
-    print(f"Already published: {len(published_videos)} videos")
+    print(f"\nAlready published: {len(published_videos)} videos")
     
     push_events = get_push_events(master_sheet)
     print(f"Unprocessed push events: {len(push_events)}")
