@@ -2,9 +2,8 @@ name: Check YouTube Videos
 
 on:
   schedule:
-    # Запуск каждые 15 минут
     - cron: '*/15 * * * *'
-  workflow_dispatch:  # Ручной запуск
+  workflow_dispatch:
 
 jobs:
   check-and-publish:
