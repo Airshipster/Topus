@@ -2,9 +2,17 @@ import gspread
 import requests
 import json
 import time
+import random
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from config import *
+
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0'
+]
 
 def authenticate_google_sheets():
     if not SERVICE_ACCOUNT_JSON:
@@ -164,13 +172,20 @@ def check_rss_feed(channel_id):
     rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
     
     try:
-        time.sleep(0.3)
+        time.sleep(random.uniform(0.2, 0.5))
         
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': random.choice(USER_AGENTS),
+            'Accept': 'application/atom+xml,application/xml,text/xml,*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Referer': 'https://www.youtube.com/',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
         }
         
-        response = requests.get(rss_url, headers=headers, timeout=10)
+        response = requests.get(rss_url, headers=headers, timeout=15, allow_redirects=True)
         
         if response.status_code != 200:
             return []
@@ -216,7 +231,7 @@ def check_rss_feed(channel_id):
         
         return videos
         
-    except:
+    except Exception as e:
         return []
 
 def sync_subscriptions(client, master_sheet, projects):
@@ -260,23 +275,33 @@ def sync_subscriptions(client, master_sheet, projects):
     if len(to_subscribe) == 0 and len(to_unsubscribe) == 0:
         print("  No changes needed")
 
-def rss_fallback_check(client, projects):
+def rss_fallback_check(client, projects, published_videos):
     print("\nRSS fallback check...")
     
     new_videos = []
+    checked_count = 0
+    max_to_check = 10
     
     for project in projects:
         channels = load_youtube_channels(client, project)
         
-        for channel_id, channel_info in list(channels.items())[:5]:
+        for channel_id, channel_info in list(channels.items())[:max_to_check]:
             videos = check_rss_feed(channel_id)
+            checked_count += 1
             
             for video in videos:
-                video['project'] = project
-                video['channel_info'] = channel_info
-                new_videos.append(video)
+                if video['video_id'] not in published_videos:
+                    video['project'] = project
+                    video['channel_info'] = channel_info
+                    new_videos.append(video)
+            
+            if checked_count >= max_to_check:
+                break
+        
+        if checked_count >= max_to_check:
+            break
     
-    print(f"  Found {len(new_videos)} videos via RSS")
+    print(f"  Checked {checked_count} channels, found {len(new_videos)} new videos via RSS")
     return new_videos
 
 def get_published_videos(sheet):
@@ -377,10 +402,14 @@ def format_message(template, video, channel_info):
     if not template:
         template = DEFAULT_MESSAGE_TEMPLATE
     
-    message = template.replace('{channel_title}', video.get('channel', channel_info.get('name', 'Unknown')))
-    message = message.replace('{video_title}', video['title'])
-    message = message.replace('{video_url}', video['url'])
-    message = message.replace('{video_title_link}', f"<a href=\"{video['url']}\">{video['title']}</a>")
+    channel_name = video.get('channel', channel_info.get('name', 'Unknown'))
+    video_title = video['title']
+    video_url = video['url']
+    
+    message = template.replace('{channel_title}', channel_name)
+    message = message.replace('{video_title}', video_title)
+    message = message.replace('{video_url}', video_url)
+    message = message.replace('{video_title_link}', f'<a href="{video_url}">{video_title}</a>')
     
     return message
 
@@ -471,12 +500,9 @@ def main():
                 mark_push_event_processed(master_sheet, event['row_index'], project['name'])
     
     if len(push_events) == 0:
-        rss_videos = rss_fallback_check(client, projects)
+        rss_videos = rss_fallback_check(client, projects, published_videos)
         
         for video in rss_videos:
-            if video['video_id'] in published_videos:
-                continue
-            
             total_found += 1
             
             project = video['project']
