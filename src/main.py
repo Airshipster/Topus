@@ -154,14 +154,16 @@ def get_video_info(video_id):
         oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
         response = requests.get(oembed_url, timeout=10)
         
+        print(f"    oEmbed status: {response.status_code}")
+        
         if response.status_code == 200:
             data = response.json()
             return {
                 'title': data.get('title', 'Unknown'),
                 'channel': data.get('author_name', 'Unknown')
             }
-    except:
-        pass
+    except Exception as e:
+        print(f"    oEmbed error: {e}")
     
     return {
         'title': f"Video {video_id}",
@@ -178,7 +180,12 @@ def send_to_telegram(bot_token, channel_id, message):
     }
     
     try:
+        print(f"    Sending to TG channel: {channel_id}")
         response = requests.post(url, json=payload, timeout=10)
+        
+        print(f"    TG response status: {response.status_code}")
+        print(f"    TG response: {response.text[:200]}")
+        
         response.raise_for_status()
         result = response.json()
         return result.get('result', {}).get('message_id')
@@ -210,10 +217,16 @@ def main():
         print(f"  Channels found: {len(yt_channels)}")
         
         for event in push_events:
+            print(f"\n  Event: video_id={event['video_id']}, channel_id={event['channel_id']}")
+            
             if event['channel_id'] not in yt_channels:
+                print(f"    Channel NOT in project channel list")
                 continue
             
+            print(f"    Channel IS in project: {yt_channels[event['channel_id']]}")
+            
             if event['video_id'] in published_videos:
+                print(f"    Already published, marking as processed")
                 mark_push_event_processed(master_sheet, event['row_index'], project['name'])
                 continue
             
@@ -242,14 +255,15 @@ def main():
             )
             
             if tg_message_id:
-                print(f"    Published!")
+                print(f"    Published! Message ID: {tg_message_id}")
                 save_video_to_global(master_sheet, video, project, tg_message_id)
                 published_videos.add(video['video_id'])
                 mark_push_event_processed(master_sheet, event['row_index'], project['name'])
                 total_published += 1
             else:
-                print(f"    Failed!")
+                print(f"    Failed to publish!")
                 save_video_to_global(master_sheet, video, project, error="Telegram send failed")
+                mark_push_event_processed(master_sheet, event['row_index'], project['name'])
     
     print(f"\nSummary:")
     print(f"  Videos found: {total_found}")
