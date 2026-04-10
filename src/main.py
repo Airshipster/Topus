@@ -1,7 +1,6 @@
 import gspread
 import requests
 import json
-import time
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from config import *
@@ -50,7 +49,7 @@ def load_youtube_channels(client, project):
         worksheet = sheet.worksheet('Список. YouTube')
         values = worksheet.get_all_values()
         
-        channels = []
+        channels = {}
         for i, row in enumerate(values):
             if i == 0:
                 continue
@@ -65,13 +64,14 @@ def load_youtube_channels(client, project):
             
             if status == '🟢':
                 channel_id = row[4].strip() if len(row) > 4 else ''
+                channel_name = row[3].strip() if len(row) > 3 else ''
                 if channel_id and channel_id.startswith('UC'):
-                    channels.append(channel_id)
+                    channels[channel_id] = channel_name
         
         return channels
     except Exception as e:
         print(f"  Error loading channels: {e}")
-        return []
+        return {}
 
 def get_published_videos(sheet):
     try:
@@ -81,6 +81,42 @@ def get_published_videos(sheet):
     except:
         return set()
 
+def get_push_events(sheet):
+    try:
+        worksheet = sheet.worksheet('Push events')
+        values = worksheet.get_all_values()
+        
+        events = []
+        for i, row in enumerate(values):
+            if i == 0:
+                continue
+            
+            if len(row) < 4:
+                continue
+            
+            status = row[3] if len(row) > 3 else ''
+            if status == '❌':
+                video_id = row[1] if len(row) > 1 else ''
+                channel_id = row[2] if len(row) > 2 else ''
+                if video_id and channel_id:
+                    events.append({
+                        'row_index': i + 1,
+                        'video_id': video_id,
+                        'channel_id': channel_id
+                    })
+        
+        return events
+    except Exception as e:
+        print(f"Error loading push events: {e}")
+        return []
+
+def mark_push_event_processed(sheet, row_index):
+    try:
+        worksheet = sheet.worksheet('Push events')
+        worksheet.update_cell(row_index, 4, '✅')
+    except Exception as e:
+        print(f"  Error marking event: {e}")
+
 def save_video_to_global(sheet, video, project, tg_message_id=None, error=None):
     try:
         worksheet = sheet.worksheet(SHEET_NAME_VIDEOS)
@@ -89,10 +125,10 @@ def save_video_to_global(sheet, video, project, tg_message_id=None, error=None):
             video['video_id'],
             video['title'],
             video['url'],
-            video['channel'],
+            video.get('channel', ''),
             video['channel_id'],
             project['name'],
-            video['published'],
+            datetime.utcnow().isoformat(),
             '',
             '',
             '',
@@ -108,70 +144,25 @@ def save_video_to_global(sheet, video, project, tg_message_id=None, error=None):
     except Exception as e:
         print(f"    Error saving to global: {e}")
 
-def check_rss_feed(channel_id):
-    rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-    
+def get_video_info(video_id):
     try:
-        time.sleep(0.3)
+        import urllib.parse
+        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+        response = requests.get(oembed_url, timeout=10)
         
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-        }
-        
-        response = requests.get(rss_url, headers=headers, timeout=10)
-        
-        if response.status_code != 200:
-            print(f"    RSS: HTTP {response.status_code}")
-            return []
-        
-        from xml.etree import ElementTree as ET
-        root = ET.fromstring(response.content)
-        
-        ns = {
-            'atom': 'http://www.w3.org/2005/Atom',
-            'yt': 'http://www.youtube.com/xml/schemas/2015',
-            'media': 'http://search.yahoo.com/mrss/'
-        }
-        
-        entries = root.findall('atom:entry', ns)
-        
-        videos = []
-        cutoff_time = datetime.utcnow() - timedelta(hours=MAX_VIDEO_AGE_HOURS)
-        
-        for entry in entries:
-            video_id_elem = entry.find('yt:videoId', ns)
-            title_elem = entry.find('atom:title', ns)
-            published_elem = entry.find('atom:published', ns)
-            author_elem = entry.find('atom:author/atom:name', ns)
-            
-            if video_id_elem is None or title_elem is None or published_elem is None:
-                continue
-            
-            video_id = video_id_elem.text
-            title = title_elem.text
-            published_str = published_elem.text
-            channel_name = author_elem.text if author_elem is not None else 'Unknown'
-            
-            published = datetime.fromisoformat(published_str.replace('Z', '+00:00')).replace(tzinfo=None)
-            
-            if published > cutoff_time:
-                videos.append({
-                    'video_id': video_id,
-                    'title': title,
-                    'url': f"https://www.youtube.com/watch?v={video_id}",
-                    'channel': channel_name,
-                    'channel_id': channel_id,
-                    'published': published.isoformat()
-                })
-        
-        if len(entries) > 0:
-            print(f"    RSS: {len(entries)} total, {len(videos)} new")
-        
-        return videos
-        
-    except Exception as e:
-        print(f"    RSS error: {e}")
-        return []
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                'title': data.get('title', 'Unknown'),
+                'channel': data.get('author_name', 'Unknown')
+            }
+    except:
+        pass
+    
+    return {
+        'title': f"Video {video_id}",
+        'channel': 'Unknown'
+    }
 
 def send_to_telegram(bot_token, channel_id, message):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -202,6 +193,9 @@ def main():
     published_videos = get_published_videos(master_sheet)
     print(f"Already published: {len(published_videos)} videos")
     
+    push_events = get_push_events(master_sheet)
+    print(f"Unprocessed push events: {len(push_events)}")
+    
     total_found = 0
     total_published = 0
     
@@ -211,35 +205,47 @@ def main():
         yt_channels = load_youtube_channels(client, project)
         print(f"  Channels found: {len(yt_channels)}")
         
-        for yt_channel in yt_channels:
-            print(f"  Checking: {yt_channel}")
-            videos = check_rss_feed(yt_channel)
+        for event in push_events:
+            if event['channel_id'] not in yt_channels:
+                continue
             
-            for video in videos:
-                total_found += 1
-                
-                if video['video_id'] in published_videos:
-                    print(f"    Skipped (duplicate): {video['title'][:50]}...")
-                    continue
-                
-                message = f"🎥 <b>{video['title']}</b>\n\n" \
-                         f"📺 {video['channel']}\n" \
-                         f"🔗 {video['url']}"
-                
-                tg_message_id = send_to_telegram(
-                    project['bot_token'],
-                    project['channel_id'],
-                    message
-                )
-                
-                if tg_message_id:
-                    print(f"    Published: {video['title'][:50]}...")
-                    save_video_to_global(master_sheet, video, project, tg_message_id)
-                    published_videos.add(video['video_id'])
-                    total_published += 1
-                else:
-                    print(f"    Failed: {video['title'][:50]}...")
-                    save_video_to_global(master_sheet, video, project, error="Telegram send failed")
+            if event['video_id'] in published_videos:
+                mark_push_event_processed(master_sheet, event['row_index'])
+                continue
+            
+            total_found += 1
+            
+            video_info = get_video_info(event['video_id'])
+            
+            video = {
+                'video_id': event['video_id'],
+                'title': video_info['title'],
+                'url': f"https://www.youtube.com/watch?v={event['video_id']}",
+                'channel': video_info['channel'],
+                'channel_id': event['channel_id']
+            }
+            
+            print(f"  Publishing: {video['title'][:50]}...")
+            
+            message = f"🎥 <b>{video['title']}</b>\n\n" \
+                     f"📺 {video['channel']}\n" \
+                     f"🔗 {video['url']}"
+            
+            tg_message_id = send_to_telegram(
+                project['bot_token'],
+                project['channel_id'],
+                message
+            )
+            
+            if tg_message_id:
+                print(f"    Published!")
+                save_video_to_global(master_sheet, video, project, tg_message_id)
+                published_videos.add(video['video_id'])
+                mark_push_event_processed(master_sheet, event['row_index'])
+                total_published += 1
+            else:
+                print(f"    Failed!")
+                save_video_to_global(master_sheet, video, project, error="Telegram send failed")
     
     print(f"\nSummary:")
     print(f"  Videos found: {total_found}")
