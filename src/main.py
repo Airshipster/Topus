@@ -2,22 +2,9 @@ import gspread
 import requests
 import json
 import time
-import random
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from config import *
-
-USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15'
-]
-
-FREE_PROXIES = [
-    None,
-]
 
 def authenticate_google_sheets():
     if not SERVICE_ACCOUNT_JSON:
@@ -175,81 +162,22 @@ def remove_subscribed_channels(sheet, channel_ids):
     except Exception as e:
         print(f"  Error removing subscriptions: {e}")
 
-def check_rss_feed_invidious(channel_id):
-    invidious_instances = [
-        'https://inv.nadeko.net',
-        'https://invidious.privacyredirect.com',
-        'https://invidious.snopyta.org',
-        'https://yewtu.be',
-        'https://invidious.kavin.rocks'
-    ]
-    
-    for instance in invidious_instances:
-        try:
-            url = f"{instance}/feed/channel/{channel_id}"
-            headers = {
-                'User-Agent': random.choice(USER_AGENTS),
-                'Accept': 'application/atom+xml,application/xml,text/xml,*/*'
-            }
-            
-            response = requests.get(url, headers=headers, timeout=15)
-            
-            if response.status_code == 200:
-                return parse_rss_content(response.content, channel_id)
-        except:
-            continue
-    
-    return []
-
-def check_rss_feed_youtube(channel_id):
-    rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-    
+def check_rss_feed(channel_id):
     try:
-        time.sleep(random.uniform(0.3, 0.8))
+        time.sleep(0.2)
         
-        session = requests.Session()
+        url = f"{CLOUDFLARE_WORKER_URL}/?channel={channel_id}"
+        response = requests.get(url, timeout=15)
         
-        session.get('https://www.youtube.com', headers={
-            'User-Agent': random.choice(USER_AGENTS)
-        }, timeout=10)
+        if response.status_code != 200:
+            return []
         
-        time.sleep(random.uniform(0.2, 0.5))
-        
-        headers = {
-            'User-Agent': random.choice(USER_AGENTS),
-            'Accept': 'application/atom+xml,application/xml,text/xml,*/*',
-            'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Referer': 'https://www.youtube.com/',
-            'Origin': 'https://www.youtube.com',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'same-origin',
-            'Cache-Control': 'max-age=0'
-        }
-        
-        response = session.get(rss_url, headers=headers, timeout=15, allow_redirects=True)
-        
-        if response.status_code == 200:
-            return parse_rss_content(response.content, channel_id)
-        
-    except:
-        pass
-    
-    return []
-
-def parse_rss_content(content, channel_id):
-    try:
         from xml.etree import ElementTree as ET
-        root = ET.fromstring(content)
+        root = ET.fromstring(response.content)
         
         ns = {
             'atom': 'http://www.w3.org/2005/Atom',
-            'yt': 'http://www.youtube.com/xml/schemas/2015',
-            'media': 'http://search.yahoo.com/mrss/'
+            'yt': 'http://www.youtube.com/xml/schemas/2015'
         }
         
         entries = root.findall('atom:entry', ns)
@@ -286,14 +214,6 @@ def parse_rss_content(content, channel_id):
         return videos
     except:
         return []
-
-def check_rss_feed(channel_id):
-    videos = check_rss_feed_invidious(channel_id)
-    
-    if not videos:
-        videos = check_rss_feed_youtube(channel_id)
-    
-    return videos
 
 def sync_subscriptions(client, master_sheet, projects):
     print("\nSyncing subscriptions...")
@@ -342,7 +262,7 @@ def rss_fallback_check(client, projects, published_videos):
     
     all_channels = get_all_active_channels(client, projects)
     
-    print(f"  Checking ALL {len(all_channels)} channels...")
+    print(f"  Checking ALL {len(all_channels)} channels via Cloudflare Worker...")
     
     new_videos = []
     success_count = 0
@@ -603,7 +523,4 @@ def main():
     print(f"\nSummary:")
     print(f"  Videos found: {total_found}")
     print(f"  Published: {total_published}")
-    print("\nDone")
-
-if __name__ == "__main__":
-    main()
+    print("\
