@@ -26,9 +26,10 @@ def load_projects(sheet):
     for row in records:
         status = row.get('Активен', '')
         if status == '🟢':
-            sheet_id = row.get('Ссылка на документ проекта', '')
-            if '/d/' in sheet_id:
-                sheet_id = sheet_id.split('/d/')[1].split('/')[0]
+            sheet_url = row.get('Ссылка на документ проекта', '')
+            sheet_id = ''
+            if '/d/' in sheet_url:
+                sheet_id = sheet_url.split('/d/')[1].split('/')[0]
             
             projects.append({
                 'code': row.get('Код проекта'),
@@ -44,24 +45,33 @@ def load_projects(sheet):
     return projects
 
 def load_youtube_channels(client, project):
-    sheet = client.open_by_key(project['sheet_id'])
-    worksheet = sheet.worksheet('Список. YouTube')
-    values = worksheet.get_all_values()
-    
-    channels = []
-    for row in values[1:]:
-        if len(row) < 8:
-            continue
+    try:
+        sheet = client.open_by_key(project['sheet_id'])
+        worksheet = sheet.worksheet('Список. YouTube')
+        values = worksheet.get_all_values()
         
-        status = row[7]
-        if status == '🔵':
-            break
-        if status == '🟢':
-            channel_id = row[4] if len(row) > 4 else ''
-            if channel_id:
-                channels.append(channel_id.strip())
-    
-    return channels
+        channels = []
+        for i, row in enumerate(values):
+            if i == 0:
+                continue
+            
+            if len(row) < 8:
+                continue
+            
+            status = row[6].strip() if len(row) > 6 else ''
+            
+            if status == '🔵':
+                break
+            
+            if status == '🟢':
+                channel_id = row[4].strip() if len(row) > 4 else ''
+                if channel_id and channel_id.startswith('UC'):
+                    channels.append(channel_id)
+        
+        return channels
+    except Exception as e:
+        print(f"  Error loading channels: {e}")
+        return []
 
 def check_rss_feed(channel_id):
     rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
@@ -85,7 +95,7 @@ def check_rss_feed(channel_id):
         
         return videos
     except Exception as e:
-        print(f"RSS error for {channel_id}: {e}")
+        print(f"  RSS error for {channel_id}: {e}")
         return []
 
 def send_to_telegram(bot_token, channel_id, message):
@@ -102,7 +112,7 @@ def send_to_telegram(bot_token, channel_id, message):
         response.raise_for_status()
         return True
     except Exception as e:
-        print(f"Telegram error: {e}")
+        print(f"  Telegram error: {e}")
         return False
 
 def main():
