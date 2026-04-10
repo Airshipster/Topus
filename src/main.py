@@ -2,6 +2,8 @@ import gspread
 import feedparser
 import requests
 import json
+import time
+import traceback
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from config import *
@@ -114,12 +116,18 @@ def check_rss_feed(channel_id):
     rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
     
     try:
+        time.sleep(0.5)
+        
         feed = feedparser.parse(rss_url)
+        
+        print(f"    DEBUG: status={feed.get('status', 'N/A')}, entries={len(feed.entries)}")
+        if len(feed.entries) > 0:
+            first_entry = feed.entries[0]
+            print(f"    DEBUG: first_title={first_entry.get('title', 'N/A')[:30]}")
+            print(f"    DEBUG: first_published={first_entry.get('published', 'N/A')}")
+        
         videos = []
-        
         cutoff_time = datetime.now() - timedelta(hours=MAX_VIDEO_AGE_HOURS)
-        
-        total_entries = len(feed.entries)
         
         for entry in feed.entries:
             published = datetime(*entry.published_parsed[:6])
@@ -135,12 +143,13 @@ def check_rss_feed(channel_id):
                     'published': published.isoformat()
                 })
         
-        if total_entries > 0:
-            print(f"    RSS: {total_entries} total, {len(videos)} new")
+        if len(feed.entries) > 0:
+            print(f"    RSS: {len(feed.entries)} total, {len(videos)} new")
         
         return videos
     except Exception as e:
-        print(f"  RSS error for {channel_id}: {e}")
+        print(f"    RSS error: {e}")
+        print(f"    {traceback.format_exc()}")
         return []
 
 def send_to_telegram(bot_token, channel_id, message):
