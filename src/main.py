@@ -332,10 +332,13 @@ def check_rss_feed(channel_id, debug_first=False):
             channel_name = author_elem.text if author_elem is not None else 'Unknown'
             
             try:
-                published = datetime.fromisoformat(published_str.replace('Z', '+00:00')).replace(tzinfo=None)
-            except:
+                if published_str.endswith('Z'):
+                    published = datetime.fromisoformat(published_str.replace('Z', '+00:00')).replace(tzinfo=None)
+                else:
+                    published = datetime.fromisoformat(published_str).replace(tzinfo=None)
+            except Exception as e:
                 if debug_first:
-                    print(f"    Failed to parse date: {published_str}")
+                    print(f"    Failed to parse date: {published_str} - {e}")
                 continue
             
             if debug_first:
