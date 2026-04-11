@@ -1,4 +1,0 @@
-date > .github/workflows/.forceupdate
-git add .github/workflows/.forceupdate
-git commit -m "Force cache clear"
-git push
