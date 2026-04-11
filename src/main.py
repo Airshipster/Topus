@@ -7,7 +7,13 @@ from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from config import *
 
+
+# Глобальный счётчик YouTube API вызовов
+youtube_api_calls = 0
+
+
 def authenticate_google_sheets():
+    """Аутентификация в Google Sheets через Service Account"""
     if not SERVICE_ACCOUNT_JSON:
         raise ValueError("GOOGLE_SERVICE_ACCOUNT_JSON not found")
     
@@ -19,7 +25,9 @@ def authenticate_google_sheets():
     client = gspread.authorize(credentials)
     return client
 
+
 def log_to_sheet(sheet, project_name, event, video_id='', details='', status='info'):
+    """Логирование событий в лист 'Логи'"""
     try:
         try:
             worksheet = sheet.worksheet('Логи')
@@ -32,7 +40,9 @@ def log_to_sheet(sheet, project_name, event, video_id='', details='', status='in
     except Exception as e:
         print(f"    Error logging: {e}")
 
+
 def load_settings(sheet):
+    """Загрузка настроек из листа 'Настройки'"""
     try:
         worksheet = sheet.worksheet(SHEET_NAME_SETTINGS)
         records = worksheet.get_all_records()
@@ -58,22 +68,43 @@ def load_settings(sheet):
         global YOUTUBE_API_KEY, MAX_VIDEO_AGE_HOURS, DEFAULT_MESSAGE_TEMPLATE
         if 'youtube_api_key' in settings:
             YOUTUBE_API_KEY = settings['youtube_api_key']
-            print(f"  YouTube API key loaded")
+            print(f"  ✅ YouTube API key loaded")
         
         if 'max_video_age_hours' in settings:
             MAX_VIDEO_AGE_HOURS = int(settings['max_video_age_hours'])
-            print(f"  Max video age: {MAX_VIDEO_AGE_HOURS} hours ({MAX_VIDEO_AGE_HOURS//24} days)")
+            print(f"  ✅ Max video age: {MAX_VIDEO_AGE_HOURS}h ({MAX_VIDEO_AGE_HOURS//24}d)")
         
         if 'default_template' in settings:
             DEFAULT_MESSAGE_TEMPLATE = settings['default_template']
-            print(f"  Default template loaded")
+            print(f"  ✅ Default template loaded")
         
         return settings
     except Exception as e:
-        print(f"  Error loading settings: {e}")
+        print(f"  ❌ Error loading settings: {e}")
         return {}
 
+
+def update_youtube_quota(sheet, calls_used):
+    """Обновление счётчика YouTube API квоты"""
+    try:
+        worksheet = sheet.worksheet(SHEET_NAME_SETTINGS)
+        values = worksheet.get_all_values()
+        
+        for i, row in enumerate(values):
+            if i == 0:
+                continue
+            if len(row) > 0 and row[0].strip() == 'youtube_quota_used':
+                current_quota = int(row[1]) if row[1].isdigit() else 0
+                new_quota = current_quota + calls_used
+                worksheet.update_cell(i + 1, 2, str(new_quota))
+                print(f"  📊 YouTube API quota updated: {new_quota} units")
+                return
+    except Exception as e:
+        print(f"  ⚠️  Error updating quota: {e}")
+
+
 def load_projects(sheet):
+    """Загрузка активных проектов из листа 'Проекты'"""
     worksheet = sheet.worksheet(SHEET_NAME_PROJECTS)
     records = worksheet.get_all_records()
     
@@ -102,10 +133,12 @@ def load_projects(sheet):
                 'stop_words': stop_words
             })
     
-    print(f"Projects loaded: {len(projects)}")
+    print(f"  ✅ Loaded {len(projects)} active projects")
     return projects
 
+
 def load_youtube_channels(client, project):
+    """Загрузка активных YouTube каналов проекта"""
     try:
         sheet = client.open_by_key(project['sheet_id'])
         worksheet = sheet.worksheet('Список. YouTube')
@@ -138,13 +171,14 @@ def load_youtube_channels(client, project):
                         'tg_channel': tg_channel_link
                     }
         
-        print(f"  Loaded {len(channels)} active channels for {project['name']}")
         return channels
     except Exception as e:
-        print(f"  Error loading channels for {project['name']}: {e}")
+        print(f"  ❌ Error loading channels for {project['name']}: {e}")
         return {}
 
+
 def get_all_active_channels(client, projects):
+    """Получение всех уникальных активных каналов из всех проектов"""
     all_channels = {}
     
     for project in projects:
@@ -155,7 +189,9 @@ def get_all_active_channels(client, projects):
     
     return all_channels
 
+
 def get_subscribed_channels(sheet):
+    """Получение списка подписанных каналов"""
     try:
         worksheet = sheet.worksheet('Подписки')
         records = worksheet.get_all_records()
@@ -163,7 +199,9 @@ def get_subscribed_channels(sheet):
     except:
         return set()
 
+
 def save_subscribed_channels_batch(sheet, channel_ids):
+    """Сохранение подписок на каналы"""
     try:
         worksheet = sheet.worksheet('Подписки')
     except:
@@ -176,7 +214,9 @@ def save_subscribed_channels_batch(sheet, channel_ids):
     if rows:
         worksheet.append_rows(rows)
 
+
 def subscribe_channel(channel_id):
+    """Подписка на push-уведомления от YouTube канала"""
     hub_url = "https://pubsubhubbub.appspot.com/subscribe"
     topic_url = f"https://www.youtube.com/xml/feeds/videos.xml?channel_id={channel_id}"
     
@@ -193,7 +233,9 @@ def subscribe_channel(channel_id):
     except:
         return False
 
+
 def unsubscribe_channel(channel_id):
+    """Отписка от push-уведомлений"""
     hub_url = "https://pubsubhubbub.appspot.com/subscribe"
     topic_url = f"https://www.youtube.com/xml/feeds/videos.xml?channel_id={channel_id}"
     
@@ -210,7 +252,9 @@ def unsubscribe_channel(channel_id):
     except:
         return False
 
+
 def remove_subscribed_channels(sheet, channel_ids):
+    """Удаление подписок из таблицы"""
     try:
         worksheet = sheet.worksheet('Подписки')
         all_values = worksheet.get_all_values()
@@ -225,9 +269,13 @@ def remove_subscribed_channels(sheet, channel_ids):
         for row_index in sorted(rows_to_delete, reverse=True):
             worksheet.delete_rows(row_index)
     except Exception as e:
-        print(f"  Error removing subscriptions: {e}")
+        print(f"  ❌ Error removing subscriptions: {e}")
+
 
 def get_video_info_from_api(video_id):
+    """Получение информации о видео через YouTube Data API v3"""
+    global youtube_api_calls
+    
     if not YOUTUBE_API_KEY:
         return None
     
@@ -240,6 +288,8 @@ def get_video_info_from_api(video_id):
         }
         
         response = requests.get(url, params=params, timeout=10)
+        youtube_api_calls += 1  # Счётчик вызовов
+        
         if response.status_code != 200:
             return None
         
@@ -280,10 +330,12 @@ def get_video_info_from_api(video_id):
             'duration_seconds': duration_seconds
         }
     except Exception as e:
-        print(f"  YouTube API error: {e}")
+        print(f"  ⚠️  YouTube API error: {e}")
         return None
 
+
 def check_rss_feed(channel_id):
+    """Проверка RSS фида канала через Cloudflare Worker"""
     try:
         time.sleep(0.2)
         
@@ -351,8 +403,10 @@ def check_rss_feed(channel_id):
     except:
         return []
 
+
 def sync_subscriptions(client, master_sheet, projects):
-    print("\nSyncing subscriptions...")
+    """Синхронизация push-подписок на YouTube каналы"""
+    print("\n📡 Syncing subscriptions...")
     
     active_channels_dict = get_all_active_channels(client, projects)
     active_channels = set(active_channels_dict.keys())
@@ -376,7 +430,7 @@ def sync_subscriptions(client, master_sheet, projects):
         
         if subscribed:
             save_subscribed_channels_batch(master_sheet, subscribed)
-            print(f"  Successfully subscribed: {len(subscribed)}")
+            print(f"  ✅ Successfully subscribed: {len(subscribed)}")
             log_to_sheet(master_sheet, 'System', 'Push subscriptions', '', f'Subscribed to {len(subscribed)} channels', 'success')
     
     if len(to_unsubscribe) > 0:
@@ -389,19 +443,17 @@ def sync_subscriptions(client, master_sheet, projects):
         
         if unsubscribed:
             remove_subscribed_channels(master_sheet, unsubscribed)
-            print(f"  Successfully unsubscribed: {len(unsubscribed)}")
+            print(f"  ✅ Successfully unsubscribed: {len(unsubscribed)}")
             log_to_sheet(master_sheet, 'System', 'Push unsubscriptions', '', f'Unsubscribed from {len(unsubscribed)} channels', 'success')
     
     if len(to_subscribe) == 0 and len(to_unsubscribe) == 0:
-        print("  No changes needed")
+        print("  ✅ No changes needed")
+
 
 def rss_fallback_check(client, project, published_videos):
-    """
-    ИСПРАВЛЕНО: Проверяем RSS только для ЭТОГО конкретного проекта!
-    """
-    print(f"\n  RSS fallback for {project['name']}...")
+    """RSS fallback для конкретного проекта"""
+    print(f"\n  📡 RSS fallback for {project['name']}...")
     
-    # Загружаем каналы ТОЛЬКО этого проекта
     project_channels = load_youtube_channels(client, project)
     
     print(f"    Checking {len(project_channels)} channels")
@@ -428,7 +480,9 @@ def rss_fallback_check(client, project, published_videos):
     
     return new_videos
 
+
 def get_published_videos(sheet):
+    """Получение списка уже опубликованных видео"""
     try:
         worksheet = sheet.worksheet(SHEET_NAME_VIDEOS)
         records = worksheet.get_all_records()
@@ -436,7 +490,9 @@ def get_published_videos(sheet):
     except:
         return set()
 
+
 def get_push_events(sheet):
+    """Получение необработанных push-событий"""
     try:
         worksheet = sheet.worksheet(SHEET_NAME_PUSH_EVENTS)
         values = worksheet.get_all_values()
@@ -462,10 +518,12 @@ def get_push_events(sheet):
         
         return events
     except Exception as e:
-        print(f"Error loading push events: {e}")
+        print(f"❌ Error loading push events: {e}")
         return []
 
+
 def mark_push_event_processed(sheet, row_index, project_name):
+    """Отметка push-события как обработанного"""
     try:
         worksheet = sheet.worksheet(SHEET_NAME_PUSH_EVENTS)
         worksheet.update_cell(row_index, 4, '✅')
@@ -475,11 +533,23 @@ def mark_push_event_processed(sheet, row_index, project_name):
             new_projects = (current_projects + ', ' + project_name).strip(', ')
             worksheet.update_cell(row_index, 5, new_projects)
     except Exception as e:
-        print(f"  Error marking event: {e}")
+        print(f"  ⚠️  Error marking event: {e}")
+
 
 def save_video_to_global(sheet, video, project, video_published_date, tg_message_id=None, error=None):
+    """Сохранение видео в глобальную таблицу"""
     try:
-        worksheet = sheet.worksheet(SHEET_NAME_VIDEOS)
+        try:
+            worksheet = sheet.worksheet(SHEET_NAME_VIDEOS)
+        except:
+            worksheet = sheet.add_worksheet(SHEET_NAME_VIDEOS, rows=10000, cols=13)
+            headers = [
+                'Video ID', 'Название видео', 'Ссылка', 'Название канала', 
+                'Channel ID', 'Проект', 'Дата публикации UTC', 'Дата обработки UTC',
+                'Опубл. в TG', 'TG message_id', 'Дата публикации TG', 
+                'Системный статус', 'Ошибка'
+            ]
+            worksheet.append_row(headers)
         
         row = [
             video['video_id'],
@@ -498,10 +568,19 @@ def save_video_to_global(sheet, video, project, video_published_date, tg_message
         ]
         
         worksheet.append_row(row)
+        print(f"      💾 Saved to global: {video['video_id']}")
+        
     except Exception as e:
-        print(f"    Error saving to global: {e}")
+        print(f"    ❌ ERROR saving to global: {e}")
+        print(f"       Video ID: {video.get('video_id', 'unknown')}")
+        try:
+            log_to_sheet(sheet, project['name'], 'Save error', video.get('video_id', ''), str(e), 'error')
+        except:
+            pass
+
 
 def should_filter_video(video_info, project):
+    """Проверка нужно ли фильтровать видео"""
     if not video_info:
         return False, ""
     
@@ -522,17 +601,16 @@ def should_filter_video(video_info, project):
     
     return False, ""
 
+
 def format_message(template, video, channel_info, project):
     """
     Форматирование сообщения с поддержкой:
     - {channel_title} - название канала
     - {video_title} - название видео
     - {video_url} - URL видео
-    - {video_title_link} - название с гиперссылкой <a href="url">title</a>
-    - {TG_channel} - Telegram канал проекта из колонки E
-    - [текст] - гиперссылка <a href="tg_link">текст</a> из колонки V
-    
-    ТРЮК: Добавляем невидимую ссылку на видео в начало для превью
+    - {video_title_link} - название с гиперссылкой
+    - {TG_channel} - Telegram канал проекта
+    - [текст] - гиперссылка на Telegram канал из колонки V
     """
     if not template:
         template = DEFAULT_MESSAGE_TEMPLATE
@@ -547,33 +625,31 @@ def format_message(template, video, channel_info, project):
     message = message.replace('{video_url}', video_url)
     message = message.replace('{video_title_link}', f'<a href="{video_url}">{video_title}</a>')
     
-    # {TG_channel} из проекта
+    # {TG_channel} из проекта (колонка E)
     tg_channel_name = project.get('tg_channel', '')
     message = message.replace('{TG_channel}', tg_channel_name)
     
-    # Обработка [текст] → <a href="tg_channel_link">текст</a>
+    # Обработка [текст] → <a href="tg_link">текст</a>
     tg_channel_link = channel_info.get('tg_channel', '').strip()
     
-    # Если tg_channel_link НЕ начинается с дефиса и не пустой
     if tg_channel_link and not tg_channel_link.startswith('-'):
-        # Находим все [текст] и заменяем на <a href="tg_channel_link">текст</a>
         def replace_brackets(match):
             text = match.group(1)
             return f'<a href="{tg_channel_link}">{text}</a>'
         
         message = re.sub(r'\[([^\]]+)\]', replace_brackets, message)
     else:
-        # Если начинается с дефиса или пусто - просто убираем скобки
         message = re.sub(r'\[([^\]]+)\]', r'\1', message)
     
-    # ТРЮК: Добавляем невидимую ссылку на видео В НАЧАЛО для превью
-    # Используем символ Zero Width Space (&#8203;) как текст гиперссылки
-    invisible_link = f'<a href="{video_url}">&#8203;</a>'
+    # ТРЮК: Невидимая ссылка на видео в начале для превью
+    invisible_link = f'<a href="{video_url}">\u200b</a>'
     message = invisible_link + message
     
     return message
 
+
 def send_to_telegram(bot_token, channel_id, message):
+    """Отправка сообщения в Telegram"""
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
         'chat_id': channel_id,
@@ -588,8 +664,9 @@ def send_to_telegram(bot_token, channel_id, message):
         result = response.json()
         return result.get('result', {}).get('message_id')
     except Exception as e:
-        print(f"  Telegram error: {e}")
+        print(f"  ❌ Telegram error: {e}")
         return None
+
 
 def main():
     print("="*60)
@@ -600,18 +677,19 @@ def main():
     client = authenticate_google_sheets()
     master_sheet = client.open_by_key(SPREADSHEET_ID)
     
-    print("Loading settings...")
+    print("⚙️  Loading settings...")
     settings = load_settings(master_sheet)
     
+    print("\n📂 Loading projects...")
     projects = load_projects(master_sheet)
     
     sync_subscriptions(client, master_sheet, projects)
     
     published_videos = get_published_videos(master_sheet)
-    print(f"\nAlready published: {len(published_videos)} videos")
+    print(f"\n📊 Already published: {len(published_videos)} videos")
     
     push_events = get_push_events(master_sheet)
-    print(f"Unprocessed push events: {len(push_events)}")
+    print(f"📬 Unprocessed push events: {len(push_events)}")
     
     total_found = 0
     total_published = 0
@@ -620,11 +698,11 @@ def main():
     
     for project in projects:
         print(f"\n{'='*60}")
-        print(f"Project: {project['name']}")
+        print(f"📁 Project: {project['name']}")
         print(f"{'='*60}")
         
         yt_channels = load_youtube_channels(client, project)
-        print(f"  Active channels: {len(yt_channels)}")
+        print(f"  📺 Active channels: {len(yt_channels)}")
         
         # Process push events
         for event in push_events:
@@ -693,7 +771,7 @@ def main():
             
             time.sleep(1 / TELEGRAM_RATE_LIMIT)
         
-        # RSS fallback check - ТЕПЕРЬ ТОЛЬКО ДЛЯ ЭТОГО ПРОЕКТА!
+        # RSS fallback check - ТОЛЬКО ДЛЯ ЭТОГО ПРОЕКТА!
         rss_videos = rss_fallback_check(client, project, published_videos)
         
         for video in rss_videos:
@@ -742,16 +820,22 @@ def main():
             
             time.sleep(1 / TELEGRAM_RATE_LIMIT)
     
+    # Обновление YouTube API квоты
+    if youtube_api_calls > 0:
+        update_youtube_quota(master_sheet, youtube_api_calls)
+    
     # Final summary
     print(f"\n{'='*60}")
-    print("SUMMARY")
+    print("📊 SUMMARY")
     print(f"{'='*60}")
     print(f"Videos found: {total_found}")
     print(f"  ✅ Published: {total_published}")
     print(f"  🚫 Filtered: {total_filtered}")
     print(f"  ❌ Failed: {total_failed}")
+    print(f"  📊 YouTube API calls: {youtube_api_calls}")
     print(f"\nFinished: {datetime.utcnow().isoformat()}Z")
     print(f"{'='*60}")
+
 
 if __name__ == "__main__":
     main()
