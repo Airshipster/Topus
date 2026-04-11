@@ -6,7 +6,6 @@ on:
   
   workflow_dispatch:
 
-# Предотвращаем одновременные запуски
 concurrency:
   group: topus-publisher
   cancel-in-progress: false
