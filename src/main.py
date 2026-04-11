@@ -737,4 +737,17 @@ def main():
             else:
                 print(f"     Failed to publish")
                 log_to_sheet(master_sheet, project['name'], 'Publish failed', video['video_id'], 'Telegram API error', 'error')
-                save_video_to_global(master_sheet, video, project, error
+                save_video_to_global(master_sheet, video, project, error="Telegram send failed")
+                total_failed += 1
+    
+    print(f"\n{'='*60}")
+    print(f"Summary:")
+    print(f"  Videos found: {total_found}")
+    print(f"  Published: {total_published}")
+    print(f"  Filtered: {total_filtered}")
+    print(f"  Failed: {total_failed}")
+    print(f"{'='*60}")
+    print("\nDone!")
+
+if __name__ == "__main__":
+    main()
