@@ -8,7 +8,6 @@ from google.oauth2.service_account import Credentials
 from config import *
 
 
-# Глобальный счётчик YouTube API вызовов
 youtube_api_calls = 0
 
 
@@ -39,6 +38,114 @@ def log_to_sheet(sheet, project_name, event, video_id='', details='', status='in
         worksheet.append_row([timestamp, project_name, event, video_id, details, status])
     except Exception as e:
         print(f"    Error logging: {e}")
+
+
+def cleanup_old_records(sheet):
+    """
+    Очистка старых записей (>7 дней) из 'Глобальные видео' и 'Логи'
+    Запускается 1 раз в день
+    """
+    try:
+        # Проверяем когда последний раз чистили
+        worksheet_settings = sheet.worksheet(SHEET_NAME_SETTINGS)
+        values = worksheet_settings.get_all_values()
+        
+        last_cleanup = None
+        last_cleanup_row = None
+        
+        for i, row in enumerate(values):
+            if i == 0:
+                continue
+            if len(row) > 0 and row[0].strip() == 'last_cleanup':
+                last_cleanup_row = i + 1
+                if len(row) > 1 and row[1]:
+                    try:
+                        last_cleanup = datetime.fromisoformat(row[1].replace('Z', ''))
+                    except:
+                        pass
+                break
+        
+        # Если чистили менее 24 часов назад - пропускаем
+        if last_cleanup and (datetime.utcnow() - last_cleanup).total_seconds() < 86400:
+            print(f"  ⏭️  Cleanup skipped (last run: {last_cleanup.isoformat()}Z)")
+            return
+        
+        print("\n🧹 Cleaning up old records...")
+        
+        cutoff_date = datetime.utcnow() - timedelta(days=CLEANUP_AFTER_DAYS)
+        print(f"  Removing records older than: {cutoff_date.isoformat()}Z")
+        
+        # Очистка 'Глобальные видео'
+        deleted_videos = 0
+        try:
+            worksheet = sheet.worksheet(SHEET_NAME_VIDEOS)
+            values = worksheet.get_all_values()
+            
+            rows_to_delete = []
+            for i, row in enumerate(values):
+                if i == 0:
+                    continue
+                
+                if len(row) > 7:  # Дата обработки в колонке H (индекс 7)
+                    date_str = row[7]
+                    try:
+                        record_date = datetime.fromisoformat(date_str.replace('Z', ''))
+                        if record_date < cutoff_date:
+                            rows_to_delete.append(i + 1)
+                    except:
+                        pass
+            
+            # Удаляем с конца
+            for row_index in sorted(rows_to_delete, reverse=True):
+                worksheet.delete_rows(row_index)
+                deleted_videos += 1
+            
+            if deleted_videos > 0:
+                print(f"  ✅ Deleted {deleted_videos} old videos")
+        except Exception as e:
+            print(f"  ⚠️  Error cleaning videos: {e}")
+        
+        # Очистка 'Логи'
+        deleted_logs = 0
+        try:
+            worksheet = sheet.worksheet('Логи')
+            values = worksheet.get_all_values()
+            
+            rows_to_delete = []
+            for i, row in enumerate(values):
+                if i == 0:
+                    continue
+                
+                if len(row) > 0:
+                    date_str = row[0]
+                    try:
+                        record_date = datetime.fromisoformat(date_str.replace('Z', ''))
+                        if record_date < cutoff_date:
+                            rows_to_delete.append(i + 1)
+                    except:
+                        pass
+            
+            for row_index in sorted(rows_to_delete, reverse=True):
+                worksheet.delete_rows(row_index)
+                deleted_logs += 1
+            
+            if deleted_logs > 0:
+                print(f"  ✅ Deleted {deleted_logs} old logs")
+        except Exception as e:
+            print(f"  ⚠️  Error cleaning logs: {e}")
+        
+        # Обновляем время последней очистки
+        current_time = datetime.utcnow().isoformat() + 'Z'
+        if last_cleanup_row:
+            worksheet_settings.update_cell(last_cleanup_row, 2, current_time)
+        else:
+            worksheet_settings.append_row(['last_cleanup', current_time, 'Последняя очистка старых записей'])
+        
+        print(f"  ✅ Cleanup completed: {deleted_videos} videos, {deleted_logs} logs")
+        log_to_sheet(sheet, 'System', 'Cleanup completed', '', f'Deleted: {deleted_videos} videos, {deleted_logs} logs', 'success')
+        
+    except Exception as e:
+        print(f"  ❌ Cleanup error: {e}")
 
 
 def load_settings(sheet):
@@ -209,6 +316,7 @@ def load_youtube_channels(client, project):
                         'tg_channel': tg_channel_link
                     }
         
+        print(f"    ✅ Loaded {len(channels)} channels for {project['name']}")
         return channels
     except Exception as e:
         print(f"  ❌ Error loading channels for {project['name']}: {e}")
@@ -315,6 +423,7 @@ def get_video_info_from_api(video_id):
     global youtube_api_calls
     
     if not YOUTUBE_API_KEY:
+        print(f"  ⚠️  No YouTube API key!")
         return None
     
     try:
@@ -329,10 +438,12 @@ def get_video_info_from_api(video_id):
         youtube_api_calls += 1
         
         if response.status_code != 200:
+            print(f"  ⚠️  YouTube API error: HTTP {response.status_code}")
             return None
         
         data = response.json()
         if not data.get('items'):
+            print(f"  ⚠️  Video not found: {video_id}")
             return None
         
         item = data['items'][0]
@@ -381,15 +492,18 @@ def check_rss_feed(channel_id):
         response = requests.get(url, timeout=15)
         
         if response.status_code != 200:
+            print(f"      ⚠️  RSS error for {channel_id}: HTTP {response.status_code}")
             return []
         
         if len(response.content) == 0:
+            print(f"      ⚠️  Empty RSS for {channel_id}")
             return []
         
         from xml.etree import ElementTree as ET
         try:
             root = ET.fromstring(response.content)
-        except ET.ParseError:
+        except ET.ParseError as e:
+            print(f"      ⚠️  RSS parse error for {channel_id}: {e}")
             return []
         
         ns = {
@@ -438,7 +552,8 @@ def check_rss_feed(channel_id):
                 })
         
         return videos
-    except:
+    except Exception as e:
+        print(f"      ⚠️  RSS exception for {channel_id}: {e}")
         return []
 
 
@@ -504,8 +619,8 @@ def rss_fallback_check(client, project, published_videos):
         videos = check_rss_feed(channel_id)
         videos_found_count += len(videos)
         
-        if i > 0 and i % 20 == 0:
-            print(f"    Progress: {i}/{len(project_channels)} (Videos: {videos_found_count})")
+        if i > 0 and i % 10 == 0:
+            print(f"    Progress: {i}/{len(project_channels)} channels (Found: {videos_found_count} videos, New: {len(new_videos)})")
         
         for video in videos:
             if video['video_id'] not in published_videos:
@@ -513,8 +628,7 @@ def rss_fallback_check(client, project, published_videos):
                 video['channel_info'] = channel_info
                 new_videos.append(video)
     
-    print(f"    Found {videos_found_count} videos total")
-    print(f"    New unpublished: {len(new_videos)}")
+    print(f"    ✅ RSS scan complete: {videos_found_count} videos total, {len(new_videos)} new")
     
     return new_videos
 
@@ -524,8 +638,11 @@ def get_published_videos(sheet):
     try:
         worksheet = sheet.worksheet(SHEET_NAME_VIDEOS)
         records = worksheet.get_all_records()
-        return set(row.get('Video ID', '') for row in records if row.get('Video ID'))
-    except:
+        published = set(row.get('Video ID', '') for row in records if row.get('Video ID'))
+        print(f"  📋 Found {len(published)} published videos in table")
+        return published
+    except Exception as e:
+        print(f"  ⚠️  Error loading published videos: {e}")
         return set()
 
 
@@ -659,15 +776,7 @@ def should_filter_video(video_info, project):
 
 
 def format_message(template, video, channel_info, project):
-    """
-    Форматирование сообщения с поддержкой:
-    - {channel_title} - название канала
-    - {video_title} - название видео
-    - {video_url} - URL видео
-    - {video_title_link} - название с гиперссылкой
-    - {TG_channel} - Telegram канал проекта
-    - [текст] - гиперссылка на Telegram канал из колонки V
-    """
+    """Форматирование сообщения"""
     if not template:
         template = DEFAULT_MESSAGE_TEMPLATE
     
@@ -729,7 +838,10 @@ def main():
     client = authenticate_google_sheets()
     master_sheet = client.open_by_key(SPREADSHEET_ID)
     
-    print("⚙️  Loading settings...")
+    # Автоочистка старых записей (1 раз в день)
+    cleanup_old_records(master_sheet)
+    
+    print("\n⚙️  Loading settings...")
     settings = load_settings(master_sheet)
     
     print("\n📂 Loading projects...")
@@ -738,7 +850,6 @@ def main():
     sync_subscriptions(client, master_sheet, projects)
     
     published_videos = get_published_videos(master_sheet)
-    print(f"\n📊 Already published: {len(published_videos)} videos")
     
     push_events = get_push_events(master_sheet)
     print(f"📬 Unprocessed push events: {len(push_events)}")
@@ -755,7 +866,6 @@ def main():
         print(f"{'='*60}")
         
         yt_channels = load_youtube_channels(client, project)
-        print(f"  📺 Active channels: {len(yt_channels)}")
         
         # Process push events
         for event in push_events:
