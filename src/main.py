@@ -280,18 +280,13 @@ def check_rss_feed(channel_id, debug_first=False):
         
         if response.status_code != 200:
             if debug_first:
-                print(f"    RSS HTTP {response.status_code} for {channel_id}")
+                print(f"    RSS HTTP {response.status_code}")
             return []
         
         if len(response.content) == 0:
             if debug_first:
-                print(f"    RSS empty response for {channel_id}")
+                print(f"    RSS empty response")
             return []
-        
-        if debug_first:
-            print(f"\n    RSS Response preview for {channel_id}:")
-            print(f"    {response.text[:500]}")
-            print()
         
         from xml.etree import ElementTree as ET
         try:
@@ -309,15 +304,18 @@ def check_rss_feed(channel_id, debug_first=False):
         entries = root.findall('atom:entry', ns)
         
         if debug_first:
-            print(f"    Found {len(entries)} total entries in feed")
+            print(f"\n    DIAGNOSTIC INFO:")
+            print(f"    Found {len(entries)} entries in feed")
         
         videos = []
         cutoff_time = datetime.utcnow() - timedelta(hours=MAX_VIDEO_AGE_HOURS)
         
         if debug_first:
+            print(f"    Current UTC: {datetime.utcnow().isoformat()}")
             print(f"    Cutoff time: {cutoff_time.isoformat()}")
+            print(f"    Max age: {MAX_VIDEO_AGE_HOURS} hours\n")
         
-        for entry in entries:
+        for idx, entry in enumerate(entries):
             video_id_elem = entry.find('yt:videoId', ns)
             title_elem = entry.find('atom:title', ns)
             published_elem = entry.find('atom:published', ns)
@@ -338,13 +336,16 @@ def check_rss_feed(channel_id, debug_first=False):
                     published = datetime.fromisoformat(published_str).replace(tzinfo=None)
             except Exception as e:
                 if debug_first:
-                    print(f"    Failed to parse date: {published_str} - {e}")
+                    print(f"    [{idx+1}] PARSE ERROR: {e}")
                 continue
             
             if debug_first:
-                print(f"    Video: {title[:40]}")
-                print(f"      Published: {published.isoformat()}")
-                print(f"      Age check: {published} > {cutoff_time} = {published > cutoff_time}")
+                age_hours = (datetime.utcnow() - published).total_seconds() / 3600
+                passes = published > cutoff_time
+                print(f"    [{idx+1}] {title[:35]}")
+                print(f"        Date: {published_str}")
+                print(f"        Age: {age_hours:.1f}h ({age_hours/24:.1f}d)")
+                print(f"        Pass: {passes}")
             
             if published > cutoff_time:
                 videos.append({
@@ -357,20 +358,12 @@ def check_rss_feed(channel_id, debug_first=False):
                 })
         
         if debug_first:
-            print(f"    Videos within time window: {len(videos)}\n")
+            print(f"\n    Result: {len(videos)} videos pass filter\n")
         
         return videos
-    except requests.Timeout:
-        if debug_first:
-            print(f"    RSS timeout for {channel_id}")
-        return []
-    except requests.RequestException as e:
-        if debug_first:
-            print(f"    RSS request error: {e}")
-        return []
     except Exception as e:
         if debug_first:
-            print(f"    RSS unexpected error: {type(e).__name__}: {e}")
+            print(f"    ERROR: {type(e).__name__}: {e}")
         return []
 
 def sync_subscriptions(client, master_sheet, projects):
@@ -422,12 +415,11 @@ def rss_fallback_check(client, projects, published_videos):
     
     all_channels = get_all_active_channels(client, projects)
     
-    print(f"  Checking {len(all_channels)} channels via Cloudflare Worker...")
-    print(f"  Looking for videos from last {MAX_VIDEO_AGE_HOURS} hours ({MAX_VIDEO_AGE_HOURS//24} days)")
+    print(f"  Checking {len(all_channels)} channels")
+    print(f"  Time window: {MAX_VIDEO_AGE_HOURS}h ({MAX_VIDEO_AGE_HOURS//24}d)")
     
     new_videos = []
     success_count = 0
-    failed_count = 0
     videos_found_count = 0
     
     channel_list = list(all_channels.items())
@@ -436,18 +428,13 @@ def rss_fallback_check(client, projects, published_videos):
         debug_first = (i == 0)
         
         if i > 0 and i % 10 == 0:
-            print(f"  Progress: {i}/{len(all_channels)} (Success: {success_count}, Videos: {videos_found_count})")
+            print(f"  Progress: {i}/{len(all_channels)} (Videos: {videos_found_count})")
         
         videos = check_rss_feed(channel_id, debug_first=debug_first)
         
         if videos is not None:
-            if len(videos) > 0:
-                success_count += 1
-                videos_found_count += len(videos)
-            else:
-                success_count += 1
-        else:
-            failed_count += 1
+            success_count += 1
+            videos_found_count += len(videos)
         
         for video in videos:
             if video['video_id'] not in published_videos:
@@ -459,12 +446,10 @@ def rss_fallback_check(client, projects, published_videos):
                         new_videos.append(video)
                         break
     
-    print(f"\n  RSS Check Results:")
-    print(f"    Channels checked: {len(all_channels)}")
-    print(f"    Successful responses: {success_count}")
-    print(f"    Failed: {failed_count}")
-    print(f"    Total videos found in feeds: {videos_found_count}")
-    print(f"    New unpublished videos: {len(new_videos)}")
+    print(f"\n  Results:")
+    print(f"    Checked: {len(all_channels)}")
+    print(f"    Total videos in feeds: {videos_found_count}")
+    print(f"    New unpublished: {len(new_videos)}")
     
     return new_videos
 
@@ -601,7 +586,7 @@ def main():
     print("="*60)
     print("TOPUS - YouTube to Telegram Publisher")
     print("="*60)
-    print(f"Started at: {datetime.utcnow().isoformat()}Z")
+    print(f"Started: {datetime.utcnow().isoformat()}Z")
     
     client = authenticate_google_sheets()
     master_sheet = client.open_by_key(SPREADSHEET_ID)
@@ -626,7 +611,7 @@ def main():
     
     for project in projects:
         print(f"\n{'='*60}")
-        print(f"Processing project: {project['name']}")
+        print(f"Project: {project['name']}")
         print(f"{'='*60}")
         
         yt_channels = load_youtube_channels(client, project)
@@ -745,7 +730,7 @@ def main():
     
     print(f"\n{'='*60}")
     print(f"Summary:")
-    print(f"  Videos found: {total_found}")
+    print(f"  Found: {total_found}")
     print(f"  Published: {total_published}")
     print(f"  Filtered: {total_filtered}")
     print(f"  Failed: {total_failed}")
