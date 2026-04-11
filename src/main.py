@@ -18,6 +18,45 @@ def authenticate_google_sheets():
     client = gspread.authorize(credentials)
     return client
 
+def log_to_sheet(sheet, project_name, event, video_id='', details='', status='info'):
+    try:
+        try:
+            worksheet = sheet.worksheet('Логи')
+        except:
+            worksheet = sheet.add_worksheet('Логи', rows=10000, cols=6)
+            worksheet.append_row(['Timestamp', 'Проект', 'Событие', 'Video ID', 'Детали', 'Статус'])
+        
+        timestamp = datetime.utcnow().isoformat()
+        worksheet.append_row([timestamp, project_name, event, video_id, details, status])
+    except Exception as e:
+        print(f"    Error logging: {e}")
+
+def load_settings(sheet):
+    try:
+        worksheet = sheet.worksheet(SHEET_NAME_SETTINGS)
+        records = worksheet.get_all_records()
+        
+        settings = {}
+        for row in records:
+            key = row.get('Параметр', '').strip()
+            value = row.get('Значение', '').strip()
+            if key and value:
+                settings[key] = value
+        
+        global YOUTUBE_API_KEY, MAX_VIDEO_AGE_HOURS
+        if 'youtube_api_key' in settings:
+            YOUTUBE_API_KEY = settings['youtube_api_key']
+            print(f"  YouTube API key loaded: {YOUTUBE_API_KEY[:10]}...")
+        
+        if 'max_video_age_hours' in settings:
+            MAX_VIDEO_AGE_HOURS = int(settings['max_video_age_hours'])
+            print(f"  Max video age: {MAX_VIDEO_AGE_HOURS} hours ({MAX_VIDEO_AGE_HOURS//24} days)")
+        
+        return settings
+    except Exception as e:
+        print(f"  Error loading settings: {e}")
+        return {}
+
 def load_projects(sheet):
     worksheet = sheet.worksheet(SHEET_NAME_PROJECTS)
     records = worksheet.get_all_records()
@@ -31,6 +70,9 @@ def load_projects(sheet):
             if '/d/' in sheet_url:
                 sheet_id = sheet_url.split('/d/')[1].split('/')[0]
             
+            stop_words_str = row.get('Стоп-слова (через запятую)', '').strip()
+            stop_words = [w.strip().lower() for w in stop_words_str.split(',') if w.strip()] if stop_words_str else []
+            
             projects.append({
                 'code': row.get('Код проекта'),
                 'name': row.get('Название'),
@@ -38,7 +80,7 @@ def load_projects(sheet):
                 'bot_token': row.get('Telegram bot token'),
                 'channel_id': str(row.get('Telegram канал ID')),
                 'default_template': row.get('Шаблон по умолчанию', DEFAULT_MESSAGE_TEMPLATE),
-                'stop_words': row.get('Стоп-слова (через запятую)', '').split(',')
+                'stop_words': stop_words
             })
     
     print(f"Projects loaded: {len(projects)}")
@@ -162,6 +204,62 @@ def remove_subscribed_channels(sheet, channel_ids):
     except Exception as e:
         print(f"  Error removing subscriptions: {e}")
 
+def get_video_info_from_api(video_id):
+    if not YOUTUBE_API_KEY:
+        return None
+    
+    try:
+        url = "https://www.googleapis.com/youtube/v3/videos"
+        params = {
+            'part': 'snippet,contentDetails,liveStreamingDetails',
+            'id': video_id,
+            'key': YOUTUBE_API_KEY
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code != 200:
+            print(f"    API error {response.status_code}: {response.text[:100]}")
+            return None
+        
+        data = response.json()
+        if not data.get('items'):
+            return None
+        
+        item = data['items'][0]
+        snippet = item['snippet']
+        content_details = item.get('contentDetails', {})
+        live_details = item.get('liveStreamingDetails', {})
+        
+        is_short = False
+        duration_str = content_details.get('duration', '')
+        if duration_str:
+            import re
+            match = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', duration_str)
+            if match:
+                hours = int(match.group(1) or 0)
+                minutes = int(match.group(2) or 0)
+                seconds = int(match.group(3) or 0)
+                total_seconds = hours * 3600 + minutes * 60 + seconds
+                if total_seconds <= 60:
+                    is_short = True
+        
+        is_live = live_details.get('actualStartTime') is not None
+        is_upcoming = snippet.get('liveBroadcastContent') == 'upcoming'
+        
+        return {
+            'title': snippet['title'],
+            'channel': snippet['channelTitle'],
+            'channel_id': snippet['channelId'],
+            'published': snippet['publishedAt'],
+            'is_short': is_short,
+            'is_live': is_live,
+            'is_upcoming': is_upcoming,
+            'duration': duration_str
+        }
+    except Exception as e:
+        print(f"    API exception: {e}")
+        return None
+
 def check_rss_feed(channel_id):
     try:
         time.sleep(0.2)
@@ -170,10 +268,20 @@ def check_rss_feed(channel_id):
         response = requests.get(url, timeout=15)
         
         if response.status_code != 200:
+            print(f"    RSS error for {channel_id}: HTTP {response.status_code}")
+            return []
+        
+        if len(response.content) == 0:
+            print(f"    RSS error for {channel_id}: Empty response")
             return []
         
         from xml.etree import ElementTree as ET
-        root = ET.fromstring(response.content)
+        try:
+            root = ET.fromstring(response.content)
+        except ET.ParseError as e:
+            print(f"    RSS parse error for {channel_id}: {e}")
+            print(f"    Response preview: {response.text[:200]}")
+            return []
         
         ns = {
             'atom': 'http://www.w3.org/2005/Atom',
@@ -183,7 +291,7 @@ def check_rss_feed(channel_id):
         entries = root.findall('atom:entry', ns)
         
         videos = []
-        cutoff_time = datetime.utcnow() - timedelta(days=7)
+        cutoff_time = datetime.utcnow() - timedelta(hours=MAX_VIDEO_AGE_HOURS)
         
         for entry in entries:
             video_id_elem = entry.find('yt:videoId', ns)
@@ -199,7 +307,10 @@ def check_rss_feed(channel_id):
             published_str = published_elem.text
             channel_name = author_elem.text if author_elem is not None else 'Unknown'
             
-            published = datetime.fromisoformat(published_str.replace('Z', '+00:00')).replace(tzinfo=None)
+            try:
+                published = datetime.fromisoformat(published_str.replace('Z', '+00:00')).replace(tzinfo=None)
+            except:
+                continue
             
             if published > cutoff_time:
                 videos.append({
@@ -212,7 +323,14 @@ def check_rss_feed(channel_id):
                 })
         
         return videos
-    except:
+    except requests.Timeout:
+        print(f"    RSS timeout for {channel_id}")
+        return []
+    except requests.RequestException as e:
+        print(f"    RSS request error for {channel_id}: {e}")
+        return []
+    except Exception as e:
+        print(f"    RSS unexpected error for {channel_id}: {type(e).__name__}: {e}")
         return []
 
 def sync_subscriptions(client, master_sheet, projects):
@@ -241,6 +359,7 @@ def sync_subscriptions(client, master_sheet, projects):
         if subscribed:
             save_subscribed_channels_batch(master_sheet, subscribed)
             print(f"  Successfully subscribed: {len(subscribed)}")
+            log_to_sheet(master_sheet, 'System', 'Push subscriptions', '', f'Subscribed to {len(subscribed)} channels', 'success')
     
     if len(to_unsubscribe) > 0:
         print(f"\n  Unsubscribing from {len(to_unsubscribe)} inactive channels...")
@@ -253,6 +372,7 @@ def sync_subscriptions(client, master_sheet, projects):
         if unsubscribed:
             remove_subscribed_channels(master_sheet, unsubscribed)
             print(f"  Successfully unsubscribed: {len(unsubscribed)}")
+            log_to_sheet(master_sheet, 'System', 'Push unsubscriptions', '', f'Unsubscribed from {len(unsubscribed)} channels', 'success')
     
     if len(to_subscribe) == 0 and len(to_unsubscribe) == 0:
         print("  No changes needed")
@@ -262,20 +382,26 @@ def rss_fallback_check(client, projects, published_videos):
     
     all_channels = get_all_active_channels(client, projects)
     
-    print(f"  Checking ALL {len(all_channels)} channels via Cloudflare Worker...")
+    print(f"  Checking {len(all_channels)} channels via Cloudflare Worker...")
+    print(f"  Looking for videos from last {MAX_VIDEO_AGE_HOURS} hours ({MAX_VIDEO_AGE_HOURS//24} days)")
     
     new_videos = []
     success_count = 0
     failed_count = 0
+    videos_found_count = 0
     
     for i, (channel_id, channel_info) in enumerate(all_channels.items()):
         if i > 0 and i % 10 == 0:
-            print(f"  Progress: {i}/{len(all_channels)}")
+            print(f"  Progress: {i}/{len(all_channels)} (Success: {success_count}, Videos: {videos_found_count})")
         
         videos = check_rss_feed(channel_id)
         
-        if videos:
-            success_count += 1
+        if videos is not None:
+            if len(videos) > 0:
+                success_count += 1
+                videos_found_count += len(videos)
+            else:
+                success_count += 1
         else:
             failed_count += 1
         
@@ -289,10 +415,12 @@ def rss_fallback_check(client, projects, published_videos):
                         new_videos.append(video)
                         break
     
-    print(f"  Checked {len(all_channels)} channels:")
-    print(f"    Success: {success_count}")
+    print(f"\n  RSS Check Results:")
+    print(f"    Channels checked: {len(all_channels)}")
+    print(f"    Successful responses: {success_count}")
     print(f"    Failed: {failed_count}")
-    print(f"    Found {len(new_videos)} new videos")
+    print(f"    Total videos found in feeds: {videos_found_count}")
+    print(f"    New unpublished videos: {len(new_videos)}")
     
     return new_videos
 
@@ -371,24 +499,26 @@ def save_video_to_global(sheet, video, project, tg_message_id=None, error=None):
     except Exception as e:
         print(f"    Error saving to global: {e}")
 
-def get_video_info(video_id):
-    try:
-        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
-        response = requests.get(oembed_url, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            return {
-                'title': data.get('title', 'Unknown'),
-                'channel': data.get('author_name', 'Unknown')
-            }
-    except:
-        pass
+def should_filter_video(video_info, project):
+    if not video_info:
+        return False, "API info unavailable"
     
-    return {
-        'title': f"Video {video_id}",
-        'channel': 'Unknown'
-    }
+    if FILTER_SHORTS and video_info.get('is_short'):
+        return True, "Filtered: Short video"
+    
+    if FILTER_LIVE and video_info.get('is_live'):
+        return True, "Filtered: Live stream"
+    
+    if video_info.get('is_upcoming'):
+        return True, "Filtered: Upcoming/Premiere"
+    
+    if project.get('stop_words'):
+        title_lower = video_info['title'].lower()
+        for stop_word in project['stop_words']:
+            if stop_word and stop_word in title_lower:
+                return True, f"Filtered: Stop word '{stop_word}'"
+    
+    return False, ""
 
 def format_message(template, video, channel_info):
     if not template:
@@ -424,10 +554,16 @@ def send_to_telegram(bot_token, channel_id, message):
         return None
 
 def main():
-    print("Starting...")
+    print("="*60)
+    print("TOPUS - YouTube to Telegram Publisher")
+    print("="*60)
+    print(f"Started at: {datetime.utcnow().isoformat()}Z")
     
     client = authenticate_google_sheets()
     master_sheet = client.open_by_key(SPREADSHEET_ID)
+    
+    print("\nLoading settings...")
+    settings = load_settings(master_sheet)
     
     projects = load_projects(master_sheet)
     
@@ -441,12 +577,16 @@ def main():
     
     total_found = 0
     total_published = 0
+    total_filtered = 0
+    total_failed = 0
     
     for project in projects:
-        print(f"\nProcessing: {project['name']}")
+        print(f"\n{'='*60}")
+        print(f"Processing project: {project['name']}")
+        print(f"{'='*60}")
         
         yt_channels = load_youtube_channels(client, project)
-        print(f"  Channels found: {len(yt_channels)}")
+        print(f"  Active channels: {len(yt_channels)}")
         
         for event in push_events:
             if event['channel_id'] not in yt_channels:
@@ -458,18 +598,35 @@ def main():
             
             total_found += 1
             
-            video_info = get_video_info(event['video_id'])
+            video_info_api = get_video_info_from_api(event['video_id'])
+            
+            if not video_info_api:
+                print(f"  Could not get API info for {event['video_id']}")
+                mark_push_event_processed(master_sheet, event['row_index'], project['name'])
+                continue
+            
             channel_info = yt_channels[event['channel_id']]
             
             video = {
                 'video_id': event['video_id'],
-                'title': video_info['title'],
+                'title': video_info_api['title'],
                 'url': f"https://www.youtube.com/watch?v={event['video_id']}",
-                'channel': video_info['channel'],
+                'channel': video_info_api['channel'],
                 'channel_id': event['channel_id']
             }
             
-            print(f"  Publishing: {video['title'][:50]}...")
+            should_filter, filter_reason = should_filter_video(video_info_api, project)
+            if should_filter:
+                print(f"  Skipped: {video['title'][:50]}...")
+                print(f"     Reason: {filter_reason}")
+                log_to_sheet(master_sheet, project['name'], 'Video filtered', video['video_id'], filter_reason, 'filtered')
+                save_video_to_global(master_sheet, video, project, error=filter_reason)
+                published_videos.add(video['video_id'])
+                mark_push_event_processed(master_sheet, event['row_index'], project['name'])
+                total_filtered += 1
+                continue
+            
+            print(f"  Publishing (Push): {video['title'][:50]}...")
             
             template = channel_info.get('template') or project['default_template']
             message = format_message(template, video, channel_info)
@@ -481,15 +638,18 @@ def main():
             )
             
             if tg_message_id:
-                print(f"    Published!")
+                print(f"     Success! Message ID: {tg_message_id}")
+                log_to_sheet(master_sheet, project['name'], 'Video published', video['video_id'], f"TG msg: {tg_message_id}", 'success')
                 save_video_to_global(master_sheet, video, project, tg_message_id)
                 published_videos.add(video['video_id'])
                 mark_push_event_processed(master_sheet, event['row_index'], project['name'])
                 total_published += 1
             else:
-                print(f"    Failed!")
+                print(f"     Failed to publish")
+                log_to_sheet(master_sheet, project['name'], 'Publish failed', video['video_id'], 'Telegram API error', 'error')
                 save_video_to_global(master_sheet, video, project, error="Telegram send failed")
                 mark_push_event_processed(master_sheet, event['row_index'], project['name'])
+                total_failed += 1
     
     if len(push_events) == 0:
         rss_videos = rss_fallback_check(client, projects, published_videos)
@@ -499,6 +659,22 @@ def main():
             
             project = video['project']
             channel_info = video['channel_info']
+            
+            video_info_api = get_video_info_from_api(video['video_id'])
+            
+            if video_info_api:
+                video['title'] = video_info_api['title']
+                video['channel'] = video_info_api['channel']
+                
+                should_filter, filter_reason = should_filter_video(video_info_api, project)
+                if should_filter:
+                    print(f"  Skipped: {video['title'][:50]}...")
+                    print(f"     Reason: {filter_reason}")
+                    log_to_sheet(master_sheet, project['name'], 'Video filtered', video['video_id'], filter_reason, 'filtered')
+                    save_video_to_global(master_sheet, video, project, error=filter_reason)
+                    published_videos.add(video['video_id'])
+                    total_filtered += 1
+                    continue
             
             print(f"  Publishing (RSS): {video['title'][:50]}...")
             
@@ -512,18 +688,25 @@ def main():
             )
             
             if tg_message_id:
-                print(f"    Published!")
+                print(f"     Success! Message ID: {tg_message_id}")
+                log_to_sheet(master_sheet, project['name'], 'Video published', video['video_id'], f"TG msg: {tg_message_id}", 'success')
                 save_video_to_global(master_sheet, video, project, tg_message_id)
                 published_videos.add(video['video_id'])
                 total_published += 1
             else:
-                print(f"    Failed!")
+                print(f"     Failed to publish")
+                log_to_sheet(master_sheet, project['name'], 'Publish failed', video['video_id'], 'Telegram API error', 'error')
                 save_video_to_global(master_sheet, video, project, error="Telegram send failed")
+                total_failed += 1
     
-    print(f"\nSummary:")
+    print(f"\n{'='*60}")
+    print(f"Summary:")
     print(f"  Videos found: {total_found}")
     print(f"  Published: {total_published}")
-    print("\n✅ Done!")
+    print(f"  Filtered: {total_filtered}")
+    print(f"  Failed: {total_failed}")
+    print(f"{'='*60}")
+    print("\nDone!")
 
 if __name__ == "__main__":
     main()
