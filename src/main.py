@@ -38,8 +38,19 @@ def load_settings(sheet):
         
         settings = {}
         for row in records:
-            key = row.get('Параметр', '').strip()
-            value = row.get('Значение', '').strip()
+            key = row.get('Параметр', '')
+            value = row.get('Значение', '')
+            
+            if isinstance(key, str):
+                key = key.strip()
+            else:
+                key = str(key).strip()
+            
+            if isinstance(value, str):
+                value = value.strip()
+            else:
+                value = str(value).strip()
+            
             if key and value:
                 settings[key] = value
         
@@ -260,7 +271,7 @@ def get_video_info_from_api(video_id):
         print(f"    API exception: {e}")
         return None
 
-def check_rss_feed(channel_id):
+def check_rss_feed(channel_id, debug_first=False):
     try:
         time.sleep(0.2)
         
@@ -268,19 +279,26 @@ def check_rss_feed(channel_id):
         response = requests.get(url, timeout=15)
         
         if response.status_code != 200:
-            print(f"    RSS error for {channel_id}: HTTP {response.status_code}")
+            if debug_first:
+                print(f"    RSS HTTP {response.status_code} for {channel_id}")
             return []
         
         if len(response.content) == 0:
-            print(f"    RSS error for {channel_id}: Empty response")
+            if debug_first:
+                print(f"    RSS empty response for {channel_id}")
             return []
+        
+        if debug_first:
+            print(f"\n    RSS Response preview for {channel_id}:")
+            print(f"    {response.text[:500]}")
+            print()
         
         from xml.etree import ElementTree as ET
         try:
             root = ET.fromstring(response.content)
         except ET.ParseError as e:
-            print(f"    RSS parse error for {channel_id}: {e}")
-            print(f"    Response preview: {response.text[:200]}")
+            if debug_first:
+                print(f"    RSS parse error: {e}")
             return []
         
         ns = {
@@ -290,8 +308,14 @@ def check_rss_feed(channel_id):
         
         entries = root.findall('atom:entry', ns)
         
+        if debug_first:
+            print(f"    Found {len(entries)} total entries in feed")
+        
         videos = []
         cutoff_time = datetime.utcnow() - timedelta(hours=MAX_VIDEO_AGE_HOURS)
+        
+        if debug_first:
+            print(f"    Cutoff time: {cutoff_time.isoformat()}")
         
         for entry in entries:
             video_id_elem = entry.find('yt:videoId', ns)
@@ -310,7 +334,14 @@ def check_rss_feed(channel_id):
             try:
                 published = datetime.fromisoformat(published_str.replace('Z', '+00:00')).replace(tzinfo=None)
             except:
+                if debug_first:
+                    print(f"    Failed to parse date: {published_str}")
                 continue
+            
+            if debug_first:
+                print(f"    Video: {title[:40]}")
+                print(f"      Published: {published.isoformat()}")
+                print(f"      Age check: {published} > {cutoff_time} = {published > cutoff_time}")
             
             if published > cutoff_time:
                 videos.append({
@@ -322,15 +353,21 @@ def check_rss_feed(channel_id):
                     'published': published.isoformat()
                 })
         
+        if debug_first:
+            print(f"    Videos within time window: {len(videos)}\n")
+        
         return videos
     except requests.Timeout:
-        print(f"    RSS timeout for {channel_id}")
+        if debug_first:
+            print(f"    RSS timeout for {channel_id}")
         return []
     except requests.RequestException as e:
-        print(f"    RSS request error for {channel_id}: {e}")
+        if debug_first:
+            print(f"    RSS request error: {e}")
         return []
     except Exception as e:
-        print(f"    RSS unexpected error for {channel_id}: {type(e).__name__}: {e}")
+        if debug_first:
+            print(f"    RSS unexpected error: {type(e).__name__}: {e}")
         return []
 
 def sync_subscriptions(client, master_sheet, projects):
@@ -390,11 +427,15 @@ def rss_fallback_check(client, projects, published_videos):
     failed_count = 0
     videos_found_count = 0
     
-    for i, (channel_id, channel_info) in enumerate(all_channels.items()):
+    channel_list = list(all_channels.items())
+    
+    for i, (channel_id, channel_info) in enumerate(channel_list):
+        debug_first = (i == 0)
+        
         if i > 0 and i % 10 == 0:
             print(f"  Progress: {i}/{len(all_channels)} (Success: {success_count}, Videos: {videos_found_count})")
         
-        videos = check_rss_feed(channel_id)
+        videos = check_rss_feed(channel_id, debug_first=debug_first)
         
         if videos is not None:
             if len(videos) > 0:
@@ -696,17 +737,4 @@ def main():
             else:
                 print(f"     Failed to publish")
                 log_to_sheet(master_sheet, project['name'], 'Publish failed', video['video_id'], 'Telegram API error', 'error')
-                save_video_to_global(master_sheet, video, project, error="Telegram send failed")
-                total_failed += 1
-    
-    print(f"\n{'='*60}")
-    print(f"Summary:")
-    print(f"  Videos found: {total_found}")
-    print(f"  Published: {total_published}")
-    print(f"  Filtered: {total_filtered}")
-    print(f"  Failed: {total_failed}")
-    print(f"{'='*60}")
-    print("\nDone!")
-
-if __name__ == "__main__":
-    main()
+                save_video_to_global(master_sheet, video, project, error
