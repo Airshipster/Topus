@@ -61,15 +61,35 @@ def main():
         title_elem = entry.find('atom:title', ns)
         published_elem = entry.find('atom:published', ns)
         
+        print(f"\n[{idx}] DEBUG:")
+        print(f"    video_id found: {video_id_elem is not None}")
+        print(f"    title found: {title_elem is not None}")
+        print(f"    published found: {published_elem is not None}")
+        
+        if video_id_elem is None:
+            print(f"    Trying without namespace...")
+            video_id_elem = entry.find('videoId')
+        
+        if title_elem is None:
+            title_elem = entry.find('title')
+        
+        if published_elem is None:
+            published_elem = entry.find('published')
+        
+        print(f"    After retry:")
+        print(f"    video_id: {video_id_elem is not None}")
+        print(f"    title: {title_elem is not None}")
+        print(f"    published: {published_elem is not None}")
+        
         if not all([video_id_elem, title_elem, published_elem]):
-            print(f"\n[{idx}] SKIPPED - missing data")
+            print(f"    SKIPPED - still missing data")
             continue
         
         video_id = video_id_elem.text
         title = title_elem.text
         published_str = published_elem.text
         
-        print(f"\n[{idx}] {title[:55]}")
+        print(f"\n    Title: {title[:55]}")
         print(f"    ID: {video_id}")
         print(f"    Raw date: {published_str}")
         
