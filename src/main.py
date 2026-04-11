@@ -62,6 +62,7 @@ def main():
         published_elem = entry.find('atom:published', ns)
         
         if not all([video_id_elem, title_elem, published_elem]):
+            print(f"\n[{idx}] SKIPPED - missing data")
             continue
         
         video_id = video_id_elem.text
@@ -70,7 +71,7 @@ def main():
         
         print(f"\n[{idx}] {title[:55]}")
         print(f"    ID: {video_id}")
-        print(f"    Published (raw): {published_str}")
+        print(f"    Raw date: {published_str}")
         
         try:
             if published_str.endswith('Z'):
@@ -84,28 +85,28 @@ def main():
             age_hours = age_seconds / 3600
             age_days = age_hours / 24
             
-            print(f"    Age: {age_hours:.1f} hours = {age_days:.1f} days")
+            print(f"    Age: {age_hours:.1f}h = {age_days:.1f}d")
             
             passes = published > cutoff_time
             
             if passes:
-                print(f"    ✅ PASSES (within {MAX_VIDEO_AGE_HOURS}h window)")
+                print(f"    ✅ PASSES filter")
                 passed += 1
             else:
-                print(f"    ❌ FAILS (too old)")
+                print(f"    ❌ FAILS filter (too old)")
                 failed += 1
             
         except Exception as e:
-            print(f"    ⚠️  ERROR parsing: {e}")
+            print(f"    ⚠️  ERROR: {e}")
             failed += 1
     
     print("\n" + "="*60)
     print("SUMMARY:")
     print("="*60)
-    print(f"Total videos in feed: {len(entries)}")
-    print(f"Passed time filter: {passed}")
-    print(f"Failed time filter: {failed}")
-    print(f"\nTime window: {MAX_VIDEO_AGE_HOURS} hours ({MAX_VIDEO_AGE_HOURS/24:.1f} days)")
+    print(f"Total videos: {len(entries)}")
+    print(f"Passed: {passed}")
+    print(f"Failed: {failed}")
+    print(f"Window: {MAX_VIDEO_AGE_HOURS}h ({MAX_VIDEO_AGE_HOURS/24:.1f}d)")
     print("="*60)
 
 if __name__ == "__main__":
