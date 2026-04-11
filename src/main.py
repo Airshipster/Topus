@@ -61,37 +61,28 @@ def main():
         title_elem = entry.find('atom:title', ns)
         published_elem = entry.find('atom:published', ns)
         
-        print(f"\n[{idx}] DEBUG:")
-        print(f"    video_id found: {video_id_elem is not None}")
-        print(f"    title found: {title_elem is not None}")
-        print(f"    published found: {published_elem is not None}")
+        print(f"\n[{idx}] Elements found: video={video_id_elem is not None}, title={title_elem is not None}, pub={published_elem is not None}")
         
-        if video_id_elem is None:
-            print(f"    Trying without namespace...")
-            video_id_elem = entry.find('videoId')
-        
-        if title_elem is None:
-            title_elem = entry.find('title')
-        
-        if published_elem is None:
-            published_elem = entry.find('published')
-        
-        print(f"    After retry:")
-        print(f"    video_id: {video_id_elem is not None}")
-        print(f"    title: {title_elem is not None}")
-        print(f"    published: {published_elem is not None}")
-        
-        if not all([video_id_elem, title_elem, published_elem]):
-            print(f"    SKIPPED - still missing data")
+        if video_id_elem is not None and video_id_elem.text:
+            video_id = video_id_elem.text
+            print(f"    Video ID: {video_id}")
+        else:
+            print(f"    Video ID: MISSING or EMPTY")
             continue
         
-        video_id = video_id_elem.text
-        title = title_elem.text
-        published_str = published_elem.text
+        if title_elem is not None and title_elem.text:
+            title = title_elem.text
+            print(f"    Title: {title[:55]}")
+        else:
+            print(f"    Title: MISSING or EMPTY")
+            continue
         
-        print(f"\n    Title: {title[:55]}")
-        print(f"    ID: {video_id}")
-        print(f"    Raw date: {published_str}")
+        if published_elem is not None and published_elem.text:
+            published_str = published_elem.text
+            print(f"    Raw date: {published_str}")
+        else:
+            print(f"    Published: MISSING or EMPTY")
+            continue
         
         try:
             if published_str.endswith('Z'):
@@ -110,10 +101,10 @@ def main():
             passes = published > cutoff_time
             
             if passes:
-                print(f"    ✅ PASSES filter")
+                print(f"    ✅ PASSES")
                 passed += 1
             else:
-                print(f"    ❌ FAILS filter (too old)")
+                print(f"    ❌ TOO OLD")
                 failed += 1
             
         except Exception as e:
@@ -123,7 +114,7 @@ def main():
     print("\n" + "="*60)
     print("SUMMARY:")
     print("="*60)
-    print(f"Total videos: {len(entries)}")
+    print(f"Total: {len(entries)}")
     print(f"Passed: {passed}")
     print(f"Failed: {failed}")
     print(f"Window: {MAX_VIDEO_AGE_HOURS}h ({MAX_VIDEO_AGE_HOURS/24:.1f}d)")
