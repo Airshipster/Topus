@@ -363,6 +363,7 @@ def sync_subscriptions(client, master_sheet, projects):
         if subscribed:
             save_subscribed_channels_batch(master_sheet, subscribed)
             print(f"  Successfully subscribed: {len(subscribed)}")
+            log_to_sheet(master_sheet, 'System', 'Push subscriptions', '', f'Subscribed to {len(subscribed)} channels', 'success')
     
     if len(to_unsubscribe) > 0:
         print(f"  Unsubscribing from {len(to_unsubscribe)} inactive channels...")
@@ -375,6 +376,7 @@ def sync_subscriptions(client, master_sheet, projects):
         if unsubscribed:
             remove_subscribed_channels(master_sheet, unsubscribed)
             print(f"  Successfully unsubscribed: {len(unsubscribed)}")
+            log_to_sheet(master_sheet, 'System', 'Push unsubscriptions', '', f'Unsubscribed from {len(unsubscribed)} channels', 'success')
     
     if len(to_subscribe) == 0 and len(to_unsubscribe) == 0:
         print("  No changes needed")
@@ -461,7 +463,7 @@ def mark_push_event_processed(sheet, row_index, project_name):
     except Exception as e:
         print(f"  Error marking event: {e}")
 
-def save_video_to_global(sheet, video, project, tg_message_id=None, error=None):
+def save_video_to_global(sheet, video, project, video_published_date, tg_message_id=None, error=None):
     try:
         worksheet = sheet.worksheet(SHEET_NAME_VIDEOS)
         
@@ -472,10 +474,8 @@ def save_video_to_global(sheet, video, project, tg_message_id=None, error=None):
             video.get('channel', ''),
             video['channel_id'],
             project['name'],
+            video_published_date,
             datetime.utcnow().isoformat(),
-            '',
-            '',
-            '',
             '1' if tg_message_id else '0',
             str(tg_message_id) if tg_message_id else '',
             datetime.utcnow().isoformat() if tg_message_id else '',
@@ -602,11 +602,12 @@ def main():
                 'channel_id': event['channel_id']
             }
             
+            video_published_date = video_info_api['published']
+            
             should_filter, filter_reason = should_filter_video(video_info_api, project)
             if should_filter:
                 print(f"  Filtered: {video['title'][:50]} ({filter_reason})")
                 log_to_sheet(master_sheet, project['name'], 'Video filtered', video['video_id'], filter_reason, 'filtered')
-                save_video_to_global(master_sheet, video, project, error=filter_reason)
                 published_videos.add(video['video_id'])
                 mark_push_event_processed(master_sheet, event['row_index'], project['name'])
                 total_filtered += 1
@@ -626,71 +627,12 @@ def main():
             if tg_message_id:
                 print(f"    ✓ Published (msg: {tg_message_id})")
                 log_to_sheet(master_sheet, project['name'], 'Video published', video['video_id'], f"Telegram msg: {tg_message_id}", 'success')
-                save_video_to_global(master_sheet, video, project, tg_message_id)
+                save_video_to_global(master_sheet, video, project, video_published_date, tg_message_id)
                 published_videos.add(video['video_id'])
                 mark_push_event_processed(master_sheet, event['row_index'], project['name'])
                 total_published += 1
             else:
                 print(f"    ✗ Failed")
                 log_to_sheet(master_sheet, project['name'], 'Publish failed', video['video_id'], 'Telegram error', 'error')
-                save_video_to_global(master_sheet, video, project, error="Telegram send failed")
-                mark_push_event_processed(master_sheet, event['row_index'], project['name'])
-                total_failed += 1
-    
-    if len(push_events) == 0:
-        rss_videos = rss_fallback_check(client, projects, published_videos)
-        
-        for video in rss_videos:
-            total_found += 1
-            
-            project = video['project']
-            channel_info = video['channel_info']
-            
-            video_info_api = get_video_info_from_api(video['video_id'])
-            
-            if video_info_api:
-                video['title'] = video_info_api['title']
-                video['channel'] = video_info_api['channel']
-                
-                should_filter, filter_reason = should_filter_video(video_info_api, project)
-                if should_filter:
-                    print(f"  Filtered: {video['title'][:50]} ({filter_reason})")
-                    log_to_sheet(master_sheet, project['name'], 'Video filtered', video['video_id'], filter_reason, 'filtered')
-                    save_video_to_global(master_sheet, video, project, error=filter_reason)
-                    published_videos.add(video['video_id'])
-                    total_filtered += 1
-                    continue
-            
-            print(f"  Publishing: {video['title'][:50]}...")
-            
-            template = channel_info.get('template') or project['default_template']
-            message = format_message(template, video, channel_info)
-            
-            tg_message_id = send_to_telegram(
-                project['bot_token'],
-                project['channel_id'],
-                message
-            )
-            
-            if tg_message_id:
-                print(f"    ✓ Published (msg: {tg_message_id})")
-                log_to_sheet(master_sheet, project['name'], 'Video published', video['video_id'], f"Telegram msg: {tg_message_id}", 'success')
-                save_video_to_global(master_sheet, video, project, tg_message_id)
-                published_videos.add(video['video_id'])
-                total_published += 1
-            else:
-                print(f"    ✗ Failed")
-                log_to_sheet(master_sheet, project['name'], 'Publish failed', video['video_id'], 'Telegram error', 'error')
-                save_video_to_global(master_sheet, video, project, error="Telegram send failed")
-                total_failed += 1
-    
-    print(f"\n{'='*60}")
-    print(f"Summary:")
-    print(f"  Found: {total_found}")
-    print(f"  Published: {total_published}")
-    print(f"  Filtered: {total_filtered}")
-    print(f"  Failed: {total_failed}")
-    print(f"{'='*60}\n")
-
-if __name__ == "__main__":
-    main()
+                save_video_to_global(master_sheet, video, project, video_published_date, error="Telegram send failed")
+                mark_push_event_processed(master_sheet, event['row
