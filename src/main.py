@@ -528,9 +528,11 @@ def format_message(template, video, channel_info, project):
     - {channel_title} - название канала
     - {video_title} - название видео
     - {video_url} - URL видео
-    - {video_title_link} - название видео (БЕЗ гиперссылки, ссылка будет в конце)
+    - {video_title_link} - название с гиперссылкой <a href="url">title</a>
     - {TG_channel} - Telegram канал проекта из колонки E
-    - [текст] - преобразуется в "текст (@username)" из колонки V
+    - [текст] - гиперссылка <a href="tg_link">текст</a> из колонки V
+    
+    ТРЮК: Добавляем невидимую ссылку на видео в начало для превью
     """
     if not template:
         template = DEFAULT_MESSAGE_TEMPLATE
@@ -543,40 +545,31 @@ def format_message(template, video, channel_info, project):
     message = template.replace('{channel_title}', channel_name)
     message = message.replace('{video_title}', video_title)
     message = message.replace('{video_url}', video_url)
-    
-    # {video_title_link} теперь БЕЗ HTML-ссылки, просто текст
-    # Ссылку на видео добавим в конец
-    message = message.replace('{video_title_link}', video_title)
+    message = message.replace('{video_title_link}', f'<a href="{video_url}">{video_title}</a>')
     
     # {TG_channel} из проекта
     tg_channel_name = project.get('tg_channel', '')
     message = message.replace('{TG_channel}', tg_channel_name)
     
-    # Обработка [текст] → "текст (@username)"
+    # Обработка [текст] → <a href="tg_channel_link">текст</a>
     tg_channel_link = channel_info.get('tg_channel', '').strip()
     
     # Если tg_channel_link НЕ начинается с дефиса и не пустой
     if tg_channel_link and not tg_channel_link.startswith('-'):
-        # Извлекаем username из https://t.me/username
-        username = ''
-        if 't.me/' in tg_channel_link:
-            username = tg_channel_link.split('t.me/')[-1].strip('/')
-        
-        # Находим все [текст] и заменяем на "текст (@username)"
+        # Находим все [текст] и заменяем на <a href="tg_channel_link">текст</a>
         def replace_brackets(match):
             text = match.group(1)
-            if username:
-                return f'{text} (@{username})'
-            else:
-                return text
+            return f'<a href="{tg_channel_link}">{text}</a>'
         
         message = re.sub(r'\[([^\]]+)\]', replace_brackets, message)
     else:
         # Если начинается с дефиса или пусто - просто убираем скобки
         message = re.sub(r'\[([^\]]+)\]', r'\1', message)
     
-    # ДОБАВЛЯЕМ ССЫЛКУ НА ВИДЕО В КОНЕЦ (для правильного сниппета)
-    message = message + f'\n\n{video_url}'
+    # ТРЮК: Добавляем невидимую ссылку на видео В НАЧАЛО для превью
+    # Используем символ Zero Width Space (&#8203;) как текст гиперссылки
+    invisible_link = f'<a href="{video_url}">&#8203;</a>'
+    message = invisible_link + message
     
     return message
 
