@@ -269,7 +269,7 @@ def get_video_info_from_api(video_id):
     except Exception as e:
         return None
 
-def check_rss_feed(channel_id):
+def check_rss_feed(channel_id, debug=False):
     try:
         time.sleep(0.2)
         
@@ -277,15 +277,21 @@ def check_rss_feed(channel_id):
         response = requests.get(url, timeout=15)
         
         if response.status_code != 200:
+            if debug:
+                print(f"    [check_rss_feed] HTTP {response.status_code}")
             return []
         
         if len(response.content) == 0:
+            if debug:
+                print(f"    [check_rss_feed] Empty response")
             return []
         
         from xml.etree import ElementTree as ET
         try:
             root = ET.fromstring(response.content)
-        except ET.ParseError:
+        except ET.ParseError as e:
+            if debug:
+                print(f"    [check_rss_feed] XML parse error: {e}")
             return []
         
         ns = {
@@ -295,19 +301,35 @@ def check_rss_feed(channel_id):
         
         entries = root.findall('atom:entry', ns)
         
+        if debug:
+            print(f"    [check_rss_feed] Found {len(entries)} entries in XML")
+        
         videos = []
         cutoff_time = datetime.utcnow() - timedelta(hours=MAX_VIDEO_AGE_HOURS)
         
-        for entry in entries:
+        if debug:
+            print(f"    [check_rss_feed] Cutoff: {cutoff_time}")
+        
+        for idx, entry in enumerate(entries):
             video_id_elem = entry.find('yt:videoId', ns)
             title_elem = entry.find('atom:title', ns)
             published_elem = entry.find('atom:published', ns)
             author_elem = entry.find('atom:author/atom:name', ns)
             
+            if debug and idx == 0:
+                print(f"    [check_rss_feed] Entry 0: vid={video_id_elem is not None}, tit={title_elem is not None}, pub={published_elem is not None}")
+            
             if not all([video_id_elem, title_elem, published_elem]):
+                if debug and idx == 0:
+                    print(f"    [check_rss_feed] Entry 0: FAILED - missing elements")
                 continue
             
+            if debug and idx == 0:
+                print(f"    [check_rss_feed] Entry 0: vid.text={repr(video_id_elem.text)}, tit.text={repr(title_elem.text)}, pub.text={repr(published_elem.text)}")
+            
             if not all([video_id_elem.text, title_elem.text, published_elem.text]):
+                if debug and idx == 0:
+                    print(f"    [check_rss_feed] Entry 0: FAILED - missing .text values")
                 continue
             
             video_id = video_id_elem.text
@@ -315,15 +337,27 @@ def check_rss_feed(channel_id):
             published_str = published_elem.text
             channel_name = author_elem.text if author_elem is not None and author_elem.text else 'Unknown'
             
+            if debug and idx == 0:
+                print(f"    [check_rss_feed] Entry 0: Parsing date '{published_str}'")
+            
             try:
                 if published_str.endswith('Z'):
                     published = datetime.fromisoformat(published_str.replace('Z', '+00:00')).replace(tzinfo=None)
                 else:
                     published = datetime.fromisoformat(published_str).replace(tzinfo=None)
-            except:
+            except Exception as e:
+                if debug and idx == 0:
+                    print(f"    [check_rss_feed] Entry 0: FAILED - date parse error: {e}")
                 continue
             
+            if debug and idx == 0:
+                print(f"    [check_rss_feed] Entry 0: Parsed={published}, Cutoff={cutoff_time}")
+                print(f"    [check_rss_feed] Entry 0: Check: {published} > {cutoff_time} = {published > cutoff_time}")
+            
             if published > cutoff_time:
+                if debug and idx == 0:
+                    print(f"    [check_rss_feed] Entry 0: PASSED! Adding to list")
+                
                 videos.append({
                     'video_id': video_id,
                     'title': title,
@@ -332,9 +366,17 @@ def check_rss_feed(channel_id):
                     'channel_id': channel_id,
                     'published': published.isoformat()
                 })
+            else:
+                if debug and idx == 0:
+                    print(f"    [check_rss_feed] Entry 0: FAILED - too old")
+        
+        if debug:
+            print(f"    [check_rss_feed] Returning {len(videos)} videos")
         
         return videos
-    except:
+    except Exception as e:
+        if debug:
+            print(f"    [check_rss_feed] Exception: {type(e).__name__}: {e}")
         return []
 
 def sync_subscriptions(client, master_sheet, projects):
@@ -391,66 +433,8 @@ def rss_fallback_check(client, projects, published_videos):
     videos_found_count = 0
     
     for i, (channel_id, channel_info) in enumerate(all_channels.items()):
-        videos = check_rss_feed(channel_id)
+        videos = check_rss_feed(channel_id, debug=(i == 0))
         videos_found_count += len(videos)
-        
-        if i == 0:
-            print(f"\n  DIAGNOSTIC for first channel:")
-            print(f"  Channel ID: {channel_id}")
-            print(f"  Videos returned by check_rss_feed: {len(videos)}")
-            
-            url = f"{CLOUDFLARE_WORKER_URL}/?channel={channel_id}"
-            resp = requests.get(url, timeout=15)
-            print(f"  HTTP: {resp.status_code}, Size: {len(resp.content)} bytes")
-            
-            from xml.etree import ElementTree as ET
-            root = ET.fromstring(resp.content)
-            ns = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
-            entries = root.findall('atom:entry', ns)
-            print(f"  XML entries: {len(entries)}")
-            
-            if len(entries) > 0:
-                entry = entries[0]
-                vid = entry.find('yt:videoId', ns)
-                tit = entry.find('atom:title', ns)
-                pub = entry.find('atom:published', ns)
-                aut = entry.find('atom:author/atom:name', ns)
-                
-                print(f"  First video elements found:")
-                print(f"    video_id elem: {vid is not None}")
-                print(f"    title elem: {tit is not None}")
-                print(f"    published elem: {pub is not None}")
-                print(f"    author elem: {aut is not None}")
-                
-                if vid is not None:
-                    print(f"    video_id.text = {repr(vid.text)}")
-                if tit is not None:
-                    print(f"    title.text = {repr(tit.text)}")
-                if pub is not None:
-                    print(f"    published.text = {repr(pub.text)}")
-                if aut is not None:
-                    print(f"    author.text = {repr(aut.text)}")
-                
-                print(f"\n  Testing datetime parsing:")
-                if pub is not None and pub.text:
-                    pub_str = pub.text
-                    print(f"    Raw: {pub_str}")
-                    try:
-                        if pub_str.endswith('Z'):
-                            parsed = datetime.fromisoformat(pub_str.replace('Z', '+00:00')).replace(tzinfo=None)
-                        else:
-                            parsed = datetime.fromisoformat(pub_str).replace(tzinfo=None)
-                        print(f"    Parsed: {parsed}")
-                        
-                        cutoff = datetime.utcnow() - timedelta(hours=MAX_VIDEO_AGE_HOURS)
-                        age_hours = (datetime.utcnow() - parsed).total_seconds() / 3600
-                        passes = parsed > cutoff
-                        print(f"    Age: {age_hours:.1f}h ({age_hours/24:.1f}d)")
-                        print(f"    Cutoff: {cutoff}")
-                        print(f"    Passes filter: {passes}")
-                    except Exception as e:
-                        print(f"    Parse ERROR: {e}")
-            print()
         
         if i > 0 and i % 20 == 0:
             print(f"  Progress: {i}/{len(all_channels)} (Videos: {videos_found_count})")
