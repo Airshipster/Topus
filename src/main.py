@@ -394,29 +394,62 @@ def rss_fallback_check(client, projects, published_videos):
         videos = check_rss_feed(channel_id)
         videos_found_count += len(videos)
         
-        if i == 0 and len(videos) == 0:
-            print(f"\n  DIAGNOSTIC: First channel returned 0 videos!")
+        if i == 0:
+            print(f"\n  DIAGNOSTIC for first channel:")
             print(f"  Channel ID: {channel_id}")
-            print(f"  Testing RSS directly...")
+            print(f"  Videos returned by check_rss_feed: {len(videos)}")
             
             url = f"{CLOUDFLARE_WORKER_URL}/?channel={channel_id}"
             resp = requests.get(url, timeout=15)
-            print(f"  Status: {resp.status_code}, Size: {len(resp.content)} bytes")
+            print(f"  HTTP: {resp.status_code}, Size: {len(resp.content)} bytes")
             
             from xml.etree import ElementTree as ET
             root = ET.fromstring(resp.content)
             ns = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
             entries = root.findall('atom:entry', ns)
-            print(f"  Entries in XML: {len(entries)}")
+            print(f"  XML entries: {len(entries)}")
             
             if len(entries) > 0:
                 entry = entries[0]
                 vid = entry.find('yt:videoId', ns)
                 tit = entry.find('atom:title', ns)
                 pub = entry.find('atom:published', ns)
-                print(f"  Elements: vid={vid is not None}, title={tit is not None}, pub={pub is not None}")
-                if all([vid, tit, pub]):
-                    print(f"  Text values: vid='{vid.text}', pub='{pub.text}'")
+                aut = entry.find('atom:author/atom:name', ns)
+                
+                print(f"  First video elements found:")
+                print(f"    video_id elem: {vid is not None}")
+                print(f"    title elem: {tit is not None}")
+                print(f"    published elem: {pub is not None}")
+                print(f"    author elem: {aut is not None}")
+                
+                if vid is not None:
+                    print(f"    video_id.text = {repr(vid.text)}")
+                if tit is not None:
+                    print(f"    title.text = {repr(tit.text)}")
+                if pub is not None:
+                    print(f"    published.text = {repr(pub.text)}")
+                if aut is not None:
+                    print(f"    author.text = {repr(aut.text)}")
+                
+                print(f"\n  Testing datetime parsing:")
+                if pub is not None and pub.text:
+                    pub_str = pub.text
+                    print(f"    Raw: {pub_str}")
+                    try:
+                        if pub_str.endswith('Z'):
+                            parsed = datetime.fromisoformat(pub_str.replace('Z', '+00:00')).replace(tzinfo=None)
+                        else:
+                            parsed = datetime.fromisoformat(pub_str).replace(tzinfo=None)
+                        print(f"    Parsed: {parsed}")
+                        
+                        cutoff = datetime.utcnow() - timedelta(hours=MAX_VIDEO_AGE_HOURS)
+                        age_hours = (datetime.utcnow() - parsed).total_seconds() / 3600
+                        passes = parsed > cutoff
+                        print(f"    Age: {age_hours:.1f}h ({age_hours/24:.1f}d)")
+                        print(f"    Cutoff: {cutoff}")
+                        print(f"    Passes filter: {passes}")
+                    except Exception as e:
+                        print(f"    Parse ERROR: {e}")
             print()
         
         if i > 0 and i % 20 == 0:
