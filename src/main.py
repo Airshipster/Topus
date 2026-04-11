@@ -523,4 +523,7 @@ def main():
     print(f"\nSummary:")
     print(f"  Videos found: {total_found}")
     print(f"  Published: {total_published}")
-    print("\
+    print("\n✅ Done!")
+
+if __name__ == "__main__":
+    main()
