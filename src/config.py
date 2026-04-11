@@ -1,31 +1,34 @@
-import os
+name: Check YouTube Videos
 
-# Google Sheets
-SPREADSHEET_ID = "19E8OWIYgAoR-PYrtlyPd0HdoBHWXg7nC_bxB_RVZhKI"
-SHEET_NAME_PROJECTS = "Проекты"
-SHEET_NAME_VIDEOS = "Глобальные видео"
-SHEET_NAME_SETTINGS = "Настройки"
-SHEET_NAME_PUSH_EVENTS = "Push события"
+on:
+  schedule:
+    # ВАЖНО: GitHub Actions может задерживать выполнение!
+    # Используем более частый интервал
+    - cron: '*/5 * * * *'
+  
+  workflow_dispatch:
 
-# Service Account
-SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
-
-# PubSubHubbub
-CALLBACK_URL = "https://script.google.com/macros/s/AKfycbwqySnqlEYAMTTQNkcUy9RU-B6UkikW9o-v5lzLxtthnpOE_52XRZThoe2b1xjIj1Zm/exec"
-
-# Cloudflare Worker (RSS proxy)
-CLOUDFLARE_WORKER_URL = "https://aged-unit-b8f6.elman-ahmadbayov.workers.dev"
-
-# YouTube API (загружается из настроек)
-YOUTUBE_API_KEY = None
-MAX_VIDEO_AGE_HOURS = 168  # 7 дней по умолчанию
-
-# Filters
-FILTER_SHORTS = True
-FILTER_LIVE = True
-
-# Telegram
-TELEGRAM_RATE_LIMIT = 20  # сообщений в секунду
-
-# Default template
-DEFAULT_MESSAGE_TEMPLATE = '🎥 <b>{video_title}</b>\n\n📺 {channel_title}\n🔗 {video_url}'
+jobs:
+  check-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Run main script
+      env:
+        GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      run: |
+        python src/main.py
