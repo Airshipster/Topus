@@ -576,6 +576,7 @@ def main():
         yt_channels = load_youtube_channels(client, project)
         print(f"  Active channels: {len(yt_channels)}")
         
+        # Process push events
         for event in push_events:
             if event['channel_id'] not in yt_channels:
                 continue
@@ -635,4 +636,70 @@ def main():
                 print(f"    ✗ Failed")
                 log_to_sheet(master_sheet, project['name'], 'Publish failed', video['video_id'], 'Telegram error', 'error')
                 save_video_to_global(master_sheet, video, project, video_published_date, error="Telegram send failed")
-                mark_push_event_processed(master_sheet, event['row
+                mark_push_event_processed(master_sheet, event['row_index'], project['name'])
+                total_failed += 1
+            
+            time.sleep(1 / TELEGRAM_RATE_LIMIT)
+    
+    # RSS fallback check
+    rss_videos = rss_fallback_check(client, projects, published_videos)
+    
+    for video in rss_videos:
+        project = video['project']
+        channel_info = video['channel_info']
+        
+        total_found += 1
+        
+        video_info_api = get_video_info_from_api(video['video_id'])
+        
+        if video_info_api:
+            video_published_date = video_info_api['published']
+            should_filter, filter_reason = should_filter_video(video_info_api, project)
+            
+            if should_filter:
+                print(f"  Filtered (RSS): {video['title'][:50]} ({filter_reason})")
+                log_to_sheet(master_sheet, project['name'], 'Video filtered', video['video_id'], f"RSS: {filter_reason}", 'filtered')
+                published_videos.add(video['video_id'])
+                total_filtered += 1
+                continue
+        else:
+            video_published_date = video.get('published', datetime.utcnow().isoformat())
+        
+        print(f"  Publishing (RSS): {video['title'][:50]}...")
+        
+        template = channel_info.get('template') or project['default_template']
+        message = format_message(template, video, channel_info)
+        
+        tg_message_id = send_to_telegram(
+            project['bot_token'],
+            project['channel_id'],
+            message
+        )
+        
+        if tg_message_id:
+            print(f"    ✓ Published (msg: {tg_message_id})")
+            log_to_sheet(master_sheet, project['name'], 'Video published', video['video_id'], f"RSS → Telegram msg: {tg_message_id}", 'success')
+            save_video_to_global(master_sheet, video, project, video_published_date, tg_message_id)
+            published_videos.add(video['video_id'])
+            total_published += 1
+        else:
+            print(f"    ✗ Failed")
+            log_to_sheet(master_sheet, project['name'], 'Publish failed', video['video_id'], 'RSS → Telegram error', 'error')
+            save_video_to_global(master_sheet, video, project, video_published_date, error="Telegram send failed")
+            total_failed += 1
+        
+        time.sleep(1 / TELEGRAM_RATE_LIMIT)
+    
+    # Final summary
+    print(f"\n{'='*60}")
+    print("SUMMARY")
+    print(f"{'='*60}")
+    print(f"Videos found: {total_found}")
+    print(f"  Published: {total_published}")
+    print(f"  Filtered: {total_filtered}")
+    print(f"  Failed: {total_failed}")
+    print(f"\nFinished: {datetime.utcnow().isoformat()}Z")
+    print(f"{'='*60}")
+
+if __name__ == "__main__":
+    main()
