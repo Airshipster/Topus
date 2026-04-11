@@ -313,7 +313,7 @@ def check_rss_feed(channel_id):
             video_id = video_id_elem.text
             title = title_elem.text
             published_str = published_elem.text
-            channel_name = author_elem.text if author_elem is not None else 'Unknown'
+            channel_name = author_elem.text if author_elem is not None and author_elem.text else 'Unknown'
             
             try:
                 if published_str.endswith('Z'):
@@ -391,11 +391,36 @@ def rss_fallback_check(client, projects, published_videos):
     videos_found_count = 0
     
     for i, (channel_id, channel_info) in enumerate(all_channels.items()):
-        if i > 0 and i % 20 == 0:
-            print(f"  Progress: {i}/{len(all_channels)} (Videos: {videos_found_count})")
-        
         videos = check_rss_feed(channel_id)
         videos_found_count += len(videos)
+        
+        if i == 0 and len(videos) == 0:
+            print(f"\n  DIAGNOSTIC: First channel returned 0 videos!")
+            print(f"  Channel ID: {channel_id}")
+            print(f"  Testing RSS directly...")
+            
+            url = f"{CLOUDFLARE_WORKER_URL}/?channel={channel_id}"
+            resp = requests.get(url, timeout=15)
+            print(f"  Status: {resp.status_code}, Size: {len(resp.content)} bytes")
+            
+            from xml.etree import ElementTree as ET
+            root = ET.fromstring(resp.content)
+            ns = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
+            entries = root.findall('atom:entry', ns)
+            print(f"  Entries in XML: {len(entries)}")
+            
+            if len(entries) > 0:
+                entry = entries[0]
+                vid = entry.find('yt:videoId', ns)
+                tit = entry.find('atom:title', ns)
+                pub = entry.find('atom:published', ns)
+                print(f"  Elements: vid={vid is not None}, title={tit is not None}, pub={pub is not None}")
+                if all([vid, tit, pub]):
+                    print(f"  Text values: vid='{vid.text}', pub='{pub.text}'")
+            print()
+        
+        if i > 0 and i % 20 == 0:
+            print(f"  Progress: {i}/{len(all_channels)} (Videos: {videos_found_count})")
         
         for video in videos:
             if video['video_id'] not in published_videos:
