@@ -2,11 +2,14 @@ name: Check YouTube Videos
 
 on:
   schedule:
-    # ВАЖНО: GitHub Actions может задерживать выполнение!
-    # Используем более частый интервал
     - cron: '*/5 * * * *'
   
   workflow_dispatch:
+
+# Предотвращаем одновременные запуски
+concurrency:
+  group: topus-publisher
+  cancel-in-progress: false
 
 jobs:
   check-and-publish:
