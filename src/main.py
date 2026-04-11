@@ -86,21 +86,59 @@ def load_settings(sheet):
 
 def update_youtube_quota(sheet, calls_used):
     """Обновление счётчика YouTube API квоты"""
+    if calls_used == 0:
+        return
+    
     try:
         worksheet = sheet.worksheet(SHEET_NAME_SETTINGS)
         values = worksheet.get_all_values()
         
+        quota_row = None
         for i, row in enumerate(values):
             if i == 0:
                 continue
             if len(row) > 0 and row[0].strip() == 'youtube_quota_used':
-                current_quota = int(row[1]) if row[1].isdigit() else 0
+                quota_row = i + 1
+                current_quota = int(row[1]) if (len(row) > 1 and row[1].isdigit()) else 0
                 new_quota = current_quota + calls_used
-                worksheet.update_cell(i + 1, 2, str(new_quota))
-                print(f"  📊 YouTube API quota updated: {new_quota} units")
+                worksheet.update_cell(quota_row, 2, str(new_quota))
+                print(f"  📊 YouTube API quota updated: {current_quota} + {calls_used} = {new_quota}")
                 return
+        
+        if quota_row is None:
+            print(f"  ⚠️  'youtube_quota_used' row not found, appending...")
+            worksheet.append_row(['youtube_quota_used', str(calls_used), 'Счётчик использованных единиц YouTube API'])
+            print(f"  ✅ Created 'youtube_quota_used' with value: {calls_used}")
+            
     except Exception as e:
-        print(f"  ⚠️  Error updating quota: {e}")
+        print(f"  ❌ Error updating quota: {e}")
+
+
+def update_last_run(sheet):
+    """Обновление времени последнего запуска"""
+    try:
+        worksheet = sheet.worksheet(SHEET_NAME_SETTINGS)
+        values = worksheet.get_all_values()
+        
+        last_run_row = None
+        current_time = datetime.utcnow().isoformat() + 'Z'
+        
+        for i, row in enumerate(values):
+            if i == 0:
+                continue
+            if len(row) > 0 and row[0].strip() == 'last_run':
+                last_run_row = i + 1
+                worksheet.update_cell(last_run_row, 2, current_time)
+                print(f"  🕐 Last run updated: {current_time}")
+                return
+        
+        if last_run_row is None:
+            print(f"  ⚠️  'last_run' row not found, appending...")
+            worksheet.append_row(['last_run', current_time, 'Последний запуск обработки'])
+            print(f"  ✅ Created 'last_run': {current_time}")
+            
+    except Exception as e:
+        print(f"  ❌ Error updating last_run: {e}")
 
 
 def load_projects(sheet):
@@ -288,7 +326,7 @@ def get_video_info_from_api(video_id):
         }
         
         response = requests.get(url, params=params, timeout=10)
-        youtube_api_calls += 1  # Счётчик вызовов
+        youtube_api_calls += 1
         
         if response.status_code != 200:
             return None
@@ -537,11 +575,18 @@ def mark_push_event_processed(sheet, row_index, project_name):
 
 
 def save_video_to_global(sheet, video, project, video_published_date, tg_message_id=None, error=None):
-    """Сохранение видео в глобальную таблицу"""
+    """Сохранение видео в глобальную таблицу с детальным логированием"""
+    
+    video_id = video.get('video_id', 'UNKNOWN')
+    
+    print(f"      🔍 ATTEMPTING SAVE: {video_id}")
+    
     try:
         try:
             worksheet = sheet.worksheet(SHEET_NAME_VIDEOS)
-        except:
+            print(f"      ✓ Worksheet found: {SHEET_NAME_VIDEOS}")
+        except Exception as e:
+            print(f"      ⚠️  Creating worksheet: {SHEET_NAME_VIDEOS}")
             worksheet = sheet.add_worksheet(SHEET_NAME_VIDEOS, rows=10000, cols=13)
             headers = [
                 'Video ID', 'Название видео', 'Ссылка', 'Название канала', 
@@ -550,14 +595,15 @@ def save_video_to_global(sheet, video, project, video_published_date, tg_message
                 'Системный статус', 'Ошибка'
             ]
             worksheet.append_row(headers)
+            print(f"      ✓ Worksheet created with headers")
         
         row = [
-            video['video_id'],
-            video['title'],
-            video['url'],
+            video_id,
+            video.get('title', ''),
+            video.get('url', ''),
             video.get('channel', ''),
-            video['channel_id'],
-            project['name'],
+            video.get('channel_id', ''),
+            project.get('name', ''),
             video_published_date,
             datetime.utcnow().isoformat(),
             '1' if tg_message_id else '0',
@@ -567,16 +613,26 @@ def save_video_to_global(sheet, video, project, video_published_date, tg_message
             error or ''
         ]
         
-        worksheet.append_row(row)
-        print(f"      💾 Saved to global: {video['video_id']}")
+        print(f"      🔍 Row data prepared: {len(row)} columns")
+        
+        worksheet.append_row(row, value_input_option='USER_ENTERED')
+        
+        print(f"      ✅ SAVED TO GLOBAL: {video_id}")
+        
+        return True
         
     except Exception as e:
-        print(f"    ❌ ERROR saving to global: {e}")
-        print(f"       Video ID: {video.get('video_id', 'unknown')}")
+        print(f"      ❌❌❌ ERROR SAVING: {video_id}")
+        print(f"      Error type: {type(e).__name__}")
+        print(f"      Error message: {str(e)}")
+        print(f"      Video data: title={video.get('title', 'N/A')[:50]}, channel_id={video.get('channel_id', 'N/A')}")
+        
         try:
-            log_to_sheet(sheet, project['name'], 'Save error', video.get('video_id', ''), str(e), 'error')
-        except:
-            pass
+            log_to_sheet(sheet, project.get('name', 'Unknown'), 'Save error', video_id, str(e), 'error')
+        except Exception as log_error:
+            print(f"      ⚠️  Failed to log error: {log_error}")
+        
+        return False
 
 
 def should_filter_video(video_info, project):
@@ -619,17 +675,14 @@ def format_message(template, video, channel_info, project):
     video_title = video['title']
     video_url = video['url']
     
-    # Базовые замены
     message = template.replace('{channel_title}', channel_name)
     message = message.replace('{video_title}', video_title)
     message = message.replace('{video_url}', video_url)
     message = message.replace('{video_title_link}', f'<a href="{video_url}">{video_title}</a>')
     
-    # {TG_channel} из проекта (колонка E)
     tg_channel_name = project.get('tg_channel', '')
     message = message.replace('{TG_channel}', tg_channel_name)
     
-    # Обработка [текст] → <a href="tg_link">текст</a>
     tg_channel_link = channel_info.get('tg_channel', '').strip()
     
     if tg_channel_link and not tg_channel_link.startswith('-'):
@@ -641,7 +694,6 @@ def format_message(template, video, channel_info, project):
     else:
         message = re.sub(r'\[([^\]]+)\]', r'\1', message)
     
-    # ТРЮК: Невидимая ссылка на видео в начале для превью
     invisible_link = f'<a href="{video_url}">\u200b</a>'
     message = invisible_link + message
     
@@ -695,6 +747,7 @@ def main():
     total_published = 0
     total_filtered = 0
     total_failed = 0
+    total_save_errors = 0
     
     for project in projects:
         print(f"\n{'='*60}")
@@ -706,7 +759,6 @@ def main():
         
         # Process push events
         for event in push_events:
-            # ВАЖНО: проверяем что канал принадлежит ЭТОМУ проекту
             if event['channel_id'] not in yt_channels:
                 continue
             
@@ -758,10 +810,16 @@ def main():
             if tg_message_id:
                 print(f"    ✅ Published (msg: {tg_message_id})")
                 log_to_sheet(master_sheet, project['name'], 'Video published', video['video_id'], f"Telegram msg: {tg_message_id}", 'success')
-                save_video_to_global(master_sheet, video, project, video_published_date, tg_message_id)
-                published_videos.add(video['video_id'])
+                
+                save_success = save_video_to_global(master_sheet, video, project, video_published_date, tg_message_id)
+                if save_success:
+                    published_videos.add(video['video_id'])
+                    total_published += 1
+                else:
+                    total_save_errors += 1
+                    print(f"    ⚠️⚠️⚠️  VIDEO PUBLISHED BUT NOT SAVED TO TABLE!")
+                
                 mark_push_event_processed(master_sheet, event['row_index'], project['name'])
-                total_published += 1
             else:
                 print(f"    ❌ Failed to publish")
                 log_to_sheet(master_sheet, project['name'], 'Publish failed', video['video_id'], 'Telegram error', 'error')
@@ -771,7 +829,7 @@ def main():
             
             time.sleep(1 / TELEGRAM_RATE_LIMIT)
         
-        # RSS fallback check - ТОЛЬКО ДЛЯ ЭТОГО ПРОЕКТА!
+        # RSS fallback check
         rss_videos = rss_fallback_check(client, project, published_videos)
         
         for video in rss_videos:
@@ -809,9 +867,14 @@ def main():
             if tg_message_id:
                 print(f"      ✅ Published (msg: {tg_message_id})")
                 log_to_sheet(master_sheet, project['name'], 'Video published', video['video_id'], f"RSS → Telegram msg: {tg_message_id}", 'success')
-                save_video_to_global(master_sheet, video, project, video_published_date, tg_message_id)
-                published_videos.add(video['video_id'])
-                total_published += 1
+                
+                save_success = save_video_to_global(master_sheet, video, project, video_published_date, tg_message_id)
+                if save_success:
+                    published_videos.add(video['video_id'])
+                    total_published += 1
+                else:
+                    total_save_errors += 1
+                    print(f"      ⚠️⚠️⚠️  VIDEO PUBLISHED BUT NOT SAVED TO TABLE!")
             else:
                 print(f"      ❌ Failed to publish")
                 log_to_sheet(master_sheet, project['name'], 'Publish failed', video['video_id'], 'RSS → Telegram error', 'error')
@@ -820,9 +883,11 @@ def main():
             
             time.sleep(1 / TELEGRAM_RATE_LIMIT)
     
-    # Обновление YouTube API квоты
+    # Обновление метаданных
+    print("\n📝 Updating metadata...")
     if youtube_api_calls > 0:
         update_youtube_quota(master_sheet, youtube_api_calls)
+    update_last_run(master_sheet)
     
     # Final summary
     print(f"\n{'='*60}")
@@ -832,6 +897,7 @@ def main():
     print(f"  ✅ Published: {total_published}")
     print(f"  🚫 Filtered: {total_filtered}")
     print(f"  ❌ Failed: {total_failed}")
+    print(f"  ⚠️  Save errors: {total_save_errors}")
     print(f"  📊 YouTube API calls: {youtube_api_calls}")
     print(f"\nFinished: {datetime.utcnow().isoformat()}Z")
     print(f"{'='*60}")
