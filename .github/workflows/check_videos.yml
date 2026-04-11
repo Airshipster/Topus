@@ -2,15 +2,16 @@ name: Check YouTube Videos
 
 on:
   schedule:
-    # Запуск каждые 5 минут
+    # ВАЖНО: GitHub Actions может задерживать выполнение!
+    # Используем более частый интервал
     - cron: '*/5 * * * *'
   
-  # ДОБАВЛЯЕМ РУЧНОЙ ЗАПУСК
   workflow_dispatch:
 
 jobs:
   check-and-publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     
     steps:
     - name: Checkout repository
