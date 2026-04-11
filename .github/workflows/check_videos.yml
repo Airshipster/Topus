@@ -1,31 +1,33 @@
-import os
+name: Check YouTube Videos
 
-# Google Sheets
-SPREADSHEET_ID = "1g3ys0dcfcVCBzIRaHBMLxpTHE5iW9G9M8eB88cQHGjg"
-SERVICE_ACCOUNT_JSON = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON', '')
+on:
+  schedule:
+    # Запуск каждые 5 минут
+    - cron: '*/5 * * * *'
+  
+  # ДОБАВЛЯЕМ РУЧНОЙ ЗАПУСК
+  workflow_dispatch:
 
-# Sheet names
-SHEET_NAME_PROJECTS = "Проекты"
-SHEET_NAME_VIDEOS = "Глобальные видео"
-SHEET_NAME_SETTINGS = "Настройки"
-SHEET_NAME_PUSH_EVENTS = "Push события"
-
-# YouTube settings
-YOUTUBE_API_KEY = ""  # Загружается из настроек
-MAX_VIDEO_AGE_HOURS = 168  # Загружается из настроек
-
-# Filters
-FILTER_SHORTS = True
-FILTER_LIVE = True
-
-# Telegram
-TELEGRAM_RATE_LIMIT = 1  # сообщений в секунду
-
-# PubSubHubbub
-CALLBACK_URL = "https://script.google.com/macros/s/AKfycbzKEo_example/exec"
-
-# Cloudflare Worker RSS proxy
-CLOUDFLARE_WORKER_URL = "https://topus-rss.example.workers.dev"
-
-# Default message template
-DEFAULT_MESSAGE_TEMPLATE = 'На канале "{channel_title}" опубликовано видео: {video_title_link}\n\nПодписывайтесь на: {TG_channel}'
+jobs:
+  check-and-publish:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Run main script
+      env:
+        GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      run: |
+        python src/main.py
