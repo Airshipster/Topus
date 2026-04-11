@@ -16,12 +16,12 @@ CALLBACK_URL = "https://script.google.com/macros/s/AKfycbwqySnqlEYAMTTQNkcUy9RU-
 # Cloudflare Worker (RSS proxy)
 CLOUDFLARE_WORKER_URL = "https://aged-unit-b8f6.elman-ahmadbayov.workers.dev"
 
-# YouTube API (загружается из настроек)
+# YouTube API
 YOUTUBE_API_KEY = None
-MAX_VIDEO_AGE_HOURS = 168  # 7 дней
+MAX_VIDEO_AGE_HOURS = 168
 
 # Cleanup settings
-CLEANUP_AFTER_DAYS = 7  # Удалять записи старше 7 дней
+CLEANUP_AFTER_DAYS = 7
 
 # Filters
 FILTER_SHORTS = True
@@ -29,6 +29,9 @@ FILTER_LIVE = True
 
 # Telegram
 TELEGRAM_RATE_LIMIT = 20
+
+# Batch settings
+BATCH_SIZE = 20  # Размер батча для записи в Google Sheets
 
 # Default template
 DEFAULT_MESSAGE_TEMPLATE = '🎥 <b>{video_title}</b>\n\n📺 {channel_title}\n🔗 {video_url}'
