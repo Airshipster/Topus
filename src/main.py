@@ -269,7 +269,7 @@ def get_video_info_from_api(video_id):
     except Exception as e:
         return None
 
-def check_rss_feed(channel_id, debug=False):
+def check_rss_feed(channel_id):
     try:
         time.sleep(0.2)
         
@@ -277,21 +277,15 @@ def check_rss_feed(channel_id, debug=False):
         response = requests.get(url, timeout=15)
         
         if response.status_code != 200:
-            if debug:
-                print(f"    [check_rss_feed] HTTP {response.status_code}")
             return []
         
         if len(response.content) == 0:
-            if debug:
-                print(f"    [check_rss_feed] Empty response")
             return []
         
         from xml.etree import ElementTree as ET
         try:
             root = ET.fromstring(response.content)
-        except ET.ParseError as e:
-            if debug:
-                print(f"    [check_rss_feed] XML parse error: {e}")
+        except ET.ParseError:
             return []
         
         ns = {
@@ -301,35 +295,19 @@ def check_rss_feed(channel_id, debug=False):
         
         entries = root.findall('atom:entry', ns)
         
-        if debug:
-            print(f"    [check_rss_feed] Found {len(entries)} entries in XML")
-        
         videos = []
         cutoff_time = datetime.utcnow() - timedelta(hours=MAX_VIDEO_AGE_HOURS)
         
-        if debug:
-            print(f"    [check_rss_feed] Cutoff: {cutoff_time}")
-        
-        for idx, entry in enumerate(entries):
+        for entry in entries:
             video_id_elem = entry.find('yt:videoId', ns)
             title_elem = entry.find('atom:title', ns)
             published_elem = entry.find('atom:published', ns)
             author_elem = entry.find('atom:author/atom:name', ns)
             
-            if debug and idx == 0:
-                print(f"    [check_rss_feed] Entry 0: vid={video_id_elem is not None}, tit={title_elem is not None}, pub={published_elem is not None}")
-            
-            if not all([video_id_elem, title_elem, published_elem]):
-                if debug and idx == 0:
-                    print(f"    [check_rss_feed] Entry 0: FAILED - missing elements")
+            if video_id_elem is None or title_elem is None or published_elem is None:
                 continue
             
-            if debug and idx == 0:
-                print(f"    [check_rss_feed] Entry 0: vid.text={repr(video_id_elem.text)}, tit.text={repr(title_elem.text)}, pub.text={repr(published_elem.text)}")
-            
-            if not all([video_id_elem.text, title_elem.text, published_elem.text]):
-                if debug and idx == 0:
-                    print(f"    [check_rss_feed] Entry 0: FAILED - missing .text values")
+            if not video_id_elem.text or not title_elem.text or not published_elem.text:
                 continue
             
             video_id = video_id_elem.text
@@ -337,27 +315,15 @@ def check_rss_feed(channel_id, debug=False):
             published_str = published_elem.text
             channel_name = author_elem.text if author_elem is not None and author_elem.text else 'Unknown'
             
-            if debug and idx == 0:
-                print(f"    [check_rss_feed] Entry 0: Parsing date '{published_str}'")
-            
             try:
                 if published_str.endswith('Z'):
                     published = datetime.fromisoformat(published_str.replace('Z', '+00:00')).replace(tzinfo=None)
                 else:
                     published = datetime.fromisoformat(published_str).replace(tzinfo=None)
-            except Exception as e:
-                if debug and idx == 0:
-                    print(f"    [check_rss_feed] Entry 0: FAILED - date parse error: {e}")
+            except:
                 continue
             
-            if debug and idx == 0:
-                print(f"    [check_rss_feed] Entry 0: Parsed={published}, Cutoff={cutoff_time}")
-                print(f"    [check_rss_feed] Entry 0: Check: {published} > {cutoff_time} = {published > cutoff_time}")
-            
             if published > cutoff_time:
-                if debug and idx == 0:
-                    print(f"    [check_rss_feed] Entry 0: PASSED! Adding to list")
-                
                 videos.append({
                     'video_id': video_id,
                     'title': title,
@@ -366,17 +332,9 @@ def check_rss_feed(channel_id, debug=False):
                     'channel_id': channel_id,
                     'published': published.isoformat()
                 })
-            else:
-                if debug and idx == 0:
-                    print(f"    [check_rss_feed] Entry 0: FAILED - too old")
-        
-        if debug:
-            print(f"    [check_rss_feed] Returning {len(videos)} videos")
         
         return videos
-    except Exception as e:
-        if debug:
-            print(f"    [check_rss_feed] Exception: {type(e).__name__}: {e}")
+    except:
         return []
 
 def sync_subscriptions(client, master_sheet, projects):
@@ -433,7 +391,7 @@ def rss_fallback_check(client, projects, published_videos):
     videos_found_count = 0
     
     for i, (channel_id, channel_info) in enumerate(all_channels.items()):
-        videos = check_rss_feed(channel_id, debug=(i == 0))
+        videos = check_rss_feed(channel_id)
         videos_found_count += len(videos)
         
         if i > 0 and i % 20 == 0:
