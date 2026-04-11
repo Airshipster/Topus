@@ -110,36 +110,27 @@ def load_youtube_channels(client, project):
         sheet = client.open_by_key(project['sheet_id'])
         worksheet = sheet.worksheet('Список. YouTube')
         
-        # Получаем все значения (отображаемые, не формулы)
         values = worksheet.get_all_values()
         
         channels = {}
         for i, row in enumerate(values):
-            if i == 0:  # Пропускаем заголовок
+            if i == 0:
                 continue
             
             if len(row) < 8:
                 continue
             
-            # Колонка G (индекс 6) - Активен
             status = row[6].strip() if len(row) > 6 else ''
             
-            # 🔵 означает конец активных каналов
             if status == '🔵':
                 break
             
-            # Только активные 🟢
             if status == '🟢':
-                # E (4) - Channel ID
                 channel_id = row[4].strip() if len(row) > 4 else ''
-                # D (3) - Channel Title
                 channel_name = row[3].strip() if len(row) > 3 else ''
-                # U (20) - Шаблон
                 channel_template = row[20].strip() if len(row) > 20 else ''
-                # V (21) - Telegram канал для шаблона
                 tg_channel_link = row[21].strip() if len(row) > 21 else ''
                 
-                # Проверяем что это валидный YouTube канал
                 if channel_id and channel_id.startswith('UC'):
                     channels[channel_id] = {
                         'name': channel_name,
@@ -262,6 +253,7 @@ def get_video_info_from_api(video_id):
         live_details = item.get('liveStreamingDetails', {})
         
         is_short = False
+        duration_seconds = 0
         duration_str = content_details.get('duration', '')
         if duration_str:
             match = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', duration_str)
@@ -269,9 +261,8 @@ def get_video_info_from_api(video_id):
                 hours = int(match.group(1) or 0)
                 minutes = int(match.group(2) or 0)
                 seconds = int(match.group(3) or 0)
-                total_seconds = hours * 3600 + minutes * 60 + seconds
-                # Шортсы - это видео длительностью до 60 секунд
-                if total_seconds <= 60:
+                duration_seconds = hours * 3600 + minutes * 60 + seconds
+                if duration_seconds <= 60:
                     is_short = True
         
         is_live = live_details.get('actualStartTime') is not None
@@ -286,7 +277,7 @@ def get_video_info_from_api(video_id):
             'is_live': is_live,
             'is_upcoming': is_upcoming,
             'duration': duration_str,
-            'duration_seconds': hours * 3600 + minutes * 60 + seconds if duration_str else 0
+            'duration_seconds': duration_seconds
         }
     except Exception as e:
         print(f"  YouTube API error: {e}")
@@ -404,37 +395,36 @@ def sync_subscriptions(client, master_sheet, projects):
     if len(to_subscribe) == 0 and len(to_unsubscribe) == 0:
         print("  No changes needed")
 
-def rss_fallback_check(client, projects, published_videos):
-    print("\nRSS fallback check...")
+def rss_fallback_check(client, project, published_videos):
+    """
+    ИСПРАВЛЕНО: Проверяем RSS только для ЭТОГО конкретного проекта!
+    """
+    print(f"\n  RSS fallback for {project['name']}...")
     
-    all_channels = get_all_active_channels(client, projects)
+    # Загружаем каналы ТОЛЬКО этого проекта
+    project_channels = load_youtube_channels(client, project)
     
-    print(f"  Checking {len(all_channels)} channels")
-    print(f"  Time window: {MAX_VIDEO_AGE_HOURS}h ({MAX_VIDEO_AGE_HOURS//24}d)")
+    print(f"    Checking {len(project_channels)} channels")
+    print(f"    Time window: {MAX_VIDEO_AGE_HOURS}h ({MAX_VIDEO_AGE_HOURS//24}d)")
     
     new_videos = []
     videos_found_count = 0
     
-    for i, (channel_id, channel_info) in enumerate(all_channels.items()):
+    for i, (channel_id, channel_info) in enumerate(project_channels.items()):
         videos = check_rss_feed(channel_id)
         videos_found_count += len(videos)
         
         if i > 0 and i % 20 == 0:
-            print(f"  Progress: {i}/{len(all_channels)} (Videos: {videos_found_count})")
+            print(f"    Progress: {i}/{len(project_channels)} (Videos: {videos_found_count})")
         
         for video in videos:
             if video['video_id'] not in published_videos:
-                # Найдём проект, которому принадлежит этот канал
-                for project in projects:
-                    project_channels = load_youtube_channels(client, project)
-                    if channel_id in project_channels:
-                        video['project'] = project
-                        video['channel_info'] = project_channels[channel_id]  # Берём из проектного листа!
-                        new_videos.append(video)
-                        break
+                video['project'] = project
+                video['channel_info'] = channel_info
+                new_videos.append(video)
     
-    print(f"  Found {videos_found_count} videos total")
-    print(f"  New unpublished: {len(new_videos)}")
+    print(f"    Found {videos_found_count} videos total")
+    print(f"    New unpublished: {len(new_videos)}")
     
     return new_videos
 
@@ -512,26 +502,18 @@ def save_video_to_global(sheet, video, project, video_published_date, tg_message
         print(f"    Error saving to global: {e}")
 
 def should_filter_video(video_info, project):
-    """
-    Проверяет, нужно ли фильтровать видео.
-    Возвращает (True/False, причина)
-    """
     if not video_info:
         return False, ""
     
-    # ФИЛЬТР ШОРТСОВ - проверяем через API
     if FILTER_SHORTS and video_info.get('is_short'):
         return True, f"Short video ({video_info.get('duration_seconds', 0)}s)"
     
-    # ФИЛЬТР СТРИМОВ
     if FILTER_LIVE and video_info.get('is_live'):
         return True, "Live stream"
     
-    # ФИЛЬТР ПРЕМЬЕР/UPCOMING
     if video_info.get('is_upcoming'):
         return True, "Upcoming/Premiere"
     
-    # ФИЛЬТР СТОП-СЛОВ
     if project.get('stop_words'):
         title_lower = video_info['title'].lower()
         for stop_word in project['stop_words']:
@@ -546,9 +528,9 @@ def format_message(template, video, channel_info, project):
     - {channel_title} - название канала
     - {video_title} - название видео
     - {video_url} - URL видео
-    - {video_title_link} - название с гиперссылкой <a href="url">title</a>
+    - {video_title_link} - название видео (БЕЗ гиперссылки, ссылка будет в конце)
     - {TG_channel} - Telegram канал проекта из колонки E
-    - [текст] - гиперссылка на Telegram канал из колонки V (если не начинается с -)
+    - [текст] - преобразуется в "текст (@username)" из колонки V
     """
     if not template:
         template = DEFAULT_MESSAGE_TEMPLATE
@@ -561,26 +543,40 @@ def format_message(template, video, channel_info, project):
     message = template.replace('{channel_title}', channel_name)
     message = message.replace('{video_title}', video_title)
     message = message.replace('{video_url}', video_url)
-    message = message.replace('{video_title_link}', f'<a href="{video_url}">{video_title}</a>')
+    
+    # {video_title_link} теперь БЕЗ HTML-ссылки, просто текст
+    # Ссылку на видео добавим в конец
+    message = message.replace('{video_title_link}', video_title)
     
     # {TG_channel} из проекта
     tg_channel_name = project.get('tg_channel', '')
     message = message.replace('{TG_channel}', tg_channel_name)
     
-    # Обработка [текст] → гиперссылка на Telegram канал
+    # Обработка [текст] → "текст (@username)"
     tg_channel_link = channel_info.get('tg_channel', '').strip()
     
     # Если tg_channel_link НЕ начинается с дефиса и не пустой
     if tg_channel_link and not tg_channel_link.startswith('-'):
-        # Находим все [текст] и заменяем на <a href="tg_channel_link">текст</a>
+        # Извлекаем username из https://t.me/username
+        username = ''
+        if 't.me/' in tg_channel_link:
+            username = tg_channel_link.split('t.me/')[-1].strip('/')
+        
+        # Находим все [текст] и заменяем на "текст (@username)"
         def replace_brackets(match):
             text = match.group(1)
-            return f'<a href="{tg_channel_link}">{text}</a>'
+            if username:
+                return f'{text} (@{username})'
+            else:
+                return text
         
         message = re.sub(r'\[([^\]]+)\]', replace_brackets, message)
     else:
         # Если начинается с дефиса или пусто - просто убираем скобки
         message = re.sub(r'\[([^\]]+)\]', r'\1', message)
+    
+    # ДОБАВЛЯЕМ ССЫЛКУ НА ВИДЕО В КОНЕЦ (для правильного сниппета)
+    message = message + f'\n\n{video_url}'
     
     return message
 
@@ -649,7 +645,6 @@ def main():
             
             total_found += 1
             
-            # ОБЯЗАТЕЛЬНО получаем информацию через API для проверки на шортсы!
             video_info_api = get_video_info_from_api(event['video_id'])
             
             if not video_info_api:
@@ -669,7 +664,6 @@ def main():
             
             video_published_date = video_info_api['published']
             
-            # ПРОВЕРКА ФИЛЬТРОВ (в т.ч. шортсы!)
             should_filter, filter_reason = should_filter_video(video_info_api, project)
             if should_filter:
                 print(f"  🚫 Filtered: {video['title'][:50]} ({filter_reason})")
@@ -705,58 +699,55 @@ def main():
                 total_failed += 1
             
             time.sleep(1 / TELEGRAM_RATE_LIMIT)
-    
-    # RSS fallback check
-    rss_videos = rss_fallback_check(client, projects, published_videos)
-    
-    for video in rss_videos:
-        project = video['project']
-        channel_info = video['channel_info']
         
-        total_found += 1
+        # RSS fallback check - ТЕПЕРЬ ТОЛЬКО ДЛЯ ЭТОГО ПРОЕКТА!
+        rss_videos = rss_fallback_check(client, project, published_videos)
         
-        # ОБЯЗАТЕЛЬНО получаем информацию через API для проверки на шортсы!
-        video_info_api = get_video_info_from_api(video['video_id'])
-        
-        if video_info_api:
-            video_published_date = video_info_api['published']
+        for video in rss_videos:
+            channel_info = video['channel_info']
             
-            # ПРОВЕРКА ФИЛЬТРОВ (в т.ч. шортсы!)
-            should_filter, filter_reason = should_filter_video(video_info_api, project)
+            total_found += 1
             
-            if should_filter:
-                print(f"  🚫 Filtered (RSS): {video['title'][:50]} ({filter_reason})")
-                log_to_sheet(master_sheet, project['name'], 'Video filtered', video['video_id'], f"RSS: {filter_reason}", 'filtered')
+            video_info_api = get_video_info_from_api(video['video_id'])
+            
+            if video_info_api:
+                video_published_date = video_info_api['published']
+                
+                should_filter, filter_reason = should_filter_video(video_info_api, project)
+                
+                if should_filter:
+                    print(f"    🚫 Filtered (RSS): {video['title'][:50]} ({filter_reason})")
+                    log_to_sheet(master_sheet, project['name'], 'Video filtered', video['video_id'], f"RSS: {filter_reason}", 'filtered')
+                    published_videos.add(video['video_id'])
+                    total_filtered += 1
+                    continue
+            else:
+                video_published_date = video.get('published', datetime.utcnow().isoformat())
+            
+            print(f"    📤 Publishing (RSS): {video['title'][:50]}...")
+            
+            template = channel_info.get('template') or project['default_template']
+            message = format_message(template, video, channel_info, project)
+            
+            tg_message_id = send_to_telegram(
+                project['bot_token'],
+                project['channel_id'],
+                message
+            )
+            
+            if tg_message_id:
+                print(f"      ✅ Published (msg: {tg_message_id})")
+                log_to_sheet(master_sheet, project['name'], 'Video published', video['video_id'], f"RSS → Telegram msg: {tg_message_id}", 'success')
+                save_video_to_global(master_sheet, video, project, video_published_date, tg_message_id)
                 published_videos.add(video['video_id'])
-                total_filtered += 1
-                continue
-        else:
-            video_published_date = video.get('published', datetime.utcnow().isoformat())
-        
-        print(f"  📤 Publishing (RSS): {video['title'][:50]}...")
-        
-        template = channel_info.get('template') or project['default_template']
-        message = format_message(template, video, channel_info, project)
-        
-        tg_message_id = send_to_telegram(
-            project['bot_token'],
-            project['channel_id'],
-            message
-        )
-        
-        if tg_message_id:
-            print(f"    ✅ Published (msg: {tg_message_id})")
-            log_to_sheet(master_sheet, project['name'], 'Video published', video['video_id'], f"RSS → Telegram msg: {tg_message_id}", 'success')
-            save_video_to_global(master_sheet, video, project, video_published_date, tg_message_id)
-            published_videos.add(video['video_id'])
-            total_published += 1
-        else:
-            print(f"    ❌ Failed to publish")
-            log_to_sheet(master_sheet, project['name'], 'Publish failed', video['video_id'], 'RSS → Telegram error', 'error')
-            save_video_to_global(master_sheet, video, project, video_published_date, error="Telegram send failed")
-            total_failed += 1
-        
-        time.sleep(1 / TELEGRAM_RATE_LIMIT)
+                total_published += 1
+            else:
+                print(f"      ❌ Failed to publish")
+                log_to_sheet(master_sheet, project['name'], 'Publish failed', video['video_id'], 'RSS → Telegram error', 'error')
+                save_video_to_global(master_sheet, video, project, video_published_date, error="Telegram send failed")
+                total_failed += 1
+            
+            time.sleep(1 / TELEGRAM_RATE_LIMIT)
     
     # Final summary
     print(f"\n{'='*60}")
