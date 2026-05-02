@@ -480,6 +480,59 @@ def get_subscribed_channels(sheet):
         return set()
 
 
+def get_subscription_records(sheet):
+    """Получение подписок вместе со строками и датой обновления"""
+    try:
+        worksheet = sheet.worksheet('Подписки')
+        values = worksheet.get_all_values()
+        records = {}
+
+        for i, row in enumerate(values):
+            if i == 0:
+                continue
+
+            channel_id = row[0].strip() if len(row) > 0 else ''
+            if not channel_id:
+                continue
+
+            records[channel_id] = {
+                'row_index': i + 1,
+                'last_renewed': row[2].strip() if len(row) > 2 else ''
+            }
+
+        return records
+    except:
+        return {}
+
+
+def parse_subscription_date(value):
+    """Парсинг дат подписок из таблицы"""
+    if not value:
+        return None
+
+    try:
+        return datetime.fromisoformat(value.replace('Z', ''))
+    except:
+        return None
+
+
+def get_stale_subscriptions(subscription_records, active_channels):
+    """Каналы, подписку на которые нужно продлить"""
+    cutoff = datetime.utcnow() - timedelta(days=SUBSCRIPTION_RENEW_AFTER_DAYS)
+    stale = set()
+
+    for channel_id in active_channels:
+        record = subscription_records.get(channel_id)
+        if not record:
+            continue
+
+        last_renewed = parse_subscription_date(record.get('last_renewed', ''))
+        if not last_renewed or last_renewed < cutoff:
+            stale.add(channel_id)
+
+    return stale
+
+
 def save_subscribed_channels_batch(sheet, channel_ids):
     """Сохранение подписок на каналы"""
     try:
@@ -493,6 +546,32 @@ def save_subscribed_channels_batch(sheet, channel_ids):
     
     if rows:
         worksheet.append_rows(rows)
+
+
+def update_subscription_renewals_batch(sheet, subscription_records, channel_ids):
+    """Обновление времени продления существующих подписок"""
+    if not channel_ids:
+        return
+
+    try:
+        worksheet = sheet.worksheet('Подписки')
+        timestamp = datetime.utcnow().isoformat()
+        updates = []
+
+        for channel_id in channel_ids:
+            record = subscription_records.get(channel_id)
+            if not record:
+                continue
+
+            updates.append({
+                'range': f'C{record["row_index"]}',
+                'values': [[timestamp]]
+            })
+
+        if updates:
+            worksheet.batch_update(updates)
+    except Exception as e:
+        print(f"  ⚠️  Error updating subscription renewals: {e}")
 
 
 def subscribe_channel(channel_id):
@@ -689,14 +768,18 @@ def sync_subscriptions(client, master_sheet, projects):
     
     active_channels_dict = get_all_active_channels(client, projects)
     active_channels = set(active_channels_dict.keys())
-    subscribed_channels = get_subscribed_channels(master_sheet)
+    subscription_records = get_subscription_records(master_sheet)
+    subscribed_channels = set(subscription_records.keys())
+    stale_channels = get_stale_subscriptions(subscription_records, active_channels)
     
     to_subscribe = active_channels - subscribed_channels
+    to_renew = active_channels & stale_channels
     to_unsubscribe = subscribed_channels - active_channels
     
     print(f"  Active channels: {len(active_channels)}")
     print(f"  Already subscribed: {len(subscribed_channels)}")
     print(f"  New to subscribe: {len(to_subscribe)}")
+    print(f"  To renew: {len(to_renew)}")
     print(f"  To unsubscribe: {len(to_unsubscribe)}")
     
     if len(to_subscribe) > 0:
@@ -710,6 +793,18 @@ def sync_subscriptions(client, master_sheet, projects):
         if subscribed:
             save_subscribed_channels_batch(master_sheet, subscribed)
             print(f"  ✅ Successfully subscribed: {len(subscribed)}")
+
+    if len(to_renew) > 0:
+        print(f"  Renewing {len(to_renew)} existing subscriptions...")
+        renewed = []
+        for channel_id in to_renew:
+            if subscribe_channel(channel_id):
+                renewed.append(channel_id)
+            time.sleep(0.1)
+
+        if renewed:
+            update_subscription_renewals_batch(master_sheet, subscription_records, renewed)
+            print(f"  ✅ Successfully renewed: {len(renewed)}")
     
     if len(to_unsubscribe) > 0:
         print(f"  Unsubscribing from {len(to_unsubscribe)} inactive channels...")
@@ -723,7 +818,7 @@ def sync_subscriptions(client, master_sheet, projects):
             remove_subscribed_channels(master_sheet, unsubscribed)
             print(f"  ✅ Successfully unsubscribed: {len(unsubscribed)}")
     
-    if len(to_subscribe) == 0 and len(to_unsubscribe) == 0:
+    if len(to_subscribe) == 0 and len(to_renew) == 0 and len(to_unsubscribe) == 0:
         print("  ✅ No changes needed")
 
 
