@@ -3,6 +3,8 @@ name: Check YouTube Videos
 on:
   schedule:
     - cron: '*/5 * * * *'
+  repository_dispatch:
+    types: [topus-push]
   
   workflow_dispatch:
 
