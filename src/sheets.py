@@ -456,6 +456,14 @@ def load_settings(sheet):
         if 'max_video_age_hours' in settings:
             config.MAX_VIDEO_AGE_HOURS = int(settings['max_video_age_hours'])
             print(f"  ✅ Max video age: {config.MAX_VIDEO_AGE_HOURS}h ({config.MAX_VIDEO_AGE_HOURS//24}d)")
+
+        if 'max_publish_age_hours' in settings:
+            config.MAX_PUBLISH_AGE_HOURS = int(settings['max_publish_age_hours'])
+            print(f"  ✅ Max publish age: {config.MAX_PUBLISH_AGE_HOURS}h")
+
+        if 'rss_fallback_age_hours' in settings:
+            config.RSS_FALLBACK_AGE_HOURS = int(settings['rss_fallback_age_hours'])
+            print(f"  ✅ RSS fallback age: {config.RSS_FALLBACK_AGE_HOURS}h")
         
         if 'default_template' in settings:
             config.DEFAULT_MESSAGE_TEMPLATE = settings['default_template']

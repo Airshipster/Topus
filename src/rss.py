@@ -35,7 +35,7 @@ def check_rss_feed(channel_id):
         entries = root.findall('atom:entry', ns)
         
         videos = []
-        cutoff_time = datetime.utcnow() - timedelta(hours=config.MAX_VIDEO_AGE_HOURS)
+        cutoff_time = datetime.utcnow() - timedelta(hours=config.RSS_FALLBACK_AGE_HOURS)
         
         for entry in entries:
             video_id_elem = entry.find('yt:videoId', ns)
@@ -83,7 +83,7 @@ def rss_fallback_check(client, project, published_videos):
     project_channels = load_youtube_channels(client, project)
     
     print(f"    Checking {len(project_channels)} channels")
-    print(f"    Time window: {config.MAX_VIDEO_AGE_HOURS}h ({config.MAX_VIDEO_AGE_HOURS//24}d)")
+    print(f"    Time window: {config.RSS_FALLBACK_AGE_HOURS}h")
     
     new_videos = []
     videos_found_count = 0

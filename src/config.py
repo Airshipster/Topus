@@ -20,6 +20,8 @@ CLOUDFLARE_WORKER_URL = "https://aged-unit-b8f6.elman-ahmadbayov.workers.dev"
 # YouTube API
 YOUTUBE_API_KEY = None
 MAX_VIDEO_AGE_HOURS = 168
+MAX_PUBLISH_AGE_HOURS = 2
+RSS_FALLBACK_AGE_HOURS = 2
 
 # Cleanup settings
 CLEANUP_AFTER_DAYS = 7

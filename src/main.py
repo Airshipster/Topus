@@ -26,6 +26,31 @@ from telegram_client import format_message, send_to_telegram
 from youtube_client import get_video_info_from_api, get_youtube_api_calls
 
 
+def parse_datetime(value):
+    if not value:
+        return None
+
+    try:
+        if value.endswith('Z'):
+            return datetime.fromisoformat(value.replace('Z', '+00:00')).replace(tzinfo=None)
+
+        return datetime.fromisoformat(value).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def get_stale_reason(published_at):
+    published = parse_datetime(published_at)
+    if not published:
+        return ''
+
+    age_hours = (datetime.utcnow() - published).total_seconds() / 3600
+    if age_hours > config.MAX_PUBLISH_AGE_HOURS:
+        return f"Stale video ({age_hours:.1f}h old, limit {config.MAX_PUBLISH_AGE_HOURS}h)"
+
+    return ''
+
+
 def main():
     print("="*60)
     print("TOPUS - YouTube to Telegram Publisher")
@@ -104,6 +129,16 @@ def main():
                 }
                 
                 video_published_date = video_info_api['published']
+                stale_reason = get_stale_reason(video_published_date)
+                if stale_reason:
+                    print(f"  🚫 Skipped stale: {video['title'][:50]} ({stale_reason})")
+                    timestamp = datetime.utcnow().isoformat()
+                    log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], stale_reason, 'filtered'])
+                    videos_to_save.append((video, project, video_published_date, None, f"FILTERED: {stale_reason}"))
+                    published_videos.add(video['video_id'])
+                    mark_push_event_processed(master_sheet, event['row_index'], project['name'])
+                    total_filtered += 1
+                    continue
                 
                 should_filter, filter_reason = should_filter_video(video_info_api, project)
                 if should_filter:
@@ -136,6 +171,15 @@ def main():
                 
                 if video_info_api:
                     video_published_date = video_info_api['published']
+                    stale_reason = get_stale_reason(video_published_date)
+                    if stale_reason:
+                        print(f"    🚫 Skipped stale (RSS): {video['title'][:50]} ({stale_reason})")
+                        timestamp = datetime.utcnow().isoformat()
+                        log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], f"RSS: {stale_reason}", 'filtered'])
+                        videos_to_save.append((video, project, video_published_date, None, f"FILTERED: RSS: {stale_reason}"))
+                        published_videos.add(video['video_id'])
+                        total_filtered += 1
+                        continue
                     
                     should_filter, filter_reason = should_filter_video(video_info_api, project)
                     
@@ -149,6 +193,15 @@ def main():
                         continue
                 else:
                     video_published_date = video.get('published', datetime.utcnow().isoformat())
+                    stale_reason = get_stale_reason(video_published_date)
+                    if stale_reason:
+                        print(f"    🚫 Skipped stale (RSS): {video['title'][:50]} ({stale_reason})")
+                        timestamp = datetime.utcnow().isoformat()
+                        log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], f"RSS: {stale_reason}", 'filtered'])
+                        videos_to_save.append((video, project, video_published_date, None, f"FILTERED: RSS: {stale_reason}"))
+                        published_videos.add(video['video_id'])
+                        total_filtered += 1
+                        continue
                 
                 # СНАЧАЛА добавляем в батч для сохранения
                 videos_to_save.append((video, project, video_published_date, None, None))
