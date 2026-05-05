@@ -329,7 +329,7 @@ def log_events_batch(sheet, log_entries):
         print(f"  ⚠️  Error batch logging: {e}")
 
 def cleanup_old_records(sheet):
-    """Очистка старых записей (>7 дней)"""
+    """Очистка старых записей"""
     try:
         worksheet_settings = sheet.worksheet(config.SHEET_NAME_SETTINGS)
         values = worksheet_settings.get_all_values()
