@@ -336,6 +336,8 @@ def cleanup_old_records(sheet):
         
         last_cleanup = None
         last_cleanup_row = None
+        last_cleanup_retention_days = None
+        last_cleanup_retention_row = None
         
         for i, row in enumerate(values):
             if i == 0:
@@ -347,11 +349,20 @@ def cleanup_old_records(sheet):
                         last_cleanup = datetime.fromisoformat(row[1].replace('Z', ''))
                     except:
                         pass
-                break
+            elif len(row) > 0 and row[0].strip() == 'last_cleanup_retention_days':
+                last_cleanup_retention_row = i + 1
+                if len(row) > 1 and row[1]:
+                    try:
+                        last_cleanup_retention_days = int(row[1])
+                    except:
+                        pass
         
-        if last_cleanup and (datetime.utcnow() - last_cleanup).total_seconds() < 86400:
+        retention_changed = last_cleanup_retention_days != config.CLEANUP_AFTER_DAYS
+        if last_cleanup and not retention_changed and (datetime.utcnow() - last_cleanup).total_seconds() < 86400:
             print(f"  ⏭️  Cleanup skipped (last run: {last_cleanup.isoformat()}Z)")
             return
+        if retention_changed:
+            print(f"  🔁 Cleanup retention changed: {last_cleanup_retention_days} -> {config.CLEANUP_AFTER_DAYS} days")
         
         print("\n🧹 Cleaning up old records...")
         
@@ -419,6 +430,15 @@ def cleanup_old_records(sheet):
             worksheet_settings.update_cell(last_cleanup_row, 2, current_time)
         else:
             worksheet_settings.append_row(['last_cleanup', current_time, 'Последняя очистка старых записей'])
+
+        if last_cleanup_retention_row:
+            worksheet_settings.update_cell(last_cleanup_retention_row, 2, str(config.CLEANUP_AFTER_DAYS))
+        else:
+            worksheet_settings.append_row([
+                'last_cleanup_retention_days',
+                str(config.CLEANUP_AFTER_DAYS),
+                'Retention window used by the last cleanup run',
+            ])
         
         print(f"  ✅ Cleanup completed: {deleted_videos} videos, {deleted_logs} logs")
         
