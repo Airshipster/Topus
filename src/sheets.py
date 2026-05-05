@@ -328,6 +328,53 @@ def log_events_batch(sheet, log_entries):
     except Exception as e:
         print(f"  ⚠️  Error batch logging: {e}")
 
+def group_contiguous_ranges(row_indexes):
+    """Преобразует номера строк в непрерывные диапазоны для batch delete"""
+    if not row_indexes:
+        return []
+
+    ranges = []
+    start = row_indexes[0]
+    end = row_indexes[0]
+
+    for row_index in row_indexes[1:]:
+        if row_index == end + 1:
+            end = row_index
+        else:
+            ranges.append((start, end))
+            start = row_index
+            end = row_index
+
+    ranges.append((start, end))
+    return ranges
+
+def delete_rows_batch(spreadsheet, worksheet, row_indexes):
+    """Удаляет строки батчами через Sheets API, чтобы не упираться в per-minute write quota"""
+    if not row_indexes:
+        return 0
+
+    ranges = group_contiguous_ranges(sorted(row_indexes))
+    requests = []
+
+    for start_row, end_row in sorted(ranges, reverse=True):
+        requests.append({
+            'deleteDimension': {
+                'range': {
+                    'sheetId': worksheet.id,
+                    'dimension': 'ROWS',
+                    'startIndex': start_row - 1,
+                    'endIndex': end_row,
+                }
+            }
+        })
+
+    deleted_rows = len(row_indexes)
+    for i in range(0, len(requests), config.BATCH_SIZE):
+        spreadsheet.batch_update({'requests': requests[i:i + config.BATCH_SIZE]})
+        time.sleep(0.5)
+
+    return deleted_rows
+
 def cleanup_old_records(sheet):
     """Очистка старых записей"""
     try:
@@ -388,9 +435,7 @@ def cleanup_old_records(sheet):
                     except:
                         pass
             
-            for row_index in sorted(rows_to_delete, reverse=True):
-                worksheet.delete_rows(row_index)
-                deleted_videos += 1
+            deleted_videos = delete_rows_batch(sheet, worksheet, rows_to_delete)
             
             if deleted_videos > 0:
                 print(f"  ✅ Deleted {deleted_videos} old videos")
@@ -416,9 +461,7 @@ def cleanup_old_records(sheet):
                     except:
                         pass
             
-            for row_index in sorted(rows_to_delete, reverse=True):
-                worksheet.delete_rows(row_index)
-                deleted_logs += 1
+            deleted_logs = delete_rows_batch(sheet, worksheet, rows_to_delete)
             
             if deleted_logs > 0:
                 print(f"  ✅ Deleted {deleted_logs} old logs")
