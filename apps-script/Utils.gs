@@ -28,8 +28,9 @@ function textOutput_(text) {
                        .setMimeType(ContentService.MimeType.TEXT);
 }
 
-function triggerPublisher_(videoId, channelId) {
+function triggerPublisher_(videoId, channelId, options) {
   var token = PropertiesService.getScriptProperties().getProperty('GITHUB_DISPATCH_TOKEN');
+  options = options || {};
 
   if (!token) {
     console.warn('GITHUB_DISPATCH_TOKEN is not set; publisher will run on cron fallback');
@@ -41,7 +42,8 @@ function triggerPublisher_(videoId, channelId) {
     event_type: GITHUB_DISPATCH_EVENT_TYPE,
     client_payload: {
       video_id: videoId || '',
-      channel_id: channelId || ''
+      channel_id: channelId || '',
+      force_subscription_sync: options.forceSubscriptionSync ? 'true' : 'false'
     }
   };
 

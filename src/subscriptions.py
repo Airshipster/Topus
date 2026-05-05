@@ -7,6 +7,68 @@ import config
 from sheets import get_all_active_channels
 
 
+SUBSCRIPTION_SYNC_SETTING = 'last_subscription_sync'
+SUBSCRIPTION_SYNC_INTERVAL_SECONDS = 86400
+
+
+def get_subscription_sync_state(sheet):
+    try:
+        worksheet = sheet.worksheet(config.SHEET_NAME_SETTINGS)
+        values = worksheet.get_all_values()
+
+        for i, row in enumerate(values):
+            if i == 0:
+                continue
+            if len(row) > 0 and row[0].strip() == SUBSCRIPTION_SYNC_SETTING:
+                last_sync = None
+                if len(row) > 1 and row[1]:
+                    try:
+                        last_sync = datetime.fromisoformat(row[1].replace('Z', ''))
+                    except:
+                        pass
+                return {
+                    'row_index': i + 1,
+                    'last_sync': last_sync,
+                }
+    except Exception as e:
+        print(f"  ⚠️  Error reading subscription sync state: {e}")
+
+    return {
+        'row_index': None,
+        'last_sync': None,
+    }
+
+
+def should_run_subscription_sync(sheet, force=False):
+    if force:
+        return True
+
+    state = get_subscription_sync_state(sheet)
+    last_sync = state.get('last_sync')
+    if not last_sync:
+        return True
+
+    return (datetime.utcnow() - last_sync).total_seconds() >= SUBSCRIPTION_SYNC_INTERVAL_SECONDS
+
+
+def update_subscription_sync_state(sheet):
+    try:
+        worksheet = sheet.worksheet(config.SHEET_NAME_SETTINGS)
+        state = get_subscription_sync_state(sheet)
+        timestamp = datetime.utcnow().isoformat() + 'Z'
+
+        if state.get('row_index'):
+            worksheet.update_cell(state['row_index'], 2, timestamp)
+        else:
+            worksheet.append_row([
+                SUBSCRIPTION_SYNC_SETTING,
+                timestamp,
+                'Последняя полная синхронизация YouTube push-подписок',
+            ])
+    except Exception as e:
+        print(f"  ⚠️  Error updating subscription sync state: {e}")
+
+
 def get_subscribed_channels(sheet):
     """Получение списка подписанных каналов"""
     try:
@@ -159,9 +221,16 @@ def remove_subscribed_channels(sheet, channel_ids):
     except Exception as e:
         print(f"  ❌ Error removing subscriptions: {e}")
 
-def sync_subscriptions(client, master_sheet, projects):
+def sync_subscriptions(client, master_sheet, projects, force=False):
     """Синхронизация push-подписок"""
     print("\n📡 Syncing subscriptions...")
+
+    if not should_run_subscription_sync(master_sheet, force=force):
+        print("  ⏭️  Subscription sync skipped (last full sync < 24h)")
+        return
+
+    if force:
+        print("  🔁 Forced subscription sync requested")
     
     active_channels_dict = get_all_active_channels(client, projects)
     active_channels = set(active_channels_dict.keys())
@@ -217,3 +286,5 @@ def sync_subscriptions(client, master_sheet, projects):
     
     if len(to_subscribe) == 0 and len(to_renew) == 0 and len(to_unsubscribe) == 0:
         print("  ✅ No changes needed")
+
+    update_subscription_sync_state(master_sheet)

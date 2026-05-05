@@ -467,6 +467,32 @@ def cleanup_old_records(sheet):
                 print(f"  ✅ Deleted {deleted_logs} old logs")
         except Exception as e:
             print(f"  ⚠️  Error cleaning logs: {e}")
+
+        deleted_push_events = 0
+        try:
+            worksheet = sheet.worksheet(config.SHEET_NAME_PUSH_EVENTS)
+            values = worksheet.get_all_values()
+
+            rows_to_delete = []
+            for i, row in enumerate(values):
+                if i == 0:
+                    continue
+
+                if len(row) > 0:
+                    date_str = row[0]
+                    try:
+                        record_date = datetime.fromisoformat(date_str.replace('Z', ''))
+                        if record_date < cutoff_date:
+                            rows_to_delete.append(i + 1)
+                    except:
+                        pass
+
+            deleted_push_events = delete_rows_batch(sheet, worksheet, rows_to_delete)
+
+            if deleted_push_events > 0:
+                print(f"  ✅ Deleted {deleted_push_events} old push events")
+        except Exception as e:
+            print(f"  ⚠️  Error cleaning push events: {e}")
         
         current_time = datetime.utcnow().isoformat() + 'Z'
         if last_cleanup_row:
@@ -483,7 +509,7 @@ def cleanup_old_records(sheet):
                 'Retention window used by the last cleanup run',
             ])
         
-        print(f"  ✅ Cleanup completed: {deleted_videos} videos, {deleted_logs} logs")
+        print(f"  ✅ Cleanup completed: {deleted_videos} videos, {deleted_logs} logs, {deleted_push_events} push events")
         
     except Exception as e:
         print(f"  ❌ Cleanup error: {e}")

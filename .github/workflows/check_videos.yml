@@ -3,6 +3,7 @@ name: Check YouTube Videos
 on:
   schedule:
     - cron: '*/5 * * * *'
+    - cron: '17 2 * * *'
   repository_dispatch:
     types: [topus-push]
   
@@ -34,5 +35,6 @@ jobs:
     - name: Run main script
       env:
         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        TOPUS_FORCE_SUBSCRIPTION_SYNC: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '17 2 * * *' || github.event.client_payload.force_subscription_sync == 'true' }}
       run: |
         python src/main.py

@@ -1,4 +1,5 @@
 import time
+import os
 from datetime import datetime
 
 import config
@@ -51,6 +52,11 @@ def get_stale_reason(published_at):
     return ''
 
 
+def should_force_subscription_sync():
+    value = os.environ.get('TOPUS_FORCE_SUBSCRIPTION_SYNC', '')
+    return value.lower() in ('1', 'true', 'yes')
+
+
 def main():
     print("="*60)
     print("TOPUS - YouTube to Telegram Publisher")
@@ -77,7 +83,7 @@ def main():
         print("\n📂 Loading projects...")
         projects = load_projects(master_sheet)
         
-        sync_subscriptions(client, master_sheet, projects)
+        sync_subscriptions(client, master_sheet, projects, force=should_force_subscription_sync())
         
         published_videos = get_published_videos(master_sheet)
         
