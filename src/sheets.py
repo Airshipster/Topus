@@ -97,12 +97,38 @@ def update_project_statuses(worksheet, headers, status_updates):
     worksheet.batch_update(updates)
 
 
+def update_project_runtime_status(sheet, project, status, error_text=''):
+    try:
+        worksheet = sheet.worksheet(config.SHEET_NAME_PROJECTS)
+        values = worksheet.get_all_values()
+        if not values:
+            return
+
+        headers = ensure_project_status_columns(worksheet, values[0])
+        code_col = headers.index('Код проекта') if 'Код проекта' in headers else None
+        name_col = headers.index('Название') if 'Название' in headers else None
+        target_row = None
+
+        for row_index, row in enumerate(values[1:], start=2):
+            row_code = row[code_col].strip() if code_col is not None and len(row) > code_col else ''
+            row_name = row[name_col].strip() if name_col is not None and len(row) > name_col else ''
+            if row_code == str(project.get('code', '')).strip() or row_name == str(project.get('name', '')).strip():
+                target_row = row_index
+                break
+
+        if target_row:
+            update_project_statuses(worksheet, headers, [(target_row, status, error_text)])
+    except Exception as e:
+        print(f"  ⚠️  Error updating project runtime status for {project.get('name')}: {type(e).__name__}: {e}")
+
+
 def authenticate_google_sheets():
     """Аутентификация в Google Sheets через Service Account"""
     if not config.SERVICE_ACCOUNT_JSON:
         raise ValueError("GOOGLE_SERVICE_ACCOUNT_JSON not found")
     
     credentials_dict = json.loads(config.SERVICE_ACCOUNT_JSON)
+    print(f"  🔐 Google service account: {credentials_dict.get('client_email', 'unknown')}")
     credentials = Credentials.from_service_account_info(
         credentials_dict,
         scopes=['https://www.googleapis.com/auth/spreadsheets']
@@ -679,6 +705,7 @@ def load_projects(sheet):
 
 def load_youtube_channels(client, project):
     """Загрузка активных YouTube каналов проекта"""
+    project.pop('channels_error', None)
     try:
         sheet = client.open_by_key(project['sheet_id'])
         preferred_names = [
@@ -714,9 +741,12 @@ def load_youtube_channels(client, project):
                 return channels
 
         print(f"  ⚠️  No active channels parsed for {project['name']}")
+        project['channels_error'] = 'no active channels parsed'
         return {}
     except Exception as e:
-        print(f"  ❌ Error loading channels for {project['name']}: {type(e).__name__}: {e}")
+        error_text = f"{type(e).__name__}: {e}"
+        print(f"  ❌ Error loading channels for {project['name']}: {error_text}")
+        project['channels_error'] = error_text
         return {}
 
 def parse_youtube_channels_worksheet(worksheet, project):

@@ -18,6 +18,7 @@ from sheets import (
     mark_push_event_processed,
     release_lock,
     save_videos_batch,
+    update_project_runtime_status,
     update_video_publication_status,
     update_last_run,
     update_youtube_quota,
@@ -105,6 +106,10 @@ def main():
             print(f"{'='*60}")
             
             yt_channels = load_youtube_channels(client, project)
+            if project.get('channels_error'):
+                update_project_runtime_status(master_sheet, project, 'error', project['channels_error'])
+            else:
+                update_project_runtime_status(master_sheet, project, 'ready', '')
             print(f"  📺 Active channels: {len(yt_channels)}")
             
             # Process push events
