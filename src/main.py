@@ -58,6 +58,11 @@ def should_force_subscription_sync():
     return value.lower() in ('1', 'true', 'yes')
 
 
+def sync_only_mode():
+    value = os.environ.get('TOPUS_SYNC_ONLY', '')
+    return value.lower() in ('1', 'true', 'yes')
+
+
 def main():
     print("="*60)
     print("TOPUS - YouTube to Telegram Publisher")
@@ -85,6 +90,11 @@ def main():
         projects = load_projects(master_sheet)
         
         sync_subscriptions(client, master_sheet, projects, force=should_force_subscription_sync())
+
+        if sync_only_mode():
+            print("\n✅ Sync-only mode completed. Skipping RSS/publish processing.")
+            update_last_run(master_sheet)
+            return
         
         published_videos = get_published_videos(master_sheet)
         

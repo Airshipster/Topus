@@ -811,7 +811,11 @@ def get_all_active_channels(client, projects):
         channels = load_youtube_channels(client, project)
         for ch_id, ch_info in channels.items():
             if ch_id not in all_channels:
-                all_channels[ch_id] = ch_info
+                all_channels[ch_id] = {
+                    'channel_info': ch_info,
+                    'projects': [],
+                }
+            all_channels[ch_id]['projects'].append(project['name'])
     
     return all_channels
 

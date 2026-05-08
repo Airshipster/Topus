@@ -40,5 +40,6 @@ jobs:
       env:
         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         TOPUS_FORCE_SUBSCRIPTION_SYNC: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '17 2 * * *' || github.event.client_payload.force_subscription_sync == 'true' || (github.event_name == 'repository_dispatch' && github.event.client_payload.video_id == '' && github.event.client_payload.channel_id == '') }}
+        TOPUS_SYNC_ONLY: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '17 2 * * *' || github.event.client_payload.force_subscription_sync == 'true' || (github.event_name == 'repository_dispatch' && github.event.client_payload.video_id == '' && github.event.client_payload.channel_id == '') }}
       run: |
         python src/main.py
