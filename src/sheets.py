@@ -686,22 +686,41 @@ def load_youtube_channels(client, project):
             'Список. Каналы',
             'Список. YouTube',
         ]
-        worksheet = None
+        candidate_worksheets = []
+        seen_sheet_ids = set()
 
         for name in [name for name in preferred_names if name]:
             try:
-                worksheet = sheet.worksheet(name)
-                break
-            except Exception:
+                candidate = sheet.worksheet(name)
+                if candidate.id not in seen_sheet_ids:
+                    candidate_worksheets.append(candidate)
+                    seen_sheet_ids.add(candidate.id)
+            except Exception as e:
+                print(f"  ⚠️  Channels sheet '{name}' not available for {project['name']}: {type(e).__name__}")
                 continue
 
-        if worksheet is None:
+        try:
             worksheets = sheet.worksheets()
-            if not worksheets:
-                print(f"  ⚠️  No worksheets found for {project['name']}")
-                return {}
-            worksheet = worksheets[0]
+            for candidate in worksheets:
+                if candidate.id not in seen_sheet_ids:
+                    candidate_worksheets.append(candidate)
+                    seen_sheet_ids.add(candidate.id)
+        except Exception as e:
+            print(f"  ⚠️  Could not list worksheets for {project['name']}: {type(e).__name__}: {e}")
 
+        for worksheet in candidate_worksheets:
+            channels = parse_youtube_channels_worksheet(worksheet, project)
+            if channels:
+                return channels
+
+        print(f"  ⚠️  No active channels parsed for {project['name']}")
+        return {}
+    except Exception as e:
+        print(f"  ❌ Error loading channels for {project['name']}: {type(e).__name__}: {e}")
+        return {}
+
+def parse_youtube_channels_worksheet(worksheet, project):
+    try:
         print(f"  📄 Channels sheet: {worksheet.title}")
         values = worksheet.get_all_values()
         channels = {}
@@ -733,10 +752,10 @@ def load_youtube_channels(client, project):
                 'template': channel_template,
                 'tg_channel': tg_channel_link
             }
-        
+
         return channels
     except Exception as e:
-        print(f"  ❌ Error loading channels for {project['name']}: {e}")
+        print(f"  ⚠️  Error reading channels sheet '{worksheet.title}' for {project['name']}: {type(e).__name__}: {e}")
         return {}
 
 def extract_youtube_channel_id_from_row(row):
