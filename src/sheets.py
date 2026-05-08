@@ -681,7 +681,7 @@ def load_projects(sheet):
             stop_words_str = str(row.get('Стоп-слова (через запятую)', '')).strip()
             stop_words = [w.strip().lower() for w in stop_words_str.split(',') if w.strip()] if stop_words_str else []
             tg_channel = str(row.get('Telegram канал @', '') or row.get('Telegram канал', '')).strip()
-            channels_sheet_name = str(row.get('Название листа', '')).strip() or 'Список. YouTube'
+            channels_sheet_name = str(row.get('Название листа', '')).strip()
 
             projects.append({
                 'code': row.get('Код проекта'),
@@ -709,10 +709,7 @@ def load_youtube_channels(client, project):
     try:
         sheet = client.open_by_key(project['sheet_id'])
         configured_name = project.get('channels_sheet_name', '')
-        preferred_names = [
-            configured_name if configured_name and configured_name != 'Список. Каналы' else '',
-            'Список. YouTube',
-        ]
+        preferred_names = [configured_name] if configured_name else []
         candidate_worksheets = []
         seen_sheet_ids = set()
 
