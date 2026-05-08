@@ -681,40 +681,82 @@ def load_youtube_channels(client, project):
     """Загрузка активных YouTube каналов проекта"""
     try:
         sheet = client.open_by_key(project['sheet_id'])
-        worksheet = sheet.worksheet(project.get('channels_sheet_name', 'Список. YouTube'))
-        
-        values = worksheet.get('D:V')
-        
+        preferred_names = [
+            project.get('channels_sheet_name', ''),
+            'Список. Каналы',
+            'Список. YouTube',
+        ]
+        worksheet = None
+
+        for name in [name for name in preferred_names if name]:
+            try:
+                worksheet = sheet.worksheet(name)
+                break
+            except Exception:
+                continue
+
+        if worksheet is None:
+            worksheets = sheet.worksheets()
+            if not worksheets:
+                print(f"  ⚠️  No worksheets found for {project['name']}")
+                return {}
+            worksheet = worksheets[0]
+
+        print(f"  📄 Channels sheet: {worksheet.title}")
+        values = worksheet.get_all_values()
         channels = {}
         for i, row in enumerate(values):
             if i == 0:
                 continue
-            
-            if len(row) < 4:
+
+            normalized = [str(cell).strip() for cell in row]
+            if not any(normalized):
                 continue
-            
-            status = row[3].strip() if len(row) > 3 else ''
-            
-            if status == '🔵':
+
+            if any(cell == '🔵' for cell in normalized):
                 break
-            
-            if status == '🟢':
-                channel_id = row[1].strip() if len(row) > 1 else ''
-                channel_name = row[0].strip() if len(row) > 0 else ''
-                channel_template = row[17].strip() if len(row) > 17 else ''
-                tg_channel_link = row[18].strip() if len(row) > 18 else ''
-                
-                if channel_id and channel_id.startswith('UC'):
-                    channels[channel_id] = {
-                        'name': channel_name,
-                        'template': channel_template,
-                        'tg_channel': tg_channel_link
-                    }
+
+            if '🟢' not in normalized:
+                continue
+
+            channel_id = extract_youtube_channel_id_from_row(normalized)
+            if not channel_id:
+                print(f"  ⚠️  Active row {i + 1} has no YouTube channel ID")
+                continue
+
+            channel_name = infer_channel_name(normalized, channel_id)
+            channel_template = normalized[20] if len(normalized) > 20 else ''
+            tg_channel_link = normalized[21] if len(normalized) > 21 else ''
+
+            channels[channel_id] = {
+                'name': channel_name,
+                'template': channel_template,
+                'tg_channel': tg_channel_link
+            }
         
         return channels
     except Exception as e:
         print(f"  ❌ Error loading channels for {project['name']}: {e}")
         return {}
+
+def extract_youtube_channel_id_from_row(row):
+    for cell in row:
+        match = re.search(r'(UC[0-9A-Za-z_-]{20,})', cell)
+        if match:
+            return match.group(1)
+    return ''
+
+def infer_channel_name(row, channel_id):
+    ignored = {'🟢', '🔴', '🔵', channel_id}
+    for cell in row:
+        if not cell or cell in ignored:
+            continue
+        if 'youtube.com' in cell or 'youtu.be' in cell:
+            continue
+        if channel_id in cell:
+            continue
+        return cell
+    return channel_id
 
 def get_all_active_channels(client, projects):
     """Получение всех уникальных активных каналов"""
