@@ -708,9 +708,9 @@ def load_youtube_channels(client, project):
     project.pop('channels_error', None)
     try:
         sheet = client.open_by_key(project['sheet_id'])
+        configured_name = project.get('channels_sheet_name', '')
         preferred_names = [
-            project.get('channels_sheet_name', ''),
-            'Список. Каналы',
+            configured_name if configured_name and configured_name != 'Список. Каналы' else '',
             'Список. YouTube',
         ]
         candidate_worksheets = []
@@ -726,14 +726,13 @@ def load_youtube_channels(client, project):
                 print(f"  ⚠️  Channels sheet '{name}' not available for {project['name']}: {type(e).__name__}")
                 continue
 
-        try:
-            worksheets = sheet.worksheets()
-            for candidate in worksheets:
-                if candidate.id not in seen_sheet_ids:
-                    candidate_worksheets.append(candidate)
-                    seen_sheet_ids.add(candidate.id)
-        except Exception as e:
-            print(f"  ⚠️  Could not list worksheets for {project['name']}: {type(e).__name__}: {e}")
+        if not candidate_worksheets:
+            try:
+                worksheets = sheet.worksheets()
+                if worksheets:
+                    candidate_worksheets.append(worksheets[0])
+            except Exception as e:
+                print(f"  ⚠️  Could not load first worksheet for {project['name']}: {type(e).__name__}: {e}")
 
         for worksheet in candidate_worksheets:
             channels = parse_youtube_channels_worksheet(worksheet, project)
