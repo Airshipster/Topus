@@ -96,7 +96,7 @@ def rss_fallback_check(client, project, published_videos):
             print(f"    Progress: {i}/{len(project_channels)} channels (Found: {videos_found_count} videos, New: {len(new_videos)})")
         
         for video in videos:
-            if video['video_id'] not in published_videos:
+            if (video['video_id'], project['name']) not in published_videos:
                 video['project'] = project
                 video['channel_info'] = channel_info
                 new_videos.append(video)

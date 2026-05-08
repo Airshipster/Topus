@@ -63,6 +63,10 @@ def sync_only_mode():
     return value.lower() in ('1', 'true', 'yes')
 
 
+def publication_key(video_id, project):
+    return (video_id, project['name'])
+
+
 def main():
     print("="*60)
     print("TOPUS - YouTube to Telegram Publisher")
@@ -127,7 +131,9 @@ def main():
                 if event['channel_id'] not in yt_channels:
                     continue
                 
-                if event['video_id'] in published_videos:
+                key = publication_key(event['video_id'], project)
+
+                if key in published_videos:
                     mark_push_event_processed(master_sheet, event['row_index'], project['name'])
                     continue
                 
@@ -156,7 +162,7 @@ def main():
                     timestamp = datetime.utcnow().isoformat()
                     log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], stale_reason, 'filtered'])
                     videos_to_save.append((video, project, video_published_date, None, f"FILTERED: {stale_reason}"))
-                    published_videos.add(video['video_id'])
+                    published_videos.add(key)
                     mark_push_event_processed(master_sheet, event['row_index'], project['name'])
                     total_filtered += 1
                     continue
@@ -167,14 +173,14 @@ def main():
                     timestamp = datetime.utcnow().isoformat()
                     log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], filter_reason, 'filtered'])
                     videos_to_save.append((video, project, video_published_date, None, f"FILTERED: {filter_reason}"))
-                    published_videos.add(video['video_id'])
+                    published_videos.add(key)
                     mark_push_event_processed(master_sheet, event['row_index'], project['name'])
                     total_filtered += 1
                     continue
                 
                 # СНАЧАЛА добавляем в батч для сохранения
                 videos_to_save.append((video, project, video_published_date, None, None))
-                published_videos.add(video['video_id'])
+                published_videos.add(key)
                 
                 print(f"  📝 Queued: {video['title'][:50]}...")
                 
@@ -185,6 +191,7 @@ def main():
             
             for video in rss_videos:
                 channel_info = video['channel_info']
+                key = publication_key(video['video_id'], project)
                 
                 total_found += 1
                 
@@ -198,7 +205,7 @@ def main():
                         timestamp = datetime.utcnow().isoformat()
                         log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], f"RSS: {stale_reason}", 'filtered'])
                         videos_to_save.append((video, project, video_published_date, None, f"FILTERED: RSS: {stale_reason}"))
-                        published_videos.add(video['video_id'])
+                        published_videos.add(key)
                         total_filtered += 1
                         continue
                     
@@ -209,7 +216,7 @@ def main():
                         timestamp = datetime.utcnow().isoformat()
                         log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], f"RSS: {filter_reason}", 'filtered'])
                         videos_to_save.append((video, project, video_published_date, None, f"FILTERED: RSS: {filter_reason}"))
-                        published_videos.add(video['video_id'])
+                        published_videos.add(key)
                         total_filtered += 1
                         continue
                 else:
@@ -220,20 +227,20 @@ def main():
                         timestamp = datetime.utcnow().isoformat()
                         log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], f"RSS: {stale_reason}", 'filtered'])
                         videos_to_save.append((video, project, video_published_date, None, f"FILTERED: RSS: {stale_reason}"))
-                        published_videos.add(video['video_id'])
+                        published_videos.add(key)
                         total_filtered += 1
                         continue
                 
                 # СНАЧАЛА добавляем в батч для сохранения
                 videos_to_save.append((video, project, video_published_date, None, None))
-                published_videos.add(video['video_id'])
+                published_videos.add(key)
                 
                 print(f"    📝 Queued (RSS): {video['title'][:50]}...")
         
         # СОХРАНЯЕМ ВСЕ ВИДЕО БАТЧАМИ
         print(f"\n💾 Saving {len(videos_to_save)} videos to table...")
-        saved_video_ids = save_videos_batch(master_sheet, videos_to_save)
-        print(f"  ✅ Saved {len(saved_video_ids)} videos")
+        saved_publications = set(save_videos_batch(master_sheet, videos_to_save))
+        print(f"  ✅ Saved {len(saved_publications)} new publication rows")
         
         # ТЕПЕРЬ ПУБЛИКУЕМ В TELEGRAM
         print(f"\n📤 Publishing to Telegram...")
@@ -242,8 +249,9 @@ def main():
             if str(error or '').startswith('FILTERED: '):
                 continue
 
-            if video['video_id'] not in saved_video_ids:
-                print(f"  ⚠️  Skipping {video['video_id']} - not saved")
+            key = publication_key(video['video_id'], project)
+            if key not in saved_publications:
+                print(f"  ⏭️  Skipping {video['video_id']} / {project['name']} - already tracked or not saved")
                 continue
             
             channel_info = video.get('channel_info', {})

@@ -199,7 +199,7 @@ def save_videos_batch(sheet, videos_data):
     """
     БАТЧЕВОЕ сохранение видео в таблицу с защитой от потери
     videos_data = [(video, project, pub_date, tg_msg_id, error), ...]
-    Возвращает список video_id которые удалось сохранить
+    Возвращает список (video_id, project_name), которые были созданы в этом запуске
     """
     if not videos_data:
         return []
@@ -234,20 +234,18 @@ def save_videos_batch(sheet, videos_data):
             print(f"  ⚠️  Could not load existing video rows: {e}")
 
         rows = []
-        rows_video_ids = []
-        saved_video_ids = []
+        rows_publication_keys = []
+        saved_publication_keys = []
         for video, project, video_published_date, tg_message_id, error in videos_data:
-            key = (video['video_id'], project.get('name', ''))
+            project_name = project.get('name', '')
+            key = (video['video_id'], project_name)
             existing = existing_rows.get(key)
             is_filtered = str(error or '').startswith('FILTERED: ')
             row_status = 'filtered' if is_filtered else ('published' if tg_message_id else 'pending')
             row_error = str(error or '').replace('FILTERED: ', '', 1) if is_filtered else (error or '')
 
             if existing:
-                if existing['status'] in ('published', 'filtered'):
-                    continue
-
-                saved_video_ids.append(video['video_id'])
+                print(f"  ⏭️  Already tracked: {video['video_id']} / {project_name} ({existing['status'] or 'no status'})")
                 continue
 
             rows.append([
@@ -256,7 +254,7 @@ def save_videos_batch(sheet, videos_data):
                 video.get('url', ''),
                 video.get('channel', ''),
                 video.get('channel_id', ''),
-                project.get('name', ''),
+                project_name,
                 video_published_date,
                 datetime.utcnow().isoformat(),
                 '1' if tg_message_id else '0',
@@ -265,30 +263,30 @@ def save_videos_batch(sheet, videos_data):
                 row_status,
                 row_error
             ])
-            rows_video_ids.append(video['video_id'])
+            rows_publication_keys.append(key)
         
         # Дробим на батчи по config.BATCH_SIZE
         for i in range(0, len(rows), config.BATCH_SIZE):
             batch = rows[i:i+config.BATCH_SIZE]
-            batch_video_ids = rows_video_ids[i:i+config.BATCH_SIZE]
+            batch_publication_keys = rows_publication_keys[i:i+config.BATCH_SIZE]
             
             try:
                 worksheet.append_rows(batch, value_input_option='USER_ENTERED')
-                saved_video_ids.extend(batch_video_ids)
+                saved_publication_keys.extend(batch_publication_keys)
                 print(f"  💾 Saved batch {i//config.BATCH_SIZE + 1}: {len(batch)} videos")
             except Exception as e:
                 print(f"  ⚠️  Batch failed, saving one by one: {e}")
                 # Если батч упал - сохраняем по одной (защита от потери)
-                for row, video_id in zip(batch, batch_video_ids):
+                for row, key in zip(batch, batch_publication_keys):
                     try:
                         worksheet.append_row(row, value_input_option='USER_ENTERED')
-                        saved_video_ids.append(video_id)
+                        saved_publication_keys.append(key)
                     except Exception as e2:
-                        print(f"  ❌ Failed to save {video_id}: {e2}")
+                        print(f"  ❌ Failed to save {key[0]} / {key[1]}: {e2}")
             
             time.sleep(0.5)  # Небольшая пауза между батчами
         
-        return saved_video_ids
+        return saved_publication_keys
         
     except Exception as e:
         print(f"  ❌ Critical error in save_videos_batch: {e}")
@@ -820,18 +818,23 @@ def get_all_active_channels(client, projects):
     return all_channels
 
 def get_published_videos(sheet):
-    """Получение списка уже опубликованных видео"""
+    """Получение списка уже заведённых публикаций.
+
+    Любая строка в журнале блокирует повторную отправку этого video_id в тот же
+    проект. Иначе сбой после успешной отправки в Telegram, но до записи
+    message_id, превращает status=pending в повторный пост на следующем запуске.
+    """
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_VIDEOS)
         records = worksheet.get_all_records()
-        terminal_statuses = {'published', 'filtered'}
-        published = set(
-            row.get('Video ID', '')
-            for row in records
-            if row.get('Video ID') and str(row.get('Системный статус', '')).strip().lower() in terminal_statuses
-        )
-        print(f"  📋 Found {len(published)} terminal videos in table")
-        return published
+        tracked = set()
+        for row in records:
+            video_id = str(row.get('Video ID', '')).strip()
+            project_name = str(row.get('Проект', '')).strip()
+            if video_id and project_name:
+                tracked.add((video_id, project_name))
+        print(f"  📋 Found {len(tracked)} tracked video publications in table")
+        return tracked
     except Exception as e:
         print(f"  ⚠️  Error loading published videos: {e}")
         return set()
