@@ -367,6 +367,7 @@ def clean_timestamp_text_values(worksheet):
 
 def clean_master_numeric_text_values(sheet):
     """Clean numeric prefixes and timestamp text in master sheets without touching formatting."""
+    ensure_master_timestamp_formats(sheet)
     cleaned_total = 0
     for worksheet in sheet.worksheets():
         cleaned_total += clean_numeric_text_values(worksheet)
@@ -374,6 +375,46 @@ def clean_master_numeric_text_values(sheet):
 
     if cleaned_total:
         print(f"  ✅ Cleaned text-formatted values: {cleaned_total} cells")
+
+
+def ensure_master_timestamp_formats(sheet):
+    requests = []
+    for worksheet in sheet.worksheets():
+        try:
+            values = worksheet.get_all_values()
+        except Exception:
+            continue
+
+        if not values:
+            continue
+
+        headers = [str(cell).strip().lower() for cell in values[0]]
+        for col_index, header in enumerate(headers):
+            if header not in TIMESTAMP_CLEANUP_HEADERS:
+                continue
+            requests.append({
+                'repeatCell': {
+                    'range': {
+                        'sheetId': worksheet.id,
+                        'startRowIndex': 1,
+                        'startColumnIndex': col_index,
+                        'endColumnIndex': col_index + 1,
+                    },
+                    'cell': {
+                        'userEnteredFormat': {
+                            'numberFormat': {
+                                'type': 'DATE_TIME',
+                                'pattern': 'yyyy-mm-dd hh:mm:ss',
+                            }
+                        }
+                    },
+                    'fields': 'userEnteredFormat.numberFormat',
+                }
+            })
+
+    for i in range(0, len(requests), config.BATCH_SIZE):
+        sheet.batch_update({'requests': requests[i:i + config.BATCH_SIZE]})
+        time.sleep(0.2)
 
 
 def update_project_statuses(worksheet, headers, status_updates):
