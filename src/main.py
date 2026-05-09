@@ -153,13 +153,16 @@ def main():
 
         print("\n📺 Loading project channels...")
         project_channels, active_channels_dict = load_project_channels(client, master_sheet, projects)
-        sync_subscriptions(
-            client,
-            master_sheet,
-            projects,
-            force=should_force_subscription_sync(),
-            active_channels_dict=active_channels_dict,
-        )
+        if push_only_mode():
+            print("\n📡 Subscription sync skipped in push-only mode")
+        else:
+            sync_subscriptions(
+                client,
+                master_sheet,
+                projects,
+                force=should_force_subscription_sync(),
+                active_channels_dict=active_channels_dict,
+            )
 
         if sync_only_mode():
             print("\n✅ Sync-only mode completed. Skipping RSS/publish processing.")
