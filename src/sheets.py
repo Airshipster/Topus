@@ -341,12 +341,7 @@ def clean_timestamp_text_values(worksheet):
 
                 value = str(row[col_index]).strip()
                 normalized_value = value.lstrip("'")
-                if not normalized_value or (
-                    'T' not in normalized_value
-                    and '.' not in normalized_value
-                    and not normalized_value.endswith('Z')
-                    and value == normalized_value
-                ):
+                if not normalized_value:
                     continue
 
                 parsed = parse_datetime_value(value)
@@ -354,7 +349,7 @@ def clean_timestamp_text_values(worksheet):
                     continue
 
                 cleaned = format_timestamp(parsed)
-                if cleaned != value:
+                if cleaned != normalized_value:
                     updates.append({
                         'range': gspread.utils.rowcol_to_a1(row_index, col_index + 1),
                         'values': [[cleaned]],
