@@ -133,7 +133,7 @@ def parse_datetime_value(value):
     if not value:
         return None
 
-    text = str(value).strip()
+    text = str(value).strip().lstrip("'")
     for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M'):
         try:
             return datetime.strptime(text, fmt)
@@ -340,7 +340,13 @@ def clean_timestamp_text_values(worksheet):
                     continue
 
                 value = str(row[col_index]).strip()
-                if not value or ('T' not in value and '.' not in value and not value.endswith('Z')):
+                normalized_value = value.lstrip("'")
+                if not normalized_value or (
+                    'T' not in normalized_value
+                    and '.' not in normalized_value
+                    and not normalized_value.endswith('Z')
+                    and value == normalized_value
+                ):
                     continue
 
                 parsed = parse_datetime_value(value)
