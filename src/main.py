@@ -132,6 +132,7 @@ def main():
     print(f"Started: {format_timestamp()}\n")
     
     master_sheet = None
+    lock_acquired = False
     
     try:
         client = authenticate_google_sheets()
@@ -141,6 +142,7 @@ def main():
         if not acquire_lock(master_sheet):
             print("\n❌ Cannot acquire lock. Another process is running. Exiting.")
             return
+        lock_acquired = True
         
         # Автоочистка старых записей
         cleanup_old_records(master_sheet)
@@ -389,7 +391,7 @@ def main():
         traceback.print_exc()
         
     finally:
-        if master_sheet:
+        if master_sheet and lock_acquired:
             release_lock(master_sheet)
 
 
