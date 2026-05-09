@@ -8,6 +8,7 @@ from rss import rss_fallback_check
 from sheets import (
     acquire_lock,
     authenticate_google_sheets,
+    clean_master_numeric_text_values,
     cleanup_old_records,
     format_timestamp,
     get_recent_published_video_rows,
@@ -166,6 +167,7 @@ def main():
         
         # Автоочистка старых записей
         cleanup_old_records(master_sheet)
+        clean_master_numeric_text_values(master_sheet)
         
         print("\n⚙️  Loading settings...")
         settings = load_settings(master_sheet)

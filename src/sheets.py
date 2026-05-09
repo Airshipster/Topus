@@ -26,6 +26,29 @@ GLOBAL_VIDEOS_HEADERS = [
 
 SETTINGS_MARKER = 'Настройки'
 
+NUMERIC_CLEANUP_HEADERS = {
+    'просмотры',
+    'просмотров',
+    'лайки',
+    'комменты',
+    'комментарии',
+    'видео',
+    'подписчики',
+    'опубл. в tg',
+    'project count',
+}
+
+TIMESTAMP_CLEANUP_HEADERS = {
+    'timestamp',
+    'timestamp (utc)',
+    'дата публикации utc',
+    'дата обработки utc',
+    'дата публикации tg',
+    'provisioned at',
+    'subscribed at',
+    'last renewed',
+}
+
 
 def extract_sheet_id(sheet_url):
     if not sheet_url:
@@ -242,6 +265,114 @@ def ensure_global_videos_worksheet(sheet):
 
 def header_index(headers, name):
     return headers.index(name) if name in headers else None
+
+
+def strip_leading_apostrophe(value):
+    text = str(value)
+    if not text.startswith("'"):
+        return value
+
+    stripped = text[1:].strip()
+    if re.fullmatch(r'-?\d+(?:[.,]\d+)?', stripped):
+        return stripped.replace(',', '.')
+
+    return value
+
+
+def clean_numeric_text_values(worksheet):
+    """Remove Sheets text-prefix apostrophes only from known numeric columns."""
+    try:
+        values = worksheet.get_all_values()
+        if len(values) < 2:
+            return 0
+
+        headers = [str(cell).strip().lower() for cell in values[0]]
+        numeric_cols = {
+            index
+            for index, header in enumerate(headers)
+            if header in NUMERIC_CLEANUP_HEADERS
+        }
+        if not numeric_cols:
+            return 0
+
+        updates = []
+        for row_index, row in enumerate(values[1:], start=2):
+            for col_index in numeric_cols:
+                if col_index >= len(row):
+                    continue
+                cleaned = strip_leading_apostrophe(row[col_index])
+                if cleaned != row[col_index]:
+                    updates.append({
+                        'range': gspread.utils.rowcol_to_a1(row_index, col_index + 1),
+                        'values': [[cleaned]],
+                    })
+
+        for i in range(0, len(updates), config.BATCH_SIZE):
+            worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
+            time.sleep(0.2)
+
+        return len(updates)
+    except Exception as e:
+        print(f"  ⚠️  Error cleaning numeric values in {worksheet.title}: {e}")
+        return 0
+
+
+def clean_timestamp_text_values(worksheet):
+    """Rewrite ISO timestamps to YYYY-MM-DD HH:MM:SS in known timestamp columns."""
+    try:
+        values = worksheet.get_all_values()
+        if len(values) < 2:
+            return 0
+
+        headers = [str(cell).strip().lower() for cell in values[0]]
+        timestamp_cols = {
+            index
+            for index, header in enumerate(headers)
+            if header in TIMESTAMP_CLEANUP_HEADERS
+        }
+        if not timestamp_cols:
+            return 0
+
+        updates = []
+        for row_index, row in enumerate(values[1:], start=2):
+            for col_index in timestamp_cols:
+                if col_index >= len(row):
+                    continue
+
+                value = str(row[col_index]).strip()
+                if not value or ('T' not in value and '.' not in value and not value.endswith('Z')):
+                    continue
+
+                parsed = parse_datetime_value(value)
+                if not parsed:
+                    continue
+
+                cleaned = format_timestamp(parsed)
+                if cleaned != value:
+                    updates.append({
+                        'range': gspread.utils.rowcol_to_a1(row_index, col_index + 1),
+                        'values': [[cleaned]],
+                    })
+
+        for i in range(0, len(updates), config.BATCH_SIZE):
+            worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
+            time.sleep(0.2)
+
+        return len(updates)
+    except Exception as e:
+        print(f"  ⚠️  Error cleaning timestamp values in {worksheet.title}: {e}")
+        return 0
+
+
+def clean_master_numeric_text_values(sheet):
+    """Clean numeric prefixes and timestamp text in master sheets without touching formatting."""
+    cleaned_total = 0
+    for worksheet in sheet.worksheets():
+        cleaned_total += clean_numeric_text_values(worksheet)
+        cleaned_total += clean_timestamp_text_values(worksheet)
+
+    if cleaned_total:
+        print(f"  ✅ Cleaned text-formatted values: {cleaned_total} cells")
 
 
 def update_project_statuses(worksheet, headers, status_updates):
