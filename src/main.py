@@ -67,6 +67,21 @@ def publication_key(video_id, project):
     return (video_id, project['name'])
 
 
+def acquire_lock_with_wait(master_sheet):
+    if push_only_mode():
+        return acquire_lock(master_sheet)
+
+    for attempt in range(1, 21):
+        if acquire_lock(master_sheet):
+            return True
+
+        wait_seconds = 15
+        print(f"  ⏳ Lock busy, waiting {wait_seconds}s before retry {attempt}/20...")
+        time.sleep(wait_seconds)
+
+    return False
+
+
 def delete_rss_missing_publications(master_sheet, project, rss_seen_by_channel, log_entries):
     delete_limit = int(project.get('rss_delete_limit', 5))
     if delete_limit <= 0:
@@ -160,7 +175,7 @@ def main():
         master_sheet = client.open_by_key(config.SPREADSHEET_ID)
         
         # ПРОВЕРКА БЛОКИРОВКИ
-        if not acquire_lock(master_sheet):
+        if not acquire_lock_with_wait(master_sheet):
             print("\n❌ Cannot acquire lock. Another process is running. Exiting.")
             return
         lock_acquired = True
