@@ -11,6 +11,7 @@ import config
 
 
 PROJECT_STATUS_COLUMNS = [
+    'RSS delete limit',
     'Provisioning status',
     'Provisioning error',
     'Provisioned at',
@@ -261,6 +262,23 @@ def update_project_statuses(worksheet, headers, status_updates):
         ])
 
     worksheet.batch_update(updates)
+
+
+def update_project_default_values(worksheet, headers, default_updates):
+    if not default_updates:
+        return
+
+    updates = []
+    for row_index, column_name, value in default_updates:
+        if column_name not in headers:
+            continue
+        updates.append({
+            'range': gspread.utils.rowcol_to_a1(row_index, headers.index(column_name) + 1),
+            'values': [[value]],
+        })
+
+    if updates:
+        worksheet.batch_update(updates)
 
 
 def update_project_runtime_status(sheet, project, status, error_text=''):
@@ -825,6 +843,7 @@ def load_projects(sheet):
     headers = ensure_project_status_columns(worksheet, values[0])
     projects = []
     status_updates = []
+    default_updates = []
 
     def queue_status(row_index, row, status, error_text):
         current_status = str(row.get('Provisioning status', '')).strip()
@@ -859,6 +878,14 @@ def load_projects(sheet):
             allow_shorts = shorts_value == '🟢'
             tg_channel = str(row.get('Telegram канал @', '') or row.get('Telegram канал', '')).strip()
             channels_sheet_name = str(row.get('Название листа', '')).strip()
+            rss_delete_limit_raw = str(row.get('RSS delete limit', '')).strip()
+            if not rss_delete_limit_raw:
+                rss_delete_limit_raw = '5'
+                default_updates.append((row_index, 'RSS delete limit', rss_delete_limit_raw))
+            try:
+                rss_delete_limit = max(0, int(rss_delete_limit_raw))
+            except ValueError:
+                rss_delete_limit = 5
 
             projects.append({
                 'code': row.get('Код проекта'),
@@ -871,12 +898,14 @@ def load_projects(sheet):
                 'default_template': row.get('Шаблон по умолчанию', config.DEFAULT_MESSAGE_TEMPLATE),
                 'stop_words': stop_words,
                 'allow_shorts': allow_shorts,
+                'rss_delete_limit': rss_delete_limit,
             })
             queue_status(row_index, row, 'ready', '')
         else:
             queue_status(row_index, row, 'inactive', '')
 
     update_project_statuses(worksheet, headers, status_updates)
+    update_project_default_values(worksheet, headers, default_updates)
     
     print(f"  ✅ Loaded {len(projects)} active projects")
     return projects

@@ -17,16 +17,16 @@ def check_rss_feed(channel_id):
         response = requests.get(url, timeout=15)
         
         if response.status_code != 200:
-            return []
+            return None
         
         if len(response.content) == 0:
-            return []
+            return None
         
         from xml.etree import ElementTree as ET
         try:
             root = ET.fromstring(response.content)
         except ET.ParseError:
-            return []
+            return None
         
         ns = {
             'atom': 'http://www.w3.org/2005/Atom',
@@ -75,7 +75,7 @@ def check_rss_feed(channel_id):
         
         return videos
     except:
-        return []
+        return None
 
 def rss_fallback_check(client, project, published_videos, project_channels=None, return_seen=False, rss_cache=None):
     """RSS fallback для конкретного проекта"""
@@ -109,7 +109,10 @@ def rss_fallback_check(client, project, published_videos, project_channels=None,
             try:
                 _, videos = future.result()
             except Exception:
-                videos = []
+                videos = None
+
+            if videos is None:
+                continue
 
             videos_found_count += len(videos)
             seen_by_channel[channel_id] = {video['video_id'] for video in videos}

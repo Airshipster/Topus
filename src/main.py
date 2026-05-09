@@ -67,18 +67,38 @@ def publication_key(video_id, project):
 
 
 def delete_rss_missing_publications(master_sheet, project, rss_seen_by_channel, log_entries):
+    delete_limit = int(project.get('rss_delete_limit', 5))
+    if delete_limit <= 0:
+        print("  ⏭️  RSS-missing deletion disabled for project")
+        return
+
     recent_rows = get_recent_published_video_rows(
         master_sheet,
         project['name'],
         hours=config.RSS_FALLBACK_AGE_HOURS,
     )
     deleted = 0
+    candidates = []
 
     for row in recent_rows:
         channel_seen = rss_seen_by_channel.get(row['channel_id'])
         if channel_seen is None or row['video_id'] in channel_seen:
             continue
+        candidates.append(row)
 
+    if len(candidates) > delete_limit:
+        log_entries.append([
+            format_timestamp(),
+            project['name'],
+            'RSS delete skipped',
+            '',
+            f'Candidates {len(candidates)} exceed project limit {delete_limit}',
+            'skipped',
+        ])
+        print(f"  ⚠️  RSS-missing deletion skipped: {len(candidates)} candidates > limit {delete_limit}")
+        return
+
+    for row in candidates:
         if delete_telegram_message(project['bot_token'], project['channel_id'], row['message_id']):
             update_video_publication_status(
                 master_sheet,
