@@ -28,6 +28,10 @@ function textOutput_(text) {
                        .setMimeType(ContentService.MimeType.TEXT);
 }
 
+function formatTimestamp_(date) {
+  return Utilities.formatDate(date, 'UTC', 'yyyy-MM-dd HH:mm:ss');
+}
+
 function triggerPublisher_(videoId, channelId, options) {
   var token = PropertiesService.getScriptProperties().getProperty('GITHUB_DISPATCH_TOKEN');
   options = options || {};

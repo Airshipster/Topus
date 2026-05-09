@@ -56,3 +56,20 @@ def send_to_telegram(bot_token, channel_id, message):
     except Exception as e:
         print(f"  ❌ Telegram error: {e}")
         return None
+
+
+def delete_telegram_message(bot_token, channel_id, message_id):
+    """Удаление сообщения из Telegram-канала."""
+    url = f"https://api.telegram.org/bot{bot_token}/deleteMessage"
+    payload = {
+        'chat_id': channel_id,
+        'message_id': message_id,
+    }
+
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        response.raise_for_status()
+        return bool(response.json().get('ok'))
+    except Exception as e:
+        print(f"  ❌ Telegram delete error: {e}")
+        return False

@@ -4,7 +4,14 @@ from datetime import datetime, timedelta
 import requests
 
 import config
-from sheets import get_all_active_channels
+from sheets import (
+    delete_rows_batch,
+    find_setting_row,
+    format_timestamp,
+    get_all_active_channels,
+    parse_datetime_value,
+    update_setting_value,
+)
 
 
 SUBSCRIPTION_SYNC_SETTING = 'last_subscription_sync'
@@ -17,21 +24,12 @@ def get_subscription_sync_state(sheet):
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_SETTINGS)
         values = worksheet.get_all_values()
-
-        for i, row in enumerate(values):
-            if i == 0:
-                continue
-            if len(row) > 0 and row[0].strip() == SUBSCRIPTION_SYNC_SETTING:
-                last_sync = None
-                if len(row) > 1 and row[1]:
-                    try:
-                        last_sync = datetime.fromisoformat(row[1].replace('Z', ''))
-                    except:
-                        pass
-                return {
-                    'row_index': i + 1,
-                    'last_sync': last_sync,
-                }
+        existing, _ = find_setting_row(values, SUBSCRIPTION_SYNC_SETTING)
+        if existing:
+            return {
+                'row_index': existing['row_number'],
+                'last_sync': parse_datetime_value(existing.get('value', '')),
+            }
     except Exception as e:
         print(f"  ⚠️  Error reading subscription sync state: {e}")
 
@@ -56,17 +54,12 @@ def should_run_subscription_sync(sheet, force=False):
 def update_subscription_sync_state(sheet):
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_SETTINGS)
-        state = get_subscription_sync_state(sheet)
-        timestamp = datetime.utcnow().isoformat() + 'Z'
-
-        if state.get('row_index'):
-            worksheet.update_cell(state['row_index'], 2, timestamp)
-        else:
-            worksheet.append_row([
-                SUBSCRIPTION_SYNC_SETTING,
-                timestamp,
-                'Последняя полная синхронизация YouTube push-подписок',
-            ])
+        update_setting_value(
+            worksheet,
+            SUBSCRIPTION_SYNC_SETTING,
+            format_timestamp(),
+            'Последняя полная синхронизация YouTube push-подписок',
+        )
     except Exception as e:
         print(f"  ⚠️  Error updating subscription sync state: {e}")
 
@@ -85,20 +78,23 @@ def get_subscription_records(sheet):
     try:
         worksheet = sheet.worksheet(SUBSCRIPTIONS_SHEET_NAME)
         values = worksheet.get_all_values()
+        headers = [str(cell).strip() for cell in values[0]] if values else []
+        indexes = {header: index for index, header in enumerate(headers)}
         records = {}
 
-        for i, row in enumerate(values):
-            if i == 0:
-                continue
+        for i, row in enumerate(values[1:], start=2):
+            channel_col = indexes.get('Channel ID', 0)
+            renewed_col = indexes.get('Last Renewed', 2)
+            projects_col = indexes.get('Projects', 3)
 
-            channel_id = row[0].strip() if len(row) > 0 else ''
+            channel_id = row[channel_col].strip() if len(row) > channel_col else ''
             if not channel_id:
                 continue
 
             records[channel_id] = {
-                'row_index': i + 1,
-                'last_renewed': row[2].strip() if len(row) > 2 else '',
-                'projects': row[3].strip() if len(row) > 3 else '',
+                'row_index': i,
+                'last_renewed': row[renewed_col].strip() if len(row) > renewed_col else '',
+                'projects': row[projects_col].strip() if len(row) > projects_col else '',
             }
 
         return records
@@ -118,8 +114,8 @@ def get_or_create_subscriptions_worksheet(sheet):
         worksheet.append_row(SUBSCRIPTIONS_HEADERS)
         return worksheet
 
-    headers = values[0]
-    missing = SUBSCRIPTIONS_HEADERS[len(headers):]
+    headers = [str(cell).strip() for cell in values[0]]
+    missing = [header for header in SUBSCRIPTIONS_HEADERS if header not in headers]
     if missing:
         start_col = len(headers) + 1
         end_col = len(headers) + len(missing)
@@ -142,10 +138,7 @@ def parse_subscription_date(value):
     if not value:
         return None
 
-    try:
-        return datetime.fromisoformat(value.replace('Z', ''))
-    except:
-        return None
+    return parse_datetime_value(value)
 
 def get_stale_subscriptions(subscription_records, active_channels):
     """Каналы, подписку на которые нужно продлить"""
@@ -171,7 +164,7 @@ def save_subscribed_channels_batch(sheet, channel_ids, active_channels_dict):
     """Сохранение подписок на каналы"""
     worksheet = get_or_create_subscriptions_worksheet(sheet)
     
-    timestamp = datetime.utcnow().isoformat()
+    timestamp = format_timestamp()
     rows = [
         [
             channel_id,
@@ -193,7 +186,7 @@ def update_subscription_renewals_batch(sheet, subscription_records, channel_ids)
 
     try:
         worksheet = get_or_create_subscriptions_worksheet(sheet)
-        timestamp = datetime.utcnow().isoformat()
+        timestamp = format_timestamp()
         updates = []
 
         for channel_id in channel_ids:
@@ -290,31 +283,40 @@ def remove_subscribed_channels(sheet, channel_ids):
             if len(row) > 0 and row[0] in channel_ids:
                 rows_to_delete.append(i + 1)
         
-        for row_index in sorted(rows_to_delete, reverse=True):
-            worksheet.delete_rows(row_index)
+        delete_rows_batch(sheet, worksheet, rows_to_delete)
     except Exception as e:
         print(f"  ❌ Error removing subscriptions: {e}")
 
-def sync_subscriptions(client, master_sheet, projects, force=False):
+def sync_subscriptions(client, master_sheet, projects, force=False, active_channels_dict=None):
     """Синхронизация push-подписок"""
     print("\n📡 Syncing subscriptions...")
 
+    if active_channels_dict is None:
+        active_channels_dict = get_all_active_channels(client, projects)
+    active_channels = set(active_channels_dict.keys())
+    subscription_records = get_subscription_records(master_sheet)
+    subscribed_channels = set(subscription_records.keys())
+    to_unsubscribe = subscribed_channels - active_channels
+
     if not should_run_subscription_sync(master_sheet, force=force):
-        print("  ⏭️  Subscription sync skipped (last full sync < 24h)")
+        print("  ⏭️  Subscribe/renew skipped (last full sync < 24h)")
+        if to_unsubscribe:
+            print(f"  Unsubscribing/removing {len(to_unsubscribe)} inactive subscriptions...")
+            for channel_id in to_unsubscribe:
+                unsubscribe_channel(channel_id)
+                time.sleep(0.1)
+            remove_subscribed_channels(master_sheet, to_unsubscribe)
+        subscription_records = get_subscription_records(master_sheet)
+        update_subscription_project_links(master_sheet, subscription_records, active_channels_dict)
         return
 
     if force:
         print("  🔁 Forced subscription sync requested")
-    
-    active_channels_dict = get_all_active_channels(client, projects)
-    active_channels = set(active_channels_dict.keys())
-    subscription_records = get_subscription_records(master_sheet)
-    subscribed_channels = set(subscription_records.keys())
+
     stale_channels = get_stale_subscriptions(subscription_records, active_channels)
     
     to_subscribe = active_channels - subscribed_channels
     to_renew = active_channels & stale_channels
-    to_unsubscribe = subscribed_channels - active_channels
     
     print(f"  Active channels: {len(active_channels)}")
     print(f"  Already subscribed: {len(subscribed_channels)}")
@@ -354,9 +356,10 @@ def sync_subscriptions(client, master_sheet, projects, force=False):
                 unsubscribed.append(channel_id)
             time.sleep(0.1)
         
+        remove_subscribed_channels(master_sheet, to_unsubscribe)
+        print(f"  ✅ Removed inactive subscriptions from sheet: {len(to_unsubscribe)}")
         if unsubscribed:
-            remove_subscribed_channels(master_sheet, unsubscribed)
-            print(f"  ✅ Successfully unsubscribed: {len(unsubscribed)}")
+            print(f"  ✅ PubSub unsubscribe accepted: {len(unsubscribed)}")
     
     if len(to_subscribe) == 0 and len(to_renew) == 0 and len(to_unsubscribe) == 0:
         print("  ✅ No changes needed")

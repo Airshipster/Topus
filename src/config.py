@@ -2,7 +2,7 @@ import os
 
 # Google Sheets
 SPREADSHEET_ID = "19E8OWIYgAoR-PYrtlyPd0HdoBHWXg7nC_bxB_RVZhKI"
-SHEET_NAME_PROJECTS = "Проекты"
+SHEET_NAME_PROJECTS = "Настройки"
 SHEET_NAME_VIDEOS = "Глобальные видео"
 SHEET_NAME_SETTINGS = "Настройки"
 SHEET_NAME_PUSH_EVENTS = "Push события"
@@ -19,12 +19,14 @@ CLOUDFLARE_WORKER_URL = "https://aged-unit-b8f6.elman-ahmadbayov.workers.dev"
 
 # YouTube API
 YOUTUBE_API_KEY = None
+YOUTUBE_API_KEYS = []
 MAX_VIDEO_AGE_HOURS = 168
 MAX_PUBLISH_AGE_HOURS = 24
 RSS_FALLBACK_AGE_HOURS = 24
+RSS_WORKERS = 12
 
 # Cleanup settings
-CLEANUP_AFTER_DAYS = 14
+CLEANUP_AFTER_DAYS = 7
 
 # Filters
 FILTER_SHORTS = True

@@ -1,16 +1,17 @@
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
 import requests
 
 import config
-from sheets import load_youtube_channels
+from sheets import format_timestamp, load_youtube_channels
 
 
 def check_rss_feed(channel_id):
     """Проверка RSS фида канала"""
     try:
-        time.sleep(0.2)
+        time.sleep(0.05)
         
         url = f"{config.CLOUDFLARE_WORKER_URL}/?channel={channel_id}"
         response = requests.get(url, timeout=15)
@@ -69,38 +70,62 @@ def check_rss_feed(channel_id):
                     'url': f"https://www.youtube.com/watch?v={video_id}",
                     'channel': channel_name,
                     'channel_id': channel_id,
-                    'published': published.isoformat()
+                    'published': format_timestamp(published)
                 })
         
         return videos
     except:
         return []
 
-def rss_fallback_check(client, project, published_videos):
+def rss_fallback_check(client, project, published_videos, project_channels=None, return_seen=False, rss_cache=None):
     """RSS fallback для конкретного проекта"""
     print(f"\n  📡 RSS fallback for {project['name']}...")
     
-    project_channels = load_youtube_channels(client, project)
+    if project_channels is None:
+        project_channels = load_youtube_channels(client, project)
     
     print(f"    Checking {len(project_channels)} channels")
     print(f"    Time window: {config.RSS_FALLBACK_AGE_HOURS}h")
     
     new_videos = []
     videos_found_count = 0
+    seen_by_channel = {}
+    rss_cache = rss_cache if rss_cache is not None else {}
     
-    for i, (channel_id, channel_info) in enumerate(project_channels.items()):
-        videos = check_rss_feed(channel_id)
-        videos_found_count += len(videos)
-        
-        if i > 0 and i % 10 == 0:
-            print(f"    Progress: {i}/{len(project_channels)} channels (Found: {videos_found_count} videos, New: {len(new_videos)})")
-        
-        for video in videos:
-            if (video['video_id'], project['name']) not in published_videos:
-                video['project'] = project
-                video['channel_info'] = channel_info
-                new_videos.append(video)
+    def load_channel(channel_id):
+        if channel_id not in rss_cache:
+            rss_cache[channel_id] = check_rss_feed(channel_id)
+        return channel_id, rss_cache[channel_id]
+
+    channel_items = list(project_channels.items())
+    with ThreadPoolExecutor(max_workers=max(1, int(config.RSS_WORKERS))) as executor:
+        futures = {
+            executor.submit(load_channel, channel_id): (i, channel_id, channel_info)
+            for i, (channel_id, channel_info) in enumerate(channel_items)
+        }
+
+        for future in as_completed(futures):
+            i, channel_id, channel_info = futures[future]
+            try:
+                _, videos = future.result()
+            except Exception:
+                videos = []
+
+            videos_found_count += len(videos)
+            seen_by_channel[channel_id] = {video['video_id'] for video in videos}
+
+            if i > 0 and i % 10 == 0:
+                print(f"    Progress: {i}/{len(project_channels)} channels (Found: {videos_found_count} videos, New: {len(new_videos)})")
+
+            for video in videos:
+                if (video['video_id'], project['name']) not in published_videos:
+                    video['project'] = project
+                    video['channel_info'] = channel_info
+                    new_videos.append(video)
     
     print(f"    ✅ RSS scan complete: {videos_found_count} videos total, {len(new_videos)} new")
     
+    if return_seen:
+        return new_videos, seen_by_channel
+
     return new_videos

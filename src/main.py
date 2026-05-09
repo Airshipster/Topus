@@ -9,6 +9,8 @@ from sheets import (
     acquire_lock,
     authenticate_google_sheets,
     cleanup_old_records,
+    format_timestamp,
+    get_recent_published_video_rows,
     get_published_videos,
     get_push_events,
     load_projects,
@@ -22,23 +24,15 @@ from sheets import (
     update_video_publication_status,
     update_last_run,
     update_youtube_quota,
+    parse_datetime_value,
 )
 from subscriptions import sync_subscriptions
-from telegram_client import format_message, send_to_telegram
+from telegram_client import delete_telegram_message, format_message, send_to_telegram
 from youtube_client import get_video_info_from_api, get_youtube_api_calls
 
 
 def parse_datetime(value):
-    if not value:
-        return None
-
-    try:
-        if value.endswith('Z'):
-            return datetime.fromisoformat(value.replace('Z', '+00:00')).replace(tzinfo=None)
-
-        return datetime.fromisoformat(value).replace(tzinfo=None)
-    except Exception:
-        return None
+    return parse_datetime_value(value)
 
 
 def get_stale_reason(published_at):
@@ -63,15 +57,79 @@ def sync_only_mode():
     return value.lower() in ('1', 'true', 'yes')
 
 
+def push_only_mode():
+    value = os.environ.get('TOPUS_PUSH_ONLY', '')
+    return value.lower() in ('1', 'true', 'yes')
+
+
 def publication_key(video_id, project):
     return (video_id, project['name'])
+
+
+def delete_rss_missing_publications(master_sheet, project, rss_seen_by_channel, log_entries):
+    recent_rows = get_recent_published_video_rows(
+        master_sheet,
+        project['name'],
+        hours=config.RSS_FALLBACK_AGE_HOURS,
+    )
+    deleted = 0
+
+    for row in recent_rows:
+        channel_seen = rss_seen_by_channel.get(row['channel_id'])
+        if channel_seen is None or row['video_id'] in channel_seen:
+            continue
+
+        if delete_telegram_message(project['bot_token'], project['channel_id'], row['message_id']):
+            update_video_publication_status(
+                master_sheet,
+                row['video_id'],
+                project['name'],
+                status='deleted_rss_missing',
+                error='RSS missing within recent window',
+            )
+            log_entries.append([
+                format_timestamp(),
+                project['name'],
+                'Telegram post deleted',
+                row['video_id'],
+                'RSS missing within recent window',
+                'deleted',
+            ])
+            deleted += 1
+
+    if deleted:
+        print(f"  🗑️  Deleted RSS-missing Telegram posts: {deleted}")
+
+
+def load_project_channels(client, master_sheet, projects):
+    project_channels = {}
+    active_channels_dict = {}
+
+    for project in projects:
+        channels = load_youtube_channels(client, project)
+        project_channels[project['name']] = channels
+
+        if project.get('channels_error'):
+            update_project_runtime_status(master_sheet, project, 'error', project['channels_error'])
+        else:
+            update_project_runtime_status(master_sheet, project, 'ready', '')
+
+        for channel_id, channel_info in channels.items():
+            if channel_id not in active_channels_dict:
+                active_channels_dict[channel_id] = {
+                    'channel_info': channel_info,
+                    'projects': [],
+                }
+            active_channels_dict[channel_id]['projects'].append(project['name'])
+
+    return project_channels, active_channels_dict
 
 
 def main():
     print("="*60)
     print("TOPUS - YouTube to Telegram Publisher")
     print("="*60)
-    print(f"Started: {datetime.utcnow().isoformat()}Z\n")
+    print(f"Started: {format_timestamp()}\n")
     
     master_sheet = None
     
@@ -92,8 +150,16 @@ def main():
         
         print("\n📂 Loading projects...")
         projects = load_projects(master_sheet)
-        
-        sync_subscriptions(client, master_sheet, projects, force=should_force_subscription_sync())
+
+        print("\n📺 Loading project channels...")
+        project_channels, active_channels_dict = load_project_channels(client, master_sheet, projects)
+        sync_subscriptions(
+            client,
+            master_sheet,
+            projects,
+            force=should_force_subscription_sync(),
+            active_channels_dict=active_channels_dict,
+        )
 
         if sync_only_mode():
             print("\n✅ Sync-only mode completed. Skipping RSS/publish processing.")
@@ -113,17 +179,14 @@ def main():
         # Аккумуляторы для батчевой записи
         videos_to_save = []
         log_entries = []
+        rss_cache = {}
         
         for project in projects:
             print(f"\n{'='*60}")
             print(f"📁 Project: {project['name']}")
             print(f"{'='*60}")
             
-            yt_channels = load_youtube_channels(client, project)
-            if project.get('channels_error'):
-                update_project_runtime_status(master_sheet, project, 'error', project['channels_error'])
-            else:
-                update_project_runtime_status(master_sheet, project, 'ready', '')
+            yt_channels = project_channels.get(project['name'], {})
             print(f"  📺 Active channels: {len(yt_channels)}")
             
             # Process push events
@@ -159,7 +222,7 @@ def main():
                 stale_reason = get_stale_reason(video_published_date)
                 if stale_reason:
                     print(f"  🚫 Skipped stale: {video['title'][:50]} ({stale_reason})")
-                    timestamp = datetime.utcnow().isoformat()
+                    timestamp = format_timestamp()
                     log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], stale_reason, 'filtered'])
                     videos_to_save.append((video, project, video_published_date, None, f"FILTERED: {stale_reason}"))
                     published_videos.add(key)
@@ -170,7 +233,7 @@ def main():
                 should_filter, filter_reason = should_filter_video(video_info_api, project)
                 if should_filter:
                     print(f"  🚫 Filtered: {video['title'][:50]} ({filter_reason})")
-                    timestamp = datetime.utcnow().isoformat()
+                    timestamp = format_timestamp()
                     log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], filter_reason, 'filtered'])
                     videos_to_save.append((video, project, video_published_date, None, f"FILTERED: {filter_reason}"))
                     published_videos.add(key)
@@ -186,8 +249,20 @@ def main():
                 
                 mark_push_event_processed(master_sheet, event['row_index'], project['name'])
             
+            if push_only_mode():
+                print("  ⏭️  RSS fallback skipped in push-only mode")
+                continue
+
             # RSS fallback check
-            rss_videos = rss_fallback_check(client, project, published_videos)
+            rss_videos, rss_seen_by_channel = rss_fallback_check(
+                client,
+                project,
+                published_videos,
+                project_channels=yt_channels,
+                return_seen=True,
+                rss_cache=rss_cache,
+            )
+            delete_rss_missing_publications(master_sheet, project, rss_seen_by_channel, log_entries)
             
             for video in rss_videos:
                 channel_info = video['channel_info']
@@ -202,7 +277,7 @@ def main():
                     stale_reason = get_stale_reason(video_published_date)
                     if stale_reason:
                         print(f"    🚫 Skipped stale (RSS): {video['title'][:50]} ({stale_reason})")
-                        timestamp = datetime.utcnow().isoformat()
+                        timestamp = format_timestamp()
                         log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], f"RSS: {stale_reason}", 'filtered'])
                         videos_to_save.append((video, project, video_published_date, None, f"FILTERED: RSS: {stale_reason}"))
                         published_videos.add(key)
@@ -213,18 +288,18 @@ def main():
                     
                     if should_filter:
                         print(f"    🚫 Filtered (RSS): {video['title'][:50]} ({filter_reason})")
-                        timestamp = datetime.utcnow().isoformat()
+                        timestamp = format_timestamp()
                         log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], f"RSS: {filter_reason}", 'filtered'])
                         videos_to_save.append((video, project, video_published_date, None, f"FILTERED: RSS: {filter_reason}"))
                         published_videos.add(key)
                         total_filtered += 1
                         continue
                 else:
-                    video_published_date = video.get('published', datetime.utcnow().isoformat())
+                    video_published_date = video.get('published', format_timestamp())
                     stale_reason = get_stale_reason(video_published_date)
                     if stale_reason:
                         print(f"    🚫 Skipped stale (RSS): {video['title'][:50]} ({stale_reason})")
-                        timestamp = datetime.utcnow().isoformat()
+                        timestamp = format_timestamp()
                         log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], f"RSS: {stale_reason}", 'filtered'])
                         videos_to_save.append((video, project, video_published_date, None, f"FILTERED: RSS: {stale_reason}"))
                         published_videos.add(key)
@@ -269,13 +344,13 @@ def main():
             
             if tg_message_id:
                 print(f"    ✅ Published (msg: {tg_message_id})")
-                timestamp = datetime.utcnow().isoformat()
+                timestamp = format_timestamp()
                 log_entries.append([timestamp, project['name'], 'Video published', video['video_id'], f"Telegram msg: {tg_message_id}", 'success'])
                 update_video_publication_status(master_sheet, video['video_id'], project['name'], tg_message_id=tg_message_id, status='published')
                 total_published += 1
             else:
                 print(f"    ❌ Failed to publish")
-                timestamp = datetime.utcnow().isoformat()
+                timestamp = format_timestamp()
                 log_entries.append([timestamp, project['name'], 'Publish failed', video['video_id'], 'Telegram error', 'error'])
                 update_video_publication_status(master_sheet, video['video_id'], project['name'], status='failed', error='Telegram error')
                 total_failed += 1
@@ -302,7 +377,7 @@ def main():
         print(f"  🚫 Filtered: {total_filtered}")
         print(f"  ❌ Failed: {total_failed}")
         print(f"  📊 YouTube API calls: {get_youtube_api_calls()}")
-        print(f"\nFinished: {datetime.utcnow().isoformat()}Z")
+        print(f"\nFinished: {format_timestamp()}")
         print(f"{'='*60}")
         
     except Exception as e:

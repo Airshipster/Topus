@@ -6,8 +6,9 @@ def should_filter_video(video_info, project):
     if not video_info:
         return False, ""
     
-    if config.FILTER_SHORTS and video_info.get('is_short'):
-        return True, f"Short video ({video_info.get('duration_seconds', 0)}s)"
+    if config.FILTER_SHORTS and not project.get('allow_shorts') and video_info.get('is_short'):
+        reason = video_info.get('short_reason') or f"{video_info.get('duration_seconds', 0)}s"
+        return True, f"Short video ({reason})"
     
     if config.FILTER_LIVE and video_info.get('is_live'):
         return True, "Live stream"
