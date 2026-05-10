@@ -1,10 +1,12 @@
 import time
 from datetime import datetime, timedelta
 
+import gspread
 import requests
 
 import config
 from sheets import (
+    clean_sheet_value,
     delete_rows_batch,
     find_setting_row,
     format_timestamp,
@@ -69,7 +71,7 @@ def get_subscribed_channels(sheet):
     try:
         worksheet = sheet.worksheet(SUBSCRIPTIONS_SHEET_NAME)
         records = worksheet.get_all_records()
-        return set(row.get('Channel ID', '') for row in records if row.get('Channel ID'))
+        return set(clean_sheet_value(row.get('Channel ID', '')) for row in records if clean_sheet_value(row.get('Channel ID', '')))
     except:
         return set()
 
@@ -87,14 +89,17 @@ def get_subscription_records(sheet):
             renewed_col = indexes.get('Last Renewed', 2)
             projects_col = indexes.get('Projects', 3)
 
-            channel_id = row[channel_col].strip() if len(row) > channel_col else ''
+            count_col = indexes.get('Project Count', 4)
+
+            channel_id = clean_sheet_value(row[channel_col]).strip() if len(row) > channel_col else ''
             if not channel_id:
                 continue
 
             records[channel_id] = {
                 'row_index': i,
-                'last_renewed': row[renewed_col].strip() if len(row) > renewed_col else '',
-                'projects': row[projects_col].strip() if len(row) > projects_col else '',
+                'last_renewed': clean_sheet_value(row[renewed_col]).strip() if len(row) > renewed_col else '',
+                'projects': clean_sheet_value(row[projects_col]).strip() if len(row) > projects_col else '',
+                'project_count': clean_sheet_value(row[count_col]).strip() if len(row) > count_col else '',
             }
 
         return records
@@ -104,7 +109,7 @@ def get_subscription_records(sheet):
 def get_or_create_subscriptions_worksheet(sheet):
     try:
         worksheet = sheet.worksheet(SUBSCRIPTIONS_SHEET_NAME)
-    except:
+    except gspread.exceptions.WorksheetNotFound:
         worksheet = sheet.add_worksheet(SUBSCRIPTIONS_SHEET_NAME, rows=5000, cols=len(SUBSCRIPTIONS_HEADERS))
         worksheet.append_row(SUBSCRIPTIONS_HEADERS)
         return worksheet
@@ -177,7 +182,7 @@ def save_subscribed_channels_batch(sheet, channel_ids, active_channels_dict):
     ]
     
     if rows:
-        worksheet.append_rows(rows)
+        worksheet.append_rows(rows, value_input_option='USER_ENTERED')
 
 def update_subscription_renewals_batch(sheet, subscription_records, channel_ids):
     """Обновление времени продления существующих подписок"""
@@ -217,7 +222,7 @@ def update_subscription_project_links(sheet, subscription_records, active_channe
             projects_text = ', '.join(projects)
             project_count = len(projects)
 
-            if record.get('projects') == projects_text:
+            if record.get('projects') == projects_text and str(record.get('project_count')) == str(project_count):
                 continue
 
             updates.extend([

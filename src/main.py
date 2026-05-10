@@ -19,6 +19,7 @@ from sheets import (
     load_youtube_channels,
     log_events_batch,
     mark_push_event_processed,
+    maintain_workbook_layout,
     release_lock,
     save_videos_batch,
     update_project_runtime_status,
@@ -180,12 +181,13 @@ def main():
             return
         lock_acquired = True
         
+        print("\n⚙️  Loading settings...")
+        settings = load_settings(master_sheet)
+        maintain_workbook_layout(master_sheet)
+
         # Автоочистка старых записей
         cleanup_old_records(master_sheet)
         clean_master_numeric_text_values(master_sheet)
-        
-        print("\n⚙️  Loading settings...")
-        settings = load_settings(master_sheet)
         
         print("\n📂 Loading projects...")
         projects = load_projects(master_sheet)
@@ -426,6 +428,7 @@ def main():
         print(f"\n❌❌❌ FATAL ERROR: {e}")
         import traceback
         traceback.print_exc()
+        raise
         
     finally:
         if master_sheet and lock_acquired:

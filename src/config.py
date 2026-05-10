@@ -6,6 +6,7 @@ SHEET_NAME_PROJECTS = "Настройки"
 SHEET_NAME_VIDEOS = "Глобальные видео"
 SHEET_NAME_SETTINGS = "Настройки"
 SHEET_NAME_PUSH_EVENTS = "Push события"
+DISPLAY_TIMEZONE = "Asia/Baku"
 
 # Service Account
 SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
