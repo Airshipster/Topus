@@ -19,6 +19,7 @@ def main():
                 'replacement': '";"',
                 'allSheets': True,
                 'matchCase': True,
+                'includeFormulas': True,
             }
         }]
     })
