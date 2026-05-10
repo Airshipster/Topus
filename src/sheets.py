@@ -159,12 +159,12 @@ def tg_channel_url(project):
 
 def project_link_formula(project_name, project):
     url = tg_channel_url(project)
-    return f'=HYPERLINK("{url}","{project_name}")' if url else project_name
+    return f'=HYPERLINK("{url}";"{project_name}")' if url else project_name
 
 
 def project_name_from_cell(value):
     value = str(clean_sheet_value(value) or '').strip()
-    match = re.match(r'=HYPERLINK\("[^"]+","([^"]+)"\)', value, flags=re.IGNORECASE)
+    match = re.match(r'=HYPERLINK\("[^"]+"[;,]"([^"]+)"\)', value, flags=re.IGNORECASE)
     return match.group(1) if match else value
 
 
