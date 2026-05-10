@@ -29,7 +29,7 @@ function textOutput_(text) {
 }
 
 function formatTimestamp_(date) {
-  return Utilities.formatDate(date, DISPLAY_TIMEZONE, 'yyyy-MM-dd HH:mm:ss');
+  return Utilities.formatDate(date, 'Asia/Baku', 'yyyy-MM-dd HH:mm:ss');
 }
 
 function triggerPublisher_(videoId, channelId, options) {

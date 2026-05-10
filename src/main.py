@@ -20,6 +20,7 @@ from sheets import (
     log_events_batch,
     mark_push_event_processed,
     maintain_workbook_layout,
+    update_video_project_links,
     release_lock,
     save_videos_batch,
     update_project_runtime_status,
@@ -191,6 +192,7 @@ def main():
         
         print("\n📂 Loading projects...")
         projects = load_projects(master_sheet)
+        update_video_project_links(master_sheet, projects)
 
         print("\n📺 Loading project channels...")
         project_channels, active_channels_dict = load_project_channels(client, master_sheet, projects)
