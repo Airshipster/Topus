@@ -681,18 +681,23 @@ def acquire_lock(sheet):
                 
                 if lock_value == 'locked':
                     lock_time_str = existing.get('description', '')
+                    stale_lock = False
                     if lock_time_str:
                         try:
                             lock_time = parse_datetime_value(lock_time_str)
                             if not lock_time:
                                 raise ValueError('invalid lock time')
-                            if (current_local_datetime() - lock_time).total_seconds() > 900:
-                                print("  ⚠️  Stale lock detected (>15min), removing...")
-                            else:
-                                print("  ❌ Another process is running! Exiting...")
-                                return False
+                            stale_lock = (current_local_datetime() - lock_time).total_seconds() > 900
                         except:
-                            pass
+                            stale_lock = True
+                    else:
+                        stale_lock = True
+
+                    if stale_lock:
+                        print("  ⚠️  Stale lock detected, removing...")
+                    else:
+                        print("  ❌ Another process is running! Exiting...")
+                        return False
                 
                 current_time = format_timestamp()
                 worksheet.update_cell(lock_row, table['value_col'], 'locked')
