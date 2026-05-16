@@ -2,6 +2,8 @@ import time
 import os
 from datetime import datetime
 
+from gspread.exceptions import APIError
+
 import config
 from filters import should_filter_video
 from rss import rss_fallback_check
@@ -94,6 +96,22 @@ def acquire_lock_with_wait(master_sheet):
         time.sleep(wait_seconds)
 
     return False
+
+
+def is_sheets_quota_error(error):
+    return isinstance(error, APIError) and '[429]' in str(error)
+
+
+def open_master_sheet_with_retry(client, attempts=4):
+    for attempt in range(1, attempts + 1):
+        try:
+            return client.open_by_key(config.SPREADSHEET_ID)
+        except Exception as error:
+            if not is_sheets_quota_error(error) or attempt == attempts:
+                raise
+            wait_seconds = attempt * 15
+            print(f"  ⏳ Google Sheets quota busy while opening master sheet; retrying in {wait_seconds}s ({attempt}/{attempts})")
+            time.sleep(wait_seconds)
 
 
 def delete_rss_missing_publications(master_sheet, project, rss_seen_by_channel, log_entries):
@@ -213,7 +231,13 @@ def main():
     
     try:
         client = authenticate_google_sheets()
-        master_sheet = client.open_by_key(config.SPREADSHEET_ID)
+        try:
+            master_sheet = open_master_sheet_with_retry(client)
+        except Exception as error:
+            if push_only_mode() and is_sheets_quota_error(error):
+                print(f"\n⚠️  Google Sheets read quota is busy; push-only run will retry on the next dispatch: {error}")
+                return
+            raise
         
         # ПРОВЕРКА БЛОКИРОВКИ
         if not acquire_lock_with_wait(master_sheet):
