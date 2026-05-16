@@ -7,6 +7,10 @@ function doPost(e) {
   lock.waitLock(30000);
 
   try {
+    if (!payload.videoId || !payload.channelId) {
+      console.warn('Push payload ignored: missing videoId or channelId');
+      return textOutput_('ignored: missing videoId or channelId');
+    }
     appendPushEvent_(timestamp, payload.videoId, payload.channelId, rawXml);
     triggerPublisher_(payload.videoId, payload.channelId);
   } finally {

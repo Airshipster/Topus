@@ -20,10 +20,11 @@ from sheets import (
     log_events_batch,
     mark_push_event_processed,
     maintain_workbook_layout,
+    reconcile_pending_published_videos,
     update_video_project_links,
     release_lock,
     save_videos_batch,
-    update_project_runtime_status,
+    update_project_channel_counts,
     update_video_publication_status,
     update_last_run,
     update_youtube_quota,
@@ -31,7 +32,7 @@ from sheets import (
 )
 from subscriptions import sync_subscriptions
 from telegram_client import delete_telegram_message, format_message, send_to_telegram
-from youtube_client import get_video_info_from_api, get_youtube_api_calls
+from youtube_client import get_last_youtube_api_error, get_video_info_from_api, get_youtube_api_calls
 
 
 def parse_datetime(value):
@@ -63,6 +64,17 @@ def sync_only_mode():
 def push_only_mode():
     value = os.environ.get('TOPUS_PUSH_ONLY', '')
     return value.lower() in ('1', 'true', 'yes')
+
+
+def print_detection_latency_note():
+    rss_avg_minutes = 15
+    push_fallback_avg_minutes = 2.5
+    push_wait_reduction = round((rss_avg_minutes - push_fallback_avg_minutes) / rss_avg_minutes * 100)
+    print(
+        "\n⏱️  Detection latency: Push API ≈0-5m fallback "
+        f"(avg {push_fallback_avg_minutes:g}m), RSS feed ≈0-30m "
+        f"(avg {rss_avg_minutes:g}m). Push API reduces waiting by ~{push_wait_reduction}% vs RSS-only."
+    )
 
 
 def publication_key(video_id, project):
@@ -147,11 +159,7 @@ def load_project_channels(client, master_sheet, projects):
         channels = load_youtube_channels(client, project)
         project_channels[project['name']] = channels
 
-        if project.get('channels_error'):
-            update_project_runtime_status(master_sheet, project, 'error', project['channels_error'])
-        else:
-            update_project_runtime_status(master_sheet, project, 'ready', '')
-
+        project['channel_count'] = len(channels)
         for channel_id, channel_info in channels.items():
             if channel_id not in active_channels_dict:
                 active_channels_dict[channel_id] = {
@@ -184,7 +192,9 @@ def main():
         
         print("\n⚙️  Loading settings...")
         settings = load_settings(master_sheet)
+        print_detection_latency_note()
         maintain_workbook_layout(master_sheet)
+        reconcile_pending_published_videos(master_sheet)
 
         # Автоочистка старых записей
         cleanup_old_records(master_sheet)
@@ -196,6 +206,7 @@ def main():
 
         print("\n📺 Loading project channels...")
         project_channels, active_channels_dict = load_project_channels(client, master_sheet, projects)
+        update_project_channel_counts(master_sheet, projects)
         if push_only_mode():
             print("\n📡 Subscription sync skipped in push-only mode")
         else:
@@ -226,6 +237,15 @@ def main():
         videos_to_save = []
         log_entries = []
         rss_cache = {}
+        video_info_cache = {}
+
+        def get_cached_video_info(video_id):
+            if video_id not in video_info_cache:
+                video_info_cache[video_id] = (
+                    get_video_info_from_api(video_id),
+                    get_last_youtube_api_error(),
+                )
+            return video_info_cache[video_id]
         
         for project in projects:
             print(f"\n{'='*60}")
@@ -236,67 +256,85 @@ def main():
             print(f"  📺 Active channels: {len(yt_channels)}")
             
             # Process push events
-            for event in push_events:
-                if event['channel_id'] not in yt_channels:
-                    continue
+            if not project.get('push_api_enabled', True):
+                print("  ⏭️  Push API disabled for project")
+            else:
+                for event in push_events:
+                    if event['channel_id'] not in yt_channels:
+                        continue
                 
-                key = publication_key(event['video_id'], project)
+                    key = publication_key(event['video_id'], project)
 
-                if key in published_videos:
-                    mark_push_event_processed(master_sheet, event['row_index'], project['name'])
-                    continue
+                    if key in published_videos:
+                        mark_push_event_processed(master_sheet, event['row_index'], project['name'], event.get('projects', ''))
+                        continue
                 
-                total_found += 1
+                    total_found += 1
                 
-                video_info_api = get_video_info_from_api(event['video_id'])
+                    video_info_api, youtube_error = get_cached_video_info(event['video_id'])
                 
-                if not video_info_api:
-                    mark_push_event_processed(master_sheet, event['row_index'], project['name'])
-                    continue
+                    if not video_info_api:
+                        if youtube_error:
+                            print(f"  ⚠️  YouTube API unavailable for {event['video_id']}: {youtube_error}")
+                            log_entries.append([
+                                format_timestamp(),
+                                project['name'],
+                                'YouTube API unavailable',
+                                event['video_id'],
+                                youtube_error,
+                                'error',
+                            ])
+                            total_failed += 1
+                            continue
+                        mark_push_event_processed(master_sheet, event['row_index'], project['name'], event.get('projects', ''))
+                        continue
                 
-                channel_info = yt_channels[event['channel_id']]
+                    channel_info = yt_channels[event['channel_id']]
                 
-                video = {
-                    'video_id': event['video_id'],
-                    'title': video_info_api['title'],
-                    'url': f"https://www.youtube.com/watch?v={event['video_id']}",
-                    'channel': video_info_api['channel'],
-                    'channel_id': event['channel_id']
-                }
+                    video = {
+                        'video_id': event['video_id'],
+                        'title': video_info_api['title'],
+                        'url': f"https://www.youtube.com/watch?v={event['video_id']}",
+                        'channel': video_info_api['channel'],
+                        'channel_id': event['channel_id']
+                    }
                 
-                video_published_date = video_info_api['published']
-                stale_reason = get_stale_reason(video_published_date)
-                if stale_reason:
-                    print(f"  🚫 Skipped stale: {video['title'][:50]} ({stale_reason})")
-                    timestamp = format_timestamp()
-                    log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], stale_reason, 'filtered'])
-                    videos_to_save.append((video, project, video_published_date, None, f"FILTERED: {stale_reason}"))
+                    video_published_date = video_info_api['published']
+                    stale_reason = get_stale_reason(video_published_date)
+                    if stale_reason:
+                        print(f"  🚫 Skipped stale: {video['title'][:50]} ({stale_reason})")
+                        timestamp = format_timestamp()
+                        log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], stale_reason, 'filtered'])
+                        videos_to_save.append((video, project, video_published_date, None, f"FILTERED: {stale_reason}"))
+                        published_videos.add(key)
+                        mark_push_event_processed(master_sheet, event['row_index'], project['name'], event.get('projects', ''))
+                        total_filtered += 1
+                        continue
+                
+                    should_filter, filter_reason = should_filter_video(video_info_api, project)
+                    if should_filter:
+                        print(f"  🚫 Filtered: {video['title'][:50]} ({filter_reason})")
+                        timestamp = format_timestamp()
+                        log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], filter_reason, 'filtered'])
+                        videos_to_save.append((video, project, video_published_date, None, f"FILTERED: {filter_reason}"))
+                        published_videos.add(key)
+                        mark_push_event_processed(master_sheet, event['row_index'], project['name'], event.get('projects', ''))
+                        total_filtered += 1
+                        continue
+                
+                    # СНАЧАЛА добавляем в батч для сохранения
+                    videos_to_save.append((video, project, video_published_date, None, None))
                     published_videos.add(key)
-                    mark_push_event_processed(master_sheet, event['row_index'], project['name'])
-                    total_filtered += 1
-                    continue
                 
-                should_filter, filter_reason = should_filter_video(video_info_api, project)
-                if should_filter:
-                    print(f"  🚫 Filtered: {video['title'][:50]} ({filter_reason})")
-                    timestamp = format_timestamp()
-                    log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], filter_reason, 'filtered'])
-                    videos_to_save.append((video, project, video_published_date, None, f"FILTERED: {filter_reason}"))
-                    published_videos.add(key)
-                    mark_push_event_processed(master_sheet, event['row_index'], project['name'])
-                    total_filtered += 1
-                    continue
+                    print(f"  📝 Queued: {video['title'][:50]}...")
                 
-                # СНАЧАЛА добавляем в батч для сохранения
-                videos_to_save.append((video, project, video_published_date, None, None))
-                published_videos.add(key)
-                
-                print(f"  📝 Queued: {video['title'][:50]}...")
-                
-                mark_push_event_processed(master_sheet, event['row_index'], project['name'])
+                    mark_push_event_processed(master_sheet, event['row_index'], project['name'], event.get('projects', ''))
             
             if push_only_mode():
                 print("  ⏭️  RSS fallback skipped in push-only mode")
+                continue
+            if not project.get('rss_feed_enabled', True):
+                print("  ⏭️  RSS feed disabled for project")
                 continue
 
             # RSS fallback check
@@ -316,7 +354,7 @@ def main():
                 
                 total_found += 1
                 
-                video_info_api = get_video_info_from_api(video['video_id'])
+                video_info_api, _ = get_cached_video_info(video['video_id'])
                 
                 if video_info_api:
                     video_published_date = video_info_api['published']

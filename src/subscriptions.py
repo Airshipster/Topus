@@ -20,6 +20,7 @@ SUBSCRIPTION_SYNC_SETTING = 'last_subscription_sync'
 SUBSCRIPTION_SYNC_INTERVAL_SECONDS = 86400
 SUBSCRIPTIONS_SHEET_NAME = 'Подписки'
 SUBSCRIPTIONS_HEADERS = ['Channel ID', 'Subscribed At', 'Last Renewed', 'Projects', 'Project Count']
+subscriptions_values_rewritten = False
 
 
 def get_subscription_sync_state(sheet):
@@ -78,7 +79,7 @@ def get_subscribed_channels(sheet):
 def get_subscription_records(sheet):
     """Получение подписок вместе со строками и датой обновления"""
     try:
-        worksheet = sheet.worksheet(SUBSCRIPTIONS_SHEET_NAME)
+        worksheet = get_or_create_subscriptions_worksheet(sheet)
         values = worksheet.get_all_values()
         headers = [str(cell).strip() for cell in values[0]] if values else []
         indexes = {header: index for index, header in enumerate(headers)}
@@ -103,23 +104,70 @@ def get_subscription_records(sheet):
             }
 
         return records
-    except:
+    except Exception as e:
+        print(f"  ⚠️  Error reading subscription records: {type(e).__name__}: {e}")
         return {}
 
+
+def rewrite_subscriptions_values(worksheet):
+    values = worksheet.get_all_values()
+    if len(values) < 2:
+        return 0
+
+    updates = []
+    for row_index, row in enumerate(values[1:], start=2):
+        cleaned = [clean_sheet_value(cell) for cell in row[:len(SUBSCRIPTIONS_HEADERS)]]
+        if len(cleaned) < len(SUBSCRIPTIONS_HEADERS):
+            cleaned.extend([''] * (len(SUBSCRIPTIONS_HEADERS) - len(cleaned)))
+        updates.append({
+            'range': f'A{row_index}:{column_letter(len(SUBSCRIPTIONS_HEADERS))}{row_index}',
+            'values': [cleaned],
+        })
+
+    for i in range(0, len(updates), config.BATCH_SIZE):
+        worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
+        time.sleep(0.2)
+
+    return len(updates)
+
 def get_or_create_subscriptions_worksheet(sheet):
+    global subscriptions_values_rewritten
+
     try:
         worksheet = sheet.worksheet(SUBSCRIPTIONS_SHEET_NAME)
     except gspread.exceptions.WorksheetNotFound:
         worksheet = sheet.add_worksheet(SUBSCRIPTIONS_SHEET_NAME, rows=5000, cols=len(SUBSCRIPTIONS_HEADERS))
-        worksheet.append_row(SUBSCRIPTIONS_HEADERS)
+        worksheet.append_row(SUBSCRIPTIONS_HEADERS, value_input_option='USER_ENTERED')
         return worksheet
 
     values = worksheet.get_all_values()
     if not values:
-        worksheet.append_row(SUBSCRIPTIONS_HEADERS)
+        worksheet.append_row(SUBSCRIPTIONS_HEADERS, value_input_option='USER_ENTERED')
         return worksheet
 
     headers = [str(cell).strip() for cell in values[0]]
+    normalized_headers = []
+    changed = False
+    seen = set()
+    for header in headers:
+        if header.lower().startswith('project count'):
+            normalized = 'Project Count'
+            changed = changed or header != 'Project Count'
+        else:
+            normalized = header
+        if normalized in seen:
+            changed = True
+            normalized = ''
+        seen.add(normalized)
+        normalized_headers.append(normalized)
+    if changed:
+        worksheet.update(
+            range_name=f'A1:{column_letter(len(normalized_headers))}1',
+            values=[normalized_headers],
+            value_input_option='USER_ENTERED',
+        )
+        headers = normalized_headers
+
     missing = [header for header in SUBSCRIPTIONS_HEADERS if header not in headers]
     if missing:
         start_col = len(headers) + 1
@@ -127,8 +175,14 @@ def get_or_create_subscriptions_worksheet(sheet):
         worksheet.update(
             range_name=f'{column_letter(start_col)}1:{column_letter(end_col)}1',
             values=[missing],
+            value_input_option='USER_ENTERED',
         )
 
+    if not subscriptions_values_rewritten:
+        rewritten = rewrite_subscriptions_values(worksheet)
+        subscriptions_values_rewritten = True
+        if rewritten:
+            print(f"  🧹 Rewrote subscription rows without text prefixes: {rewritten}")
     return worksheet
 
 def column_letter(column_index):
@@ -205,7 +259,7 @@ def update_subscription_renewals_batch(sheet, subscription_records, channel_ids)
             })
 
         if updates:
-            worksheet.batch_update(updates)
+            worksheet.batch_update(updates, value_input_option='USER_ENTERED')
     except Exception as e:
         print(f"  ⚠️  Error updating subscription renewals: {e}")
 
@@ -231,7 +285,7 @@ def update_subscription_project_links(sheet, subscription_records, active_channe
             ])
 
         for i in range(0, len(updates), config.BATCH_SIZE):
-            worksheet.batch_update(updates[i:i + config.BATCH_SIZE])
+            worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
             time.sleep(0.2)
 
         if updates:

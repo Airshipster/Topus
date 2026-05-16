@@ -12,6 +12,7 @@ import config
 
 
 PROJECT_STATUS_COLUMNS = [
+    'Кол. 🟢 каналов',
     'RSS delete limit',
     'Provisioning status',
     'Provisioning error',
@@ -59,8 +60,12 @@ def clean_sheet_value(value):
     return value
 
 
-def clean_row(row):
+def clean_sheet_row(row):
     return [clean_sheet_value(value) for value in row]
+
+
+def clean_row(row):
+    return clean_sheet_row(row)
 
 
 def display_timezone():
@@ -268,8 +273,9 @@ def ensure_project_status_columns(worksheet, headers):
 
     start_col = len(headers) + 1
     worksheet.update(
-        range_name=f'{chr(64 + start_col)}1:{chr(64 + start_col + len(missing) - 1)}1',
+        range_name=f'{a1_column(start_col)}1:{a1_column(start_col + len(missing) - 1)}1',
         values=[missing],
+        value_input_option='USER_ENTERED',
     )
     return headers + missing
 
@@ -417,21 +423,28 @@ def update_setting_value(worksheet, key, value, description=''):
     existing, table = find_setting_row(values, key)
 
     if not table:
-        worksheet.append_row([key, value, description])
+        worksheet.append_row(clean_sheet_row([key, value, description]), value_input_option='USER_ENTERED')
         return
 
     if existing:
-        worksheet.update_cell(existing['row_number'], table['value_col'], value)
+        updates = [{
+            'range': gspread.utils.rowcol_to_a1(existing['row_number'], table['value_col']),
+            'values': [[clean_sheet_value(value)]],
+        }]
         if description and table.get('description_col') and not existing.get('description'):
-            worksheet.update_cell(existing['row_number'], table['description_col'], description)
+            updates.append({
+                'range': gspread.utils.rowcol_to_a1(existing['row_number'], table['description_col']),
+                'values': [[clean_sheet_value(description)]],
+            })
+        worksheet.batch_update(updates, value_input_option='USER_ENTERED')
         return
 
     append_row = [''] * max(table['description_col'] or 0, table['value_col'])
-    append_row[table['key_col'] - 1] = key
-    append_row[table['value_col'] - 1] = value
+    append_row[table['key_col'] - 1] = clean_sheet_value(key)
+    append_row[table['value_col'] - 1] = clean_sheet_value(value)
     if description and table.get('description_col'):
-        append_row[table['description_col'] - 1] = description
-    worksheet.append_row(append_row, value_input_option='USER_ENTERED')
+        append_row[table['description_col'] - 1] = clean_sheet_value(description)
+    worksheet.append_row(clean_sheet_row(append_row), value_input_option='USER_ENTERED')
 
 
 def ensure_global_videos_worksheet(sheet):
@@ -609,7 +622,61 @@ def update_project_statuses(worksheet, headers, status_updates):
             {'range': gspread.utils.rowcol_to_a1(row_index, at_col), 'values': [[timestamp]]},
         ])
 
-    worksheet.batch_update(updates)
+    worksheet.batch_update(updates, value_input_option='USER_ENTERED')
+
+
+def update_project_channel_counts(sheet, projects):
+    try:
+        worksheet = sheet.worksheet(config.SHEET_NAME_PROJECTS)
+        values = worksheet.get_all_values()
+        if not values:
+            return
+
+        headers = ensure_project_status_columns(worksheet, values[0])
+        count_col = headers.index('Кол. 🟢 каналов') + 1
+        status_col = headers.index('Provisioning status') + 1
+        error_col = headers.index('Provisioning error') + 1
+        at_col = headers.index('Provisioned at') + 1
+        code_col = headers.index('Код проекта') if 'Код проекта' in headers else None
+        name_col = headers.index('Название') if 'Название' in headers else None
+        projects_by_code = {str(project.get('code', '')).strip(): project for project in projects if project.get('code')}
+        projects_by_name = {str(project.get('name', '')).strip(): project for project in projects if project.get('name')}
+        updates = []
+
+        for row_index, row in enumerate(values[1:], start=2):
+            if any(str(cell).strip() == SETTINGS_MARKER for cell in row):
+                break
+            row_code = row[code_col].strip() if code_col is not None and len(row) > code_col else ''
+            row_name = row[name_col].strip() if name_col is not None and len(row) > name_col else ''
+            project = projects_by_code.get(row_code) or projects_by_name.get(row_name)
+            if not project:
+                continue
+            channel_count = str(project.get('channel_count', 0))
+            status = 'error' if project.get('channels_error') else 'ready'
+            error_text = project.get('channels_error', '')
+            provisioned_at = format_timestamp()
+            current = str(row[count_col - 1]).strip() if len(row) >= count_col else ''
+            if current != channel_count:
+                updates.append({
+                    'range': gspread.utils.rowcol_to_a1(row_index, count_col),
+                    'values': [[channel_count]],
+                })
+            current_status = str(row[status_col - 1]).strip() if len(row) >= status_col else ''
+            current_error = str(row[error_col - 1]).strip() if len(row) >= error_col else ''
+            if current_status != status or current_error != error_text:
+                updates.extend([
+                    {'range': gspread.utils.rowcol_to_a1(row_index, status_col), 'values': [[status]]},
+                    {'range': gspread.utils.rowcol_to_a1(row_index, error_col), 'values': [[error_text]]},
+                    {'range': gspread.utils.rowcol_to_a1(row_index, at_col), 'values': [[provisioned_at]]},
+                ])
+
+        for i in range(0, len(updates), config.BATCH_SIZE):
+            worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
+            time.sleep(0.2)
+        if updates:
+            print(f"  🟢 Updated project channel counts: {len(updates)}")
+    except Exception as e:
+        print(f"  ⚠️  Error updating project channel counts: {e}")
 
 
 def update_project_default_values(worksheet, headers, default_updates):
@@ -626,7 +693,7 @@ def update_project_default_values(worksheet, headers, default_updates):
         })
 
     if updates:
-        worksheet.batch_update(updates)
+        worksheet.batch_update(updates, value_input_option='USER_ENTERED')
 
 
 def update_project_runtime_status(sheet, project, status, error_text=''):
@@ -700,9 +767,16 @@ def acquire_lock(sheet):
                         return False
                 
                 current_time = format_timestamp()
-                worksheet.update_cell(lock_row, table['value_col'], 'locked')
+                updates = [{
+                    'range': gspread.utils.rowcol_to_a1(lock_row, table['value_col']),
+                    'values': [['locked']],
+                }]
                 if table.get('description_col'):
-                    worksheet.update_cell(lock_row, table['description_col'], current_time)
+                    updates.append({
+                        'range': gspread.utils.rowcol_to_a1(lock_row, table['description_col']),
+                        'values': [[current_time]],
+                    })
+                worksheet.batch_update(updates, value_input_option='USER_ENTERED')
                 print(f"  🔒 Lock acquired at {current_time}")
                 return True
         
@@ -723,9 +797,16 @@ def release_lock(sheet):
         
         existing, table = find_setting_row(values, 'lock_status')
         if existing and table:
-            worksheet.update_cell(existing['row_number'], table['value_col'], 'unlocked')
+            updates = [{
+                'range': gspread.utils.rowcol_to_a1(existing['row_number'], table['value_col']),
+                'values': [['unlocked']],
+            }]
             if table.get('description_col'):
-                worksheet.update_cell(existing['row_number'], table['description_col'], format_timestamp())
+                updates.append({
+                    'range': gspread.utils.rowcol_to_a1(existing['row_number'], table['description_col']),
+                    'values': [[format_timestamp()]],
+                })
+            worksheet.batch_update(updates, value_input_option='USER_ENTERED')
             print(f"  🔓 Lock released")
             return
     except Exception as e:
@@ -782,13 +863,13 @@ def ensure_videos_worksheet(sheet):
         worksheet = sheet.worksheet(config.SHEET_NAME_VIDEOS)
     except gspread.exceptions.WorksheetNotFound:
         worksheet = sheet.add_worksheet(config.SHEET_NAME_VIDEOS, rows=10000, cols=len(VIDEO_HEADERS))
-        worksheet.append_row(VIDEO_HEADERS)
+        worksheet.append_row(VIDEO_HEADERS, value_input_option='USER_ENTERED')
         print(f"  📋 Created '{config.SHEET_NAME_VIDEOS}' worksheet")
         return worksheet
 
     values = worksheet.get_all_values()
     if not values:
-        worksheet.append_row(VIDEO_HEADERS)
+        worksheet.append_row(VIDEO_HEADERS, value_input_option='USER_ENTERED')
         return worksheet
 
     headers = [str(value).strip() for value in values[0]]
@@ -930,11 +1011,68 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
             {'range': gspread.utils.rowcol_to_a1(target_row, 8), 'values': [[publication_delay_minutes(yt_published, timestamp) if tg_message_id else '']]},
             {'range': gspread.utils.rowcol_to_a1(target_row, 11), 'values': [[combined_status(status, error)]]},
         ]
-        worksheet.batch_update(updates)
+        worksheet.batch_update(updates, value_input_option='USER_ENTERED')
         return True
     except Exception as e:
         print(f"  ⚠️  Error updating publication status for {video_id}: {e}")
         return False
+
+
+def reconcile_pending_published_videos(sheet):
+    """Repair rows left as pending when Telegram succeeded but Sheets update hit quota."""
+    try:
+        videos_worksheet = ensure_videos_worksheet(sheet)
+        logs_worksheet = ensure_logs_worksheet(sheet)
+        video_values = videos_worksheet.get_all_values()
+        log_values = logs_worksheet.get_all_values()
+        if len(video_values) < 2 or len(log_values) < 2:
+            return 0
+
+        published_logs = {}
+        for row in log_values[1:]:
+            row = clean_row(row)
+            project_name = project_name_from_cell(row[0] if len(row) > 0 else '')
+            timestamp = normalize_timestamp(row[1] if len(row) > 1 else '')
+            video_id = row[2] if len(row) > 2 else ''
+            event = row[3] if len(row) > 3 else ''
+            match = re.search(r'Telegram msg:\s*(\d+)', event)
+            if project_name and video_id and match:
+                published_logs[(video_id, project_name)] = (timestamp, match.group(1))
+
+        updates = []
+        for row_index, row in enumerate(video_values[1:], start=2):
+            row = clean_row(row)
+            project_name = project_name_from_cell(row[0] if len(row) > 0 else '')
+            video_id = video_id_from_url(row[4] if len(row) > 4 else '')
+            status = str(row[10] if len(row) > 10 else '').split('.', 1)[0].lower()
+            message_id = row[9] if len(row) > 9 else ''
+            if status == 'published' and message_id:
+                continue
+
+            log_entry = published_logs.get((video_id, project_name))
+            if not log_entry:
+                continue
+
+            published_at, tg_message_id = log_entry
+            yt_published = row[5] if len(row) > 5 else ''
+            updates.extend([
+                {'range': gspread.utils.rowcol_to_a1(row_index, 8), 'values': [[publication_delay_minutes(yt_published, published_at)]]},
+                {'range': gspread.utils.rowcol_to_a1(row_index, 9), 'values': [[published_at]]},
+                {'range': gspread.utils.rowcol_to_a1(row_index, 10), 'values': [[tg_message_id]]},
+                {'range': gspread.utils.rowcol_to_a1(row_index, 11), 'values': [['published']]},
+            ])
+
+        for i in range(0, len(updates), config.BATCH_SIZE):
+            videos_worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
+            time.sleep(0.2)
+        if updates:
+            fixed = len(updates) // 4
+            print(f"  🧩 Reconciled pending published rows: {fixed}")
+            return fixed
+        return 0
+    except Exception as e:
+        print(f"  ⚠️  Error reconciling pending published rows: {e}")
+        return 0
 
 
 def get_recent_published_video_rows(sheet, project_name, hours=24):
@@ -1005,12 +1143,12 @@ def ensure_logs_worksheet(sheet):
         worksheet = sheet.worksheet('Логи')
     except gspread.exceptions.WorksheetNotFound:
         worksheet = sheet.add_worksheet('Логи', rows=10000, cols=len(LOG_HEADERS))
-        worksheet.append_row(LOG_HEADERS)
+        worksheet.append_row(LOG_HEADERS, value_input_option='USER_ENTERED')
         return worksheet
 
     values = worksheet.get_all_values()
     if not values:
-        worksheet.append_row(LOG_HEADERS)
+        worksheet.append_row(LOG_HEADERS, value_input_option='USER_ENTERED')
         return worksheet
 
     headers = [str(value).strip() for value in values[0]]
@@ -1064,7 +1202,33 @@ def format_push_events_sheet(sheet):
             headers = ['Timestamp GMT+4' if str(h).strip().lower().startswith('timestamp') else h for h in headers]
             if len(headers) > 2:
                 headers[2] = 'Ссылка на канал'
-            worksheet.update(range_name=f'A1:{a1_column(len(headers))}1', values=[headers])
+            worksheet.update(range_name=f'A1:{a1_column(len(headers))}1', values=[headers], value_input_option='USER_ENTERED')
+
+            rows_to_delete = []
+            timestamp_updates = []
+            for row_index, row in enumerate(values[1:], start=2):
+                cleaned = clean_row(row)
+                video_id = cleaned[1] if len(cleaned) > 1 else ''
+                channel_value = cleaned[2] if len(cleaned) > 2 else ''
+                channel_id = channel_id_from_link(channel_value) or channel_value
+                if not video_id or not channel_id:
+                    rows_to_delete.append(row_index)
+                    continue
+                timestamp = cleaned[0] if cleaned else ''
+                normalized_timestamp = normalize_timestamp(timestamp)
+                if normalized_timestamp and normalized_timestamp != timestamp:
+                    timestamp_updates.append({
+                        'range': gspread.utils.rowcol_to_a1(row_index, 1),
+                        'values': [[normalized_timestamp]],
+                    })
+
+            if timestamp_updates:
+                for i in range(0, len(timestamp_updates), config.BATCH_SIZE):
+                    worksheet.batch_update(timestamp_updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
+                    time.sleep(0.2)
+            if rows_to_delete:
+                deleted = delete_rows_batch(sheet, worksheet, rows_to_delete)
+                print(f"  🧹 Removed invalid push event rows: {deleted}")
 
         requests = [{
             'repeatCell': {
@@ -1173,7 +1337,7 @@ def log_events_batch(sheet, log_entries):
                 # Fallback - по одной
                 for entry in batch:
                     try:
-                        worksheet.append_row(entry)
+                        worksheet.append_row(clean_sheet_row(entry), value_input_option='USER_ENTERED')
                     except:
                         pass
         
@@ -1401,7 +1565,7 @@ def load_settings(sheet):
             config.DISPLAY_TIMEZONE = settings['timezone']
             print(f"  ✅ Display timezone: {config.DISPLAY_TIMEZONE}")
         else:
-            worksheet.append_row(['timezone', config.DISPLAY_TIMEZONE, 'Часовой пояс для отображаемых дат'])
+            worksheet.append_row(['timezone', config.DISPLAY_TIMEZONE, 'Часовой пояс для отображаемых дат'], value_input_option='USER_ENTERED')
             settings['timezone'] = config.DISPLAY_TIMEZONE
             print(f"  ✅ Created timezone setting: {config.DISPLAY_TIMEZONE}")
         
@@ -1505,7 +1669,10 @@ def load_projects(sheet):
                 'default_template': row.get('Шаблон по умолчанию', config.DEFAULT_MESSAGE_TEMPLATE),
                 'stop_words': stop_words,
                 'allow_shorts': allow_shorts,
+                'push_api_enabled': is_enabled_marker(row.get('Push API'), default=True),
+                'rss_feed_enabled': is_enabled_marker(row.get('RSS feed'), default=True),
                 'rss_delete_limit': rss_delete_limit,
+                'channel_count': 0,
             })
             queue_status(row_index, row, 'ready', '')
         else:
@@ -1631,6 +1798,17 @@ def infer_channel_name(row, channel_id):
         return cell
     return channel_id
 
+
+def is_enabled_marker(value, default=True):
+    text = str(value or '').strip().lower()
+    if not text:
+        return default
+    if text in ('🟢', 'yes', 'true', '1', 'on', 'да', 'вкл'):
+        return True
+    if text in ('🔴', 'no', 'false', '0', 'off', 'нет', 'выкл'):
+        return False
+    return default
+
 def get_all_active_channels(client, projects):
     """Получение всех уникальных активных каналов"""
     all_channels = {}
@@ -1692,7 +1870,8 @@ def get_push_events(sheet):
                     events.append({
                         'row_index': i + 1,
                         'video_id': video_id,
-                        'channel_id': channel_id
+                        'channel_id': channel_id,
+                        'projects': row[4] if len(row) > 4 else '',
                     })
         
         return events
@@ -1700,15 +1879,18 @@ def get_push_events(sheet):
         print(f"❌ Error loading push events: {e}")
         return []
 
-def mark_push_event_processed(sheet, row_index, project_name):
+def mark_push_event_processed(sheet, row_index, project_name, current_projects=''):
     """Отметка push-события как обработанного"""
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_PUSH_EVENTS)
-        worksheet.update_cell(row_index, 4, '✅')
-        
-        current_projects = worksheet.cell(row_index, 5).value or ''
+        current_projects = clean_sheet_value(current_projects)
         if project_name not in current_projects:
             new_projects = (current_projects + ', ' + project_name).strip(', ')
-            worksheet.update_cell(row_index, 5, new_projects)
+        else:
+            new_projects = current_projects
+        worksheet.batch_update([
+            {'range': gspread.utils.rowcol_to_a1(row_index, 4), 'values': [['✅']]},
+            {'range': gspread.utils.rowcol_to_a1(row_index, 5), 'values': [[new_projects]]},
+        ], value_input_option='USER_ENTERED')
     except Exception as e:
         print(f"  ⚠️  Error marking event: {e}")

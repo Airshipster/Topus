@@ -6,6 +6,58 @@ import requests
 import config
 
 youtube_api_calls = 0
+last_youtube_api_error = None
+
+
+def mask_api_key(api_key):
+    value = str(api_key or '')
+    if len(value) <= 8:
+        return '***'
+    return f'{value[:4]}...{value[-4:]}'
+
+
+def extract_youtube_error(response):
+    try:
+        payload = response.json()
+    except Exception:
+        return f'HTTP {response.status_code}'
+
+    error = payload.get('error', {}) if isinstance(payload, dict) else {}
+    errors = error.get('errors') or []
+    reason = ''
+    message = error.get('message') or ''
+    if errors and isinstance(errors[0], dict):
+        reason = errors[0].get('reason') or ''
+        message = errors[0].get('message') or message
+
+    detail = reason or message or f'HTTP {response.status_code}'
+    if reason and message and reason not in message:
+        detail = f'{reason}: {message}'
+    return f'HTTP {response.status_code} {detail}'.strip()
+
+
+def is_retryable_youtube_status(status_code):
+    return status_code in (403, 429, 500, 502, 503, 504)
+
+
+def detect_shorts_from_web(video_id):
+    """Best-effort Shorts check without spending YouTube Data API quota."""
+    try:
+        response = requests.get(
+            f'https://www.youtube.com/watch?v={video_id}',
+            headers={'User-Agent': 'Mozilla/5.0'},
+            timeout=5,
+        )
+        if response.status_code != 200:
+            return False
+        html = response.text
+        return (
+            f'href="https://www.youtube.com/shorts/{video_id}"' in html
+            or f'content="https://www.youtube.com/shorts/{video_id}"' in html
+            or '"isShortsEligible":true' in html
+        )
+    except Exception:
+        return False
 
 
 def format_youtube_timestamp(value):
@@ -28,11 +80,15 @@ def parse_video_dimensions(player):
 
 def get_video_info_from_api(video_id):
     """Получение информации о видео через YouTube Data API v3"""
-    global youtube_api_calls
+    global youtube_api_calls, last_youtube_api_error
+    last_youtube_api_error = None
     
     api_keys = config.YOUTUBE_API_KEYS or ([config.YOUTUBE_API_KEY] if config.YOUTUBE_API_KEY else [])
     if not api_keys:
+        last_youtube_api_error = 'YouTube API keys are not configured'
         return None
+
+    errors = []
     
     for api_key in api_keys:
         url = "https://www.googleapis.com/youtube/v3/videos"
@@ -46,14 +102,19 @@ def get_video_info_from_api(video_id):
             response = requests.get(url, params=params, timeout=10)
             youtube_api_calls += 1
 
-            if response.status_code in (403, 429, 500, 502, 503, 504):
+            if is_retryable_youtube_status(response.status_code):
+                error = extract_youtube_error(response)
+                errors.append(f'{mask_api_key(api_key)}: {error}')
+                print(f"  ⚠️  YouTube API key {mask_api_key(api_key)} failed: {error}")
                 continue
 
             if response.status_code != 200:
+                last_youtube_api_error = f'{mask_api_key(api_key)}: {extract_youtube_error(response)}'
                 return None
 
             data = response.json()
             if not data.get('items'):
+                last_youtube_api_error = None
                 return None
 
             item = data['items'][0]
@@ -85,6 +146,10 @@ def get_video_info_from_api(video_id):
                     is_short = True
                     short_reasons.append(f"square {width}x{height}")
 
+            if not is_short and detect_shorts_from_web(video_id):
+                is_short = True
+                short_reasons.append("YouTube Shorts canonical")
+
             is_live = live_details.get('actualStartTime') is not None
             is_upcoming = snippet.get('liveBroadcastContent') == 'upcoming'
 
@@ -102,11 +167,19 @@ def get_video_info_from_api(video_id):
                 'width': width,
                 'height': height,
             }
-        except Exception:
+        except Exception as e:
+            errors.append(f'{mask_api_key(api_key)}: request failed: {e}')
+            print(f"  ⚠️  YouTube API key {mask_api_key(api_key)} request failed: {e}")
             continue
 
+    if errors:
+        last_youtube_api_error = '; '.join(errors)
     return None
 
 
 def get_youtube_api_calls():
     return youtube_api_calls
+
+
+def get_last_youtube_api_error():
+    return last_youtube_api_error
