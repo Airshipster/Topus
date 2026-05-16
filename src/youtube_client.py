@@ -138,12 +138,10 @@ def get_video_info_from_api(video_id):
                         is_short = True
                         short_reasons.append(f"duration {duration_seconds}s")
 
-            if width and height:
+            if width and height and is_short:
                 if height > width:
-                    is_short = True
                     short_reasons.append(f"vertical {width}x{height}")
                 elif height == width:
-                    is_short = True
                     short_reasons.append(f"square {width}x{height}")
 
             if not is_short and detect_shorts_from_web(video_id):
