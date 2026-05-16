@@ -29,7 +29,7 @@ function textOutput_(text) {
 }
 
 function formatTimestamp_(date) {
-  return Utilities.formatDate(date, 'Asia/Baku', 'yyyy-MM-dd HH:mm:ss');
+  return (date.getTime() + 4 * 60 * 60 * 1000) / 86400000 + 25569;
 }
 
 function triggerPublisher_(videoId, channelId, options) {

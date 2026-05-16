@@ -12,6 +12,8 @@ import config
 
 
 PROJECT_STATUS_COLUMNS = [
+    'Push API',
+    'RSS feed',
     'Кол. 🟢 каналов',
     'RSS delete limit',
     'Provisioning status',

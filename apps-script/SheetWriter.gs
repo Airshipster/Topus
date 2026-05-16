@@ -1,4 +1,9 @@
 function appendPushEvent_(timestamp, videoId, channelId, rawXml) {
+  if (!videoId || !channelId) {
+    console.warn('Push event not appended: missing videoId or channelId');
+    return;
+  }
+
   var ss = SpreadsheetApp.openById(MASTER_SPREADSHEET_ID);
   var sheet = ss.getSheetByName(PUSH_EVENTS_SHEET_NAME) ||
               ss.insertSheet(PUSH_EVENTS_SHEET_NAME);
@@ -7,6 +12,7 @@ function appendPushEvent_(timestamp, videoId, channelId, rawXml) {
   var nextRow = sheet.getLastRow() + 1;
   sheet.getRange(nextRow, 1, 1, PUSH_EVENTS_HEADERS.length)
     .setValues([[timestamp, stripLeadingApostrophe_(videoId), channelLink_(channelId), '❌', '', stripLeadingApostrophe_(rawXml)]]);
+  sheet.getRange(nextRow, 1).setNumberFormat('yyyy-mm-dd hh:mm:ss');
   sheet.getRange(nextRow, 6).setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
   sheet.setRowHeight(nextRow, 21);
 }
@@ -21,6 +27,8 @@ function ensurePushEventsHeader_(sheet) {
     sheet.getRange(1, 1, 1, PUSH_EVENTS_HEADERS.length).setValues([PUSH_EVENTS_HEADERS]);
   }
 
+  sheet.getRange(2, 1, Math.max(sheet.getMaxRows() - 1, 1), 1)
+    .setNumberFormat('yyyy-mm-dd hh:mm:ss');
   sheet.getRange(1, 1, Math.max(sheet.getMaxRows(), 1), PUSH_EVENTS_HEADERS.length)
     .setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
   if (sheet.getLastRow() > 1) {
