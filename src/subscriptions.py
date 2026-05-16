@@ -20,7 +20,6 @@ SUBSCRIPTION_SYNC_SETTING = 'last_subscription_sync'
 SUBSCRIPTION_SYNC_INTERVAL_SECONDS = 86400
 SUBSCRIPTIONS_SHEET_NAME = 'Подписки'
 SUBSCRIPTIONS_HEADERS = ['Channel ID', 'Subscribed At', 'Last Renewed', 'Projects', 'Project Count']
-subscriptions_values_rewritten = False
 
 
 def get_subscription_sync_state(sheet):
@@ -106,7 +105,7 @@ def get_subscription_records(sheet):
         return records
     except Exception as e:
         print(f"  ⚠️  Error reading subscription records: {type(e).__name__}: {e}")
-        return {}
+        return None
 
 
 def rewrite_subscriptions_values(worksheet):
@@ -131,8 +130,6 @@ def rewrite_subscriptions_values(worksheet):
     return len(updates)
 
 def get_or_create_subscriptions_worksheet(sheet):
-    global subscriptions_values_rewritten
-
     try:
         worksheet = sheet.worksheet(SUBSCRIPTIONS_SHEET_NAME)
     except gspread.exceptions.WorksheetNotFound:
@@ -178,11 +175,6 @@ def get_or_create_subscriptions_worksheet(sheet):
             value_input_option='USER_ENTERED',
         )
 
-    if not subscriptions_values_rewritten:
-        rewritten = rewrite_subscriptions_values(worksheet)
-        subscriptions_values_rewritten = True
-        if rewritten:
-            print(f"  🧹 Rewrote subscription rows without text prefixes: {rewritten}")
     return worksheet
 
 def column_letter(column_index):
@@ -354,6 +346,9 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
         active_channels_dict = get_all_active_channels(client, projects)
     active_channels = set(active_channels_dict.keys())
     subscription_records = get_subscription_records(master_sheet)
+    if subscription_records is None:
+        print("  ⚠️  Subscription sync skipped: could not read existing subscriptions")
+        return
     subscribed_channels = set(subscription_records.keys())
     to_unsubscribe = subscribed_channels - active_channels
 
@@ -366,6 +361,9 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
                 time.sleep(0.1)
             remove_subscribed_channels(master_sheet, to_unsubscribe)
         subscription_records = get_subscription_records(master_sheet)
+        if subscription_records is None:
+            print("  ⚠️  Project link update skipped: could not re-read subscriptions")
+            return
         update_subscription_project_links(master_sheet, subscription_records, active_channels_dict)
         return
 
@@ -424,6 +422,9 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
         print("  ✅ No changes needed")
 
     subscription_records = get_subscription_records(master_sheet)
+    if subscription_records is None:
+        print("  ⚠️  Final project link update skipped: could not re-read subscriptions")
+        return
     update_subscription_project_links(master_sheet, subscription_records, active_channels_dict)
 
     update_subscription_sync_state(master_sheet)
