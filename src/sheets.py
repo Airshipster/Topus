@@ -1605,7 +1605,7 @@ def update_last_run(sheet):
     except Exception as e:
         print(f"  ❌ Error updating last_run: {e}")
 
-def load_projects(sheet):
+def load_projects(sheet, update_status=True):
     """Загрузка активных проектов"""
     worksheet = sheet.worksheet(config.SHEET_NAME_PROJECTS)
     values = worksheet.get_all_values()
@@ -1619,6 +1619,8 @@ def load_projects(sheet):
     default_updates = []
 
     def queue_status(row_index, row, status, error_text):
+        if not update_status:
+            return
         current_status = str(row.get('Provisioning status', '')).strip()
         current_error = str(row.get('Provisioning error', '')).strip()
         if current_status != status or current_error != error_text:
@@ -1654,7 +1656,8 @@ def load_projects(sheet):
             rss_delete_limit_raw = str(row.get('RSS delete limit', '')).strip()
             if not rss_delete_limit_raw:
                 rss_delete_limit_raw = '5'
-                default_updates.append((row_index, 'RSS delete limit', rss_delete_limit_raw))
+                if update_status:
+                    default_updates.append((row_index, 'RSS delete limit', rss_delete_limit_raw))
             try:
                 rss_delete_limit = max(0, int(rss_delete_limit_raw))
             except ValueError:
@@ -1680,8 +1683,9 @@ def load_projects(sheet):
         else:
             queue_status(row_index, row, 'inactive', '')
 
-    update_project_statuses(worksheet, headers, status_updates)
-    update_project_default_values(worksheet, headers, default_updates)
+    if update_status:
+        update_project_statuses(worksheet, headers, status_updates)
+        update_project_default_values(worksheet, headers, default_updates)
     
     print(f"  ✅ Loaded {len(projects)} active projects")
     return projects
@@ -1894,5 +1898,7 @@ def mark_push_event_processed(sheet, row_index, project_name, current_projects='
             {'range': gspread.utils.rowcol_to_a1(row_index, 4), 'values': [['✅']]},
             {'range': gspread.utils.rowcol_to_a1(row_index, 5), 'values': [[new_projects]]},
         ], value_input_option='USER_ENTERED')
+        return new_projects
     except Exception as e:
         print(f"  ⚠️  Error marking event: {e}")
+        return current_projects

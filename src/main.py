@@ -30,7 +30,7 @@ from sheets import (
     update_youtube_quota,
     parse_datetime_value,
 )
-from subscriptions import sync_subscriptions
+from subscriptions import get_subscription_records, sync_subscriptions
 from telegram_client import delete_telegram_message, format_message, send_to_telegram
 from youtube_client import get_last_youtube_api_error, get_video_info_from_api, get_youtube_api_calls
 
@@ -171,6 +171,37 @@ def load_project_channels(client, master_sheet, projects):
     return project_channels, active_channels_dict
 
 
+def split_project_names(value):
+    return [item.strip() for item in str(value or '').split(',') if item.strip()]
+
+
+def select_push_projects(master_sheet, projects, push_events):
+    if not push_events:
+        return []
+
+    subscription_records = get_subscription_records(master_sheet)
+    if subscription_records is None:
+        print("  ⚠️  Could not read subscription project map; checking all projects")
+        return projects
+
+    target_project_names = set()
+    for event in push_events:
+        record = subscription_records.get(event['channel_id'])
+        if record:
+            target_project_names.update(split_project_names(record.get('projects', '')))
+
+    if not target_project_names:
+        print("  ⚠️  Push channels not found in subscription project map; checking all projects")
+        return projects
+
+    selected = [project for project in projects if project['name'] in target_project_names]
+    missing = sorted(target_project_names - {project['name'] for project in selected})
+    if missing:
+        print(f"  ⚠️  Subscription map references missing projects: {', '.join(missing)}")
+    print(f"  🎯 Push-only target projects: {len(selected)} of {len(projects)}")
+    return selected
+
+
 def main():
     print("="*60)
     print("TOPUS - YouTube to Telegram Publisher")
@@ -193,20 +224,38 @@ def main():
         print("\n⚙️  Loading settings...")
         settings = load_settings(master_sheet)
         print_detection_latency_note()
-        maintain_workbook_layout(master_sheet)
-        reconcile_pending_published_videos(master_sheet)
+        if push_only_mode():
+            print("  ⚡ Push-only mode: skipping workbook maintenance")
+        else:
+            maintain_workbook_layout(master_sheet)
+            reconcile_pending_published_videos(master_sheet)
 
         # Автоочистка старых записей
-        cleanup_old_records(master_sheet)
-        clean_master_numeric_text_values(master_sheet)
+        if not push_only_mode():
+            cleanup_old_records(master_sheet)
+            clean_master_numeric_text_values(master_sheet)
         
         print("\n📂 Loading projects...")
-        projects = load_projects(master_sheet)
-        update_video_project_links(master_sheet, projects)
+        projects = load_projects(master_sheet, update_status=not push_only_mode())
+
+        push_events = []
+        if push_only_mode():
+            push_events = get_push_events(master_sheet)
+            print(f"📬 Unprocessed push events: {len(push_events)}")
+            if not push_events:
+                print("\n✅ Push-only mode completed. No pending push events.")
+                return
+            projects = select_push_projects(master_sheet, projects, push_events)
+            if not projects:
+                print("\n✅ Push-only mode completed. No target projects for pending push events.")
+                return
+        else:
+            update_video_project_links(master_sheet, projects)
 
         print("\n📺 Loading project channels...")
         project_channels, active_channels_dict = load_project_channels(client, master_sheet, projects)
-        update_project_channel_counts(master_sheet, projects)
+        if not push_only_mode():
+            update_project_channel_counts(master_sheet, projects)
         if push_only_mode():
             print("\n📡 Subscription sync skipped in push-only mode")
         else:
@@ -224,9 +273,9 @@ def main():
             return
         
         published_videos = get_published_videos(master_sheet)
-        
-        push_events = get_push_events(master_sheet)
-        print(f"📬 Unprocessed push events: {len(push_events)}")
+        if not push_only_mode():
+            push_events = get_push_events(master_sheet)
+            print(f"📬 Unprocessed push events: {len(push_events)}")
         
         total_found = 0
         total_published = 0
@@ -238,6 +287,8 @@ def main():
         log_entries = []
         rss_cache = {}
         video_info_cache = {}
+        push_events_to_mark = {}
+        publication_event_rows = {}
 
         def get_cached_video_info(video_id):
             if video_id not in video_info_cache:
@@ -246,6 +297,15 @@ def main():
                     get_last_youtube_api_error(),
                 )
             return video_info_cache[video_id]
+
+        def queue_push_event_mark(event, project_name):
+            key = event['row_index']
+            tracked = push_events_to_mark.setdefault(key, {
+                'row_index': event['row_index'],
+                'projects': event.get('projects', ''),
+                'project_names': set(),
+            })
+            tracked['project_names'].add(project_name)
         
         for project in projects:
             print(f"\n{'='*60}")
@@ -266,7 +326,7 @@ def main():
                     key = publication_key(event['video_id'], project)
 
                     if key in published_videos:
-                        mark_push_event_processed(master_sheet, event['row_index'], project['name'], event.get('projects', ''))
+                        queue_push_event_mark(event, project['name'])
                         continue
                 
                     total_found += 1
@@ -286,7 +346,7 @@ def main():
                             ])
                             total_failed += 1
                             continue
-                        mark_push_event_processed(master_sheet, event['row_index'], project['name'], event.get('projects', ''))
+                        queue_push_event_mark(event, project['name'])
                         continue
                 
                     channel_info = yt_channels[event['channel_id']]
@@ -306,8 +366,8 @@ def main():
                         timestamp = format_timestamp()
                         log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], stale_reason, 'filtered'])
                         videos_to_save.append((video, project, video_published_date, None, f"FILTERED: {stale_reason}"))
+                        publication_event_rows[key] = event
                         published_videos.add(key)
-                        mark_push_event_processed(master_sheet, event['row_index'], project['name'], event.get('projects', ''))
                         total_filtered += 1
                         continue
                 
@@ -317,18 +377,17 @@ def main():
                         timestamp = format_timestamp()
                         log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], filter_reason, 'filtered'])
                         videos_to_save.append((video, project, video_published_date, None, f"FILTERED: {filter_reason}"))
+                        publication_event_rows[key] = event
                         published_videos.add(key)
-                        mark_push_event_processed(master_sheet, event['row_index'], project['name'], event.get('projects', ''))
                         total_filtered += 1
                         continue
                 
                     # СНАЧАЛА добавляем в батч для сохранения
                     videos_to_save.append((video, project, video_published_date, None, None))
+                    publication_event_rows[key] = event
                     published_videos.add(key)
                 
                     print(f"  📝 Queued: {video['title'][:50]}...")
-                
-                    mark_push_event_processed(master_sheet, event['row_index'], project['name'], event.get('projects', ''))
             
             if push_only_mode():
                 print("  ⏭️  RSS fallback skipped in push-only mode")
@@ -400,6 +459,22 @@ def main():
         print(f"\n💾 Saving {len(videos_to_save)} videos to table...")
         saved_publications = set(save_videos_batch(master_sheet, videos_to_save))
         print(f"  ✅ Saved {len(saved_publications)} new publication rows")
+        for key in saved_publications:
+            event = publication_event_rows.get(key)
+            if event:
+                queue_push_event_mark(event, key[1])
+
+        if push_events_to_mark:
+            print(f"  ✅ Marking processed push events: {len(push_events_to_mark)}")
+            for tracked in push_events_to_mark.values():
+                current_projects = tracked['projects']
+                for project_name in sorted(tracked['project_names']):
+                    current_projects = mark_push_event_processed(
+                        master_sheet,
+                        tracked['row_index'],
+                        project_name,
+                        current_projects,
+                    )
         
         # ТЕПЕРЬ ПУБЛИКУЕМ В TELEGRAM
         print(f"\n📤 Publishing to Telegram...")
