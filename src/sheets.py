@@ -677,6 +677,40 @@ def clean_timestamp_text_values(worksheet, force_datetime_serial=False, only_hea
         return 0
 
 
+def clean_status_method_text_values(worksheet):
+    """Normalize method prefixes in status cells without touching formatting."""
+    try:
+        header_values = get_values_with_quota_retry(worksheet, '1:1')
+        if not header_values:
+            return 0
+
+        headers = [str(cell).strip() for cell in header_values[0]]
+        if 'Системный статус' not in headers:
+            return 0
+
+        status_col = headers.index('Системный статус') + 1
+        column_name = a1_column(status_col)
+        values = get_values_with_quota_retry(worksheet, f'{column_name}2:{column_name}')
+        updates = []
+        for row_offset, row in enumerate(values, start=2):
+            value = str(row[0] if row else '').strip()
+            if not re.match(r'^Rss:', value):
+                continue
+            updates.append({
+                'range': gspread.utils.rowcol_to_a1(row_offset, status_col),
+                'values': [[re.sub(r'^Rss:', 'RSS:', value, count=1)]],
+            })
+
+        for i in range(0, len(updates), config.BATCH_SIZE):
+            worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
+            time.sleep(0.2)
+
+        return len(updates)
+    except Exception as e:
+        print(f"  ⚠️  Error cleaning status values in {worksheet.title}: {e}")
+        return 0
+
+
 def clean_master_numeric_text_values(sheet):
     """Clean numeric prefixes and timestamp text in master sheets without touching formatting."""
     cleaned_total = 0
@@ -710,6 +744,7 @@ def clean_known_workbook_text_values(sheet):
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_VIDEOS)
         cleaned_total += clean_numeric_text_values(worksheet)
+        cleaned_total += clean_status_method_text_values(worksheet)
     except Exception as e:
         print(f"  ⚠️  Error cleaning known numeric values in {config.SHEET_NAME_VIDEOS}: {e}")
 
