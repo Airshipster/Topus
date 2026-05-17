@@ -1297,6 +1297,41 @@ def reconcile_pending_published_videos(sheet):
         return 0
 
 
+def delete_stale_filtered_video_rows(sheet):
+    """Remove old videos that were only tracked to explain a stale filter decision."""
+    try:
+        worksheet = ensure_videos_worksheet(sheet)
+        values = get_values_with_quota_retry(worksheet)
+        if len(values) < 2:
+            return 0
+
+        headers = [str(value).strip() for value in values[0]]
+        rows_to_delete = []
+        now = current_local_datetime()
+
+        for row_index, row in enumerate(values[1:], start=2):
+            data = row_as_dict(headers, row)
+            status_text = str(first_value(data, ['Системный статус'])).lower()
+            if not status_text.startswith('filtered') or 'stale video' not in status_text:
+                continue
+
+            yt_published = parse_datetime_value(first_value(data, ['Дата публикации YT GMT+4', 'Дата публикации YT UTC']))
+            if not yt_published:
+                continue
+
+            age_hours = (now - yt_published).total_seconds() / 3600
+            if age_hours > config.MAX_PUBLISH_AGE_HOURS:
+                rows_to_delete.append(row_index)
+
+        deleted = delete_rows_batch(sheet, worksheet, rows_to_delete)
+        if deleted:
+            print(f"  🧹 Deleted stale filtered video rows: {deleted}")
+        return deleted
+    except Exception as e:
+        print(f"  ⚠️  Error deleting stale filtered video rows: {e}")
+        return 0
+
+
 def get_recent_published_video_rows(sheet, project_name, hours=24):
     """Строки опубликованных видео за последние часы для сверки с RSS."""
     try:

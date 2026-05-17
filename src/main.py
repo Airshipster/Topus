@@ -15,6 +15,7 @@ from sheets import (
     current_local_datetime,
     format_timestamp,
     clean_known_workbook_text_values,
+    delete_stale_filtered_video_rows,
     get_recent_published_video_rows,
     get_published_videos,
     get_push_events,
@@ -312,7 +313,8 @@ def main():
                 return
             lock_acquired = True
             fixed = reconcile_pending_published_videos(master_sheet)
-            update_run_status(master_sheet, f'complete: repaired pending rows={fixed}', run_status_details())
+            deleted = delete_stale_filtered_video_rows(master_sheet)
+            update_run_status(master_sheet, f'complete: repaired pending rows={fixed}, deleted stale rows={deleted}', run_status_details())
             return
 
         if repair_video_id():
