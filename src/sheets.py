@@ -1102,9 +1102,10 @@ def row_as_dict(headers, row):
         for i, header in enumerate(headers)
         if str(header).strip()
     }
-    status_index = find_column_index(headers, ['Системный статус'])
-    if status_index is not None:
-        data['Системный статус'] = clean_sheet_value(row[status_index]) if status_index < len(row) else ''
+    for canonical_header in ('Системный статус', 'Событие'):
+        index = find_column_index(headers, [canonical_header])
+        if index is not None:
+            data[canonical_header] = clean_sheet_value(row[index]) if index < len(row) else ''
     return data
 
 
@@ -1122,9 +1123,10 @@ def header_indexes(headers):
 
 def row_for_headers(headers, values_by_header):
     status_index = find_column_index(headers, ['Системный статус'])
+    event_index = find_column_index(headers, ['Событие'])
     return [
         clean_sheet_value(values_by_header.get(
-            'Системный статус' if i == status_index else str(header).strip(),
+            'Системный статус' if i == status_index else ('Событие' if i == event_index else str(header).strip()),
             ''
         ))
         for i, header in enumerate(headers)
@@ -1630,7 +1632,10 @@ def ensure_logs_worksheet(sheet):
         return worksheet
 
     headers = [str(value).strip() for value in header_values[0]]
-    if headers[:len(LOG_HEADERS)] == LOG_HEADERS and len(headers) == len(LOG_HEADERS):
+    existing_header_keys = set(headers)
+    if find_column_index(headers, ['Событие']) is not None:
+        existing_header_keys.add('Событие')
+    if all(header in existing_header_keys for header in LOG_HEADERS) and len(headers) == len(LOG_HEADERS):
         return worksheet
 
     values = get_values_with_quota_retry(worksheet)
