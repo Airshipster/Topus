@@ -214,12 +214,28 @@ def project_name_from_cell(value):
     return match.group(1) if match else value
 
 
-def combined_status(status, error):
+def status_method_from_text(value):
+    text = str(clean_sheet_value(value) or '').strip()
+    match = re.match(r'^(Push|RSS):\s*(.*)$', text, flags=re.IGNORECASE)
+    if not match:
+        return '', text
+    return match.group(1).capitalize(), match.group(2).strip()
+
+
+def status_name_from_text(value):
+    _, text = status_method_from_text(value)
+    return text.split('.', 1)[0].strip().lower()
+
+
+def combined_status(status, error, method=''):
     status = str(clean_sheet_value(status) or '').strip()
     error = str(clean_sheet_value(error) or '').strip()
-    if status == 'published' or not error:
-        return status
-    return f'{status}. {error}'
+    existing_method, bare_status = status_method_from_text(status)
+    method = str(method or existing_method or '').strip()
+    value = bare_status
+    if bare_status != 'published' and error:
+        value = f'{bare_status}. {error}'
+    return f'{method}: {value}' if method else value
 
 
 SETTINGS_MARKER = 'Настройки'
@@ -1062,7 +1078,7 @@ def save_videos_batch(sheet, videos_data):
                 data = row_as_dict(existing_headers, row)
                 project_name = project_name_from_cell(first_value(data, ['Проект']))
                 video_id = video_id_from_url(first_value(data, ['Ссылка на видео', 'Video ID']))
-                status = str(first_value(data, ['Системный статус'])).split('.', 1)[0].lower()
+                status = status_name_from_text(first_value(data, ['Системный статус']))
                 if video_id and project_name:
                     existing_rows[(video_id, project_name)] = {
                         'row_index': row_index,
@@ -1081,6 +1097,9 @@ def save_videos_batch(sheet, videos_data):
             is_filtered = str(error or '').startswith('FILTERED: ')
             row_status = 'filtered' if is_filtered else ('published' if tg_message_id else 'pending')
             row_error = str(error or '').replace('FILTERED: ', '', 1) if is_filtered else (error or '')
+            source_method = str(video.get('source_method') or '').strip()
+            if source_method.lower() == 'rss' and row_error.startswith('RSS: '):
+                row_error = row_error.replace('RSS: ', '', 1)
             project_display = project_link_formula(project_name, project)
             processed_at = format_timestamp()
             yt_published_at = normalize_timestamp(video_published_date)
@@ -1105,7 +1124,7 @@ def save_videos_batch(sheet, videos_data):
                 'Разница в минутах': publication_delay_minutes(yt_published_at, tg_published_at),
                 'Дата публикации TG GMT+4': sheet_datetime_value(tg_published_at) if tg_published_at else '',
                 'TG message_id': sheet_numeric_value(tg_message_id) if tg_message_id else '',
-                'Системный статус': combined_status(row_status, row_error),
+                'Системный статус': combined_status(row_status, row_error, source_method),
             }
             rows.append(row_for_headers(headers, row_values))
             rows_publication_keys.append(key)
@@ -1161,11 +1180,12 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
 
         timestamp = format_timestamp()
         yt_published = first_value(target_data, ['Дата публикации YT GMT+4', 'Дата публикации YT UTC'])
+        method, _ = status_method_from_text(first_value(target_data, ['Системный статус']))
         column_updates = {
             'TG message_id': sheet_numeric_value(tg_message_id) if tg_message_id else '',
             'Дата публикации TG GMT+4': sheet_datetime_value(timestamp) if tg_message_id else '',
             'Разница в минутах': publication_delay_minutes(yt_published, timestamp) if tg_message_id else '',
-            'Системный статус': combined_status(status, error),
+            'Системный статус': combined_status(status, error, method),
         }
         updates = [
             {
@@ -1225,7 +1245,9 @@ def reconcile_pending_published_videos(sheet):
             data = row_as_dict(video_headers, row)
             project_name = project_name_from_cell(first_value(data, ['Проект']))
             video_id = video_id_from_url(first_value(data, ['Ссылка на видео', 'Video ID']))
-            status = str(first_value(data, ['Системный статус'])).split('.', 1)[0].lower()
+            status_text = first_value(data, ['Системный статус'])
+            method, _ = status_method_from_text(status_text)
+            status = status_name_from_text(status_text)
             message_id = first_value(data, ['TG message_id'])
             tg_published_current = first_value(data, ['Дата публикации TG GMT+4', 'Дата публикации TG Asia/Baku', 'Дата публикации TG'])
             delay_current = first_value(data, ['Разница в минутах'])
@@ -1233,6 +1255,10 @@ def reconcile_pending_published_videos(sheet):
                 continue
 
             log_entry = published_logs.get((video_id, project_name))
+            if not log_entry and message_id and (not tg_published_current or not delay_current):
+                fallback_published_at = first_value(data, ['Дата обработки GMT+4', 'Дата обработки Asia/Baku', 'Дата обработки UTC'])
+                if fallback_published_at:
+                    log_entry = (normalize_timestamp(fallback_published_at), message_id)
             if not log_entry:
                 continue
 
@@ -1242,7 +1268,7 @@ def reconcile_pending_published_videos(sheet):
                 'Разница в минутах': publication_delay_minutes(yt_published, published_at),
                 'Дата публикации TG GMT+4': sheet_datetime_value(published_at),
                 'TG message_id': tg_message_id,
-                'Системный статус': 'published',
+                'Системный статус': combined_status('published', '', method),
             }.items():
                 if header in video_indexes:
                     updates.append({
@@ -1264,7 +1290,7 @@ def reconcile_pending_published_videos(sheet):
 
 
 def delete_stale_unpublished_video_rows(sheet):
-    """Remove old unpublished videos that should be ignored instead of tracked."""
+    """Mark old pending videos as filtered instead of keeping them actionable."""
     try:
         worksheet = ensure_videos_worksheet(sheet)
         values = get_values_with_quota_retry(worksheet)
@@ -1272,16 +1298,17 @@ def delete_stale_unpublished_video_rows(sheet):
             return 0
 
         headers = [str(value).strip() for value in values[0]]
-        rows_to_delete = []
+        updates = []
         now = current_local_datetime()
 
         for row_index, row in enumerate(values[1:], start=2):
             data = row_as_dict(headers, row)
-            status_text = str(first_value(data, ['Системный статус'])).lower()
-            status_name = status_text.split('.', 1)[0]
+            status_text = first_value(data, ['Системный статус'])
+            method, _ = status_method_from_text(status_text)
+            status_name = status_name_from_text(status_text)
             if status_name == 'published':
                 continue
-            if status_name not in ('pending', 'filtered', '') and 'stale video' not in status_text:
+            if status_name not in ('pending', ''):
                 continue
 
             yt_published = parse_datetime_value(first_value(data, ['Дата публикации YT GMT+4', 'Дата публикации YT UTC']))
@@ -1290,14 +1317,22 @@ def delete_stale_unpublished_video_rows(sheet):
 
             age_hours = (now - yt_published).total_seconds() / 3600
             if age_hours > config.MAX_PUBLISH_AGE_HOURS:
-                rows_to_delete.append(row_index)
+                status_col = headers.index('Системный статус') + 1 if 'Системный статус' in headers else None
+                if status_col:
+                    reason = f"Stale video ({age_hours:.1f}h old, limit {config.MAX_PUBLISH_AGE_HOURS}h)"
+                    updates.append({
+                        'range': gspread.utils.rowcol_to_a1(row_index, status_col),
+                        'values': [[combined_status('filtered', reason, method)]],
+                    })
 
-        deleted = delete_rows_batch(sheet, worksheet, rows_to_delete)
-        if deleted:
-            print(f"  🧹 Deleted stale unpublished video rows: {deleted}")
-        return deleted
+        for i in range(0, len(updates), config.BATCH_SIZE):
+            batch_update_with_quota_retry(worksheet, updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
+            time.sleep(0.2)
+        if updates:
+            print(f"  🧹 Marked stale pending rows filtered: {len(updates)}")
+        return len(updates)
     except Exception as e:
-        print(f"  ⚠️  Error deleting stale unpublished video rows: {e}")
+        print(f"  ⚠️  Error marking stale unpublished video rows: {e}")
         return 0
 
 
@@ -1316,7 +1351,7 @@ def get_recent_published_video_rows(sheet, project_name, hours=24):
             if row_project != project_name:
                 continue
 
-            status = str(first_value(data, ['Системный статус'])).split('.', 1)[0].lower()
+            status = status_name_from_text(first_value(data, ['Системный статус']))
             message_id = first_value(data, ['TG message_id'])
             if status != 'published' or not message_id:
                 continue
@@ -2157,7 +2192,7 @@ def get_published_videos(sheet):
         records = worksheet.get_all_records()
         tracked = set()
         for row in records:
-            status = str(row.get('Системный статус', '')).split('.', 1)[0].lower()
+            status = status_name_from_text(row.get('Системный статус', ''))
             if status == 'pending':
                 continue
             video_id = video_id_from_url(row.get('Ссылка на видео', '')) or str(row.get('Video ID', '')).strip()

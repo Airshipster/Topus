@@ -500,7 +500,8 @@ def main():
                         'title': video_info_api['title'],
                         'url': f"https://www.youtube.com/watch?v={event['video_id']}",
                         'channel': video_info_api['channel'],
-                        'channel_id': event['channel_id']
+                        'channel_id': event['channel_id'],
+                        'source_method': 'Push',
                     }
                 
                     video_published_date = video_info_api['published']
@@ -551,6 +552,7 @@ def main():
             delete_rss_missing_publications(master_sheet, project, rss_seen_by_channel, log_entries)
             
             for video in rss_videos:
+                video['source_method'] = 'RSS'
                 channel_info = video['channel_info']
                 key = publication_key(video['video_id'], project)
                 
