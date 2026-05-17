@@ -1,5 +1,6 @@
 import re
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -62,7 +63,11 @@ def detect_shorts_from_web(video_id):
 
 def format_youtube_timestamp(value):
     try:
-        return datetime.fromisoformat(value.replace('Z', '+00:00')).strftime('%Y-%m-%d %H:%M:%S')
+        return (
+            datetime.fromisoformat(value.replace('Z', '+00:00'))
+            .astimezone(ZoneInfo('Asia/Baku'))
+            .strftime('%Y-%m-%d %H:%M:%S')
+        )
     except Exception:
         return value
 

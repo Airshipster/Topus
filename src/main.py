@@ -12,7 +12,9 @@ from sheets import (
     authenticate_google_sheets,
     clean_master_numeric_text_values,
     cleanup_old_records,
+    current_local_datetime,
     format_timestamp,
+    clean_known_workbook_text_values,
     get_recent_published_video_rows,
     get_published_videos,
     get_push_events,
@@ -47,7 +49,7 @@ def get_stale_reason(published_at):
     if not published:
         return ''
 
-    age_hours = (datetime.utcnow() - published).total_seconds() / 3600
+    age_hours = (current_local_datetime() - published).total_seconds() / 3600
     if age_hours > config.MAX_PUBLISH_AGE_HOURS:
         return f"Stale video ({age_hours:.1f}h old, limit {config.MAX_PUBLISH_AGE_HOURS}h)"
 
@@ -271,7 +273,7 @@ def main():
         if maintenance_only_mode():
             print("  🧰 Maintenance-only mode: repairing workbook layout and values")
             maintain_workbook_layout(master_sheet)
-            clean_master_numeric_text_values(master_sheet)
+            clean_known_workbook_text_values(master_sheet)
             update_last_run(master_sheet)
             update_run_status(master_sheet, 'complete: maintenance-only', run_status_details())
             release_lock(master_sheet)
@@ -565,6 +567,15 @@ def main():
             key = publication_key(video['video_id'], project)
             if key not in saved_publications:
                 print(f"  ⏭️  Skipping {video['video_id']} / {project['name']} - already tracked or not saved")
+                continue
+
+            stale_reason = get_stale_reason(video_published_date)
+            if stale_reason:
+                print(f"  🚫 Skipping publish stale: {video['title'][:50]} ({stale_reason})")
+                timestamp = format_timestamp()
+                log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], stale_reason, 'filtered'])
+                update_video_publication_status(master_sheet, video['video_id'], project['name'], status='filtered', error=stale_reason)
+                total_filtered += 1
                 continue
             
             channel_info = video.get('channel_info', {})

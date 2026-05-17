@@ -611,6 +611,28 @@ def clean_master_numeric_text_values(sheet):
         print(f"  ✅ Cleaned text-formatted values: {cleaned_total} cells")
 
 
+def clean_known_workbook_text_values(sheet):
+    """One-off targeted cleanup for known timestamp/numeric columns."""
+    ensure_master_timestamp_formats(sheet)
+    cleaned_total = 0
+    for worksheet_name in [
+        config.SHEET_NAME_PROJECTS,
+        config.SHEET_NAME_VIDEOS,
+        'Логи',
+        config.SHEET_NAME_PUSH_EVENTS,
+        'Подписки',
+    ]:
+        try:
+            worksheet = sheet.worksheet(worksheet_name)
+            cleaned_total += clean_numeric_text_values(worksheet)
+            cleaned_total += clean_timestamp_text_values(worksheet)
+        except Exception as e:
+            print(f"  ⚠️  Error cleaning known values in {worksheet_name}: {e}")
+
+    if cleaned_total:
+        print(f"  ✅ Cleaned known text-formatted values: {cleaned_total} cells")
+
+
 def ensure_master_timestamp_formats(sheet):
     requests = []
     for worksheet in sheet.worksheets():
@@ -1566,7 +1588,7 @@ def cleanup_old_records(sheet):
                 pass
         
         retention_changed = last_cleanup_retention_days != config.CLEANUP_AFTER_DAYS
-        if last_cleanup and not retention_changed and (datetime.utcnow() - last_cleanup).total_seconds() < 86400:
+        if last_cleanup and not retention_changed and (current_local_datetime() - last_cleanup).total_seconds() < 86400:
             print(f"  ⏭️  Cleanup skipped (last run: {format_timestamp(last_cleanup)})")
             return
         if retention_changed:
@@ -1574,7 +1596,7 @@ def cleanup_old_records(sheet):
         
         print("\n🧹 Cleaning up old records...")
         
-        cutoff_date = datetime.utcnow() - timedelta(days=config.CLEANUP_AFTER_DAYS)
+        cutoff_date = current_local_datetime() - timedelta(days=config.CLEANUP_AFTER_DAYS)
         print(f"  Removing records older than: {format_timestamp(cutoff_date)}")
         
         deleted_videos = 0
@@ -1700,7 +1722,7 @@ def load_settings(sheet):
             print(f"  ✅ Max video age: {config.MAX_VIDEO_AGE_HOURS}h ({config.MAX_VIDEO_AGE_HOURS//24}d)")
 
         if 'max_publish_age_hours' in settings:
-            config.MAX_PUBLISH_AGE_HOURS = int(settings['max_publish_age_hours'])
+            config.MAX_PUBLISH_AGE_HOURS = min(int(settings['max_publish_age_hours']), 24)
             print(f"  ✅ Max publish age: {config.MAX_PUBLISH_AGE_HOURS}h")
 
         if 'rss_fallback_age_hours' in settings:

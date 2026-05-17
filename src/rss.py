@@ -56,10 +56,13 @@ def check_rss_feed(channel_id):
             channel_name = author_elem.text if author_elem is not None and author_elem.text else 'Unknown'
             
             try:
+                published_display = None
                 if published_str.endswith('Z'):
-                    published = datetime.fromisoformat(published_str.replace('Z', '+00:00')).replace(tzinfo=None)
+                    published_display = datetime.fromisoformat(published_str.replace('Z', '+00:00'))
+                    published = published_display.replace(tzinfo=None)
                 else:
                     published = datetime.fromisoformat(published_str).replace(tzinfo=None)
+                    published_display = published
             except:
                 continue
             
@@ -70,7 +73,7 @@ def check_rss_feed(channel_id):
                     'url': f"https://www.youtube.com/watch?v={video_id}",
                     'channel': channel_name,
                     'channel_id': channel_id,
-                    'published': format_timestamp(published)
+                    'published': format_timestamp(published_display)
                 })
         
         return videos
