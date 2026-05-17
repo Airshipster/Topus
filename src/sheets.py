@@ -1109,6 +1109,14 @@ def row_as_dict(headers, row):
     return data
 
 
+def canonical_header_name(header):
+    normalized = normalize_header(header)
+    for canonical in ('Системный статус', 'Событие'):
+        if normalize_header(canonical) in normalized:
+            return canonical
+    return str(header).strip()
+
+
 def first_value(row, names):
     for name in names:
         value = row.get(name, '')
@@ -1118,7 +1126,12 @@ def first_value(row, names):
 
 
 def header_indexes(headers):
-    return {str(header).strip(): index for index, header in enumerate(headers) if str(header).strip()}
+    indexes = {}
+    for index, header in enumerate(headers):
+        name = canonical_header_name(header)
+        if name:
+            indexes[name] = index
+    return indexes
 
 
 def row_for_headers(headers, values_by_header):
@@ -1177,9 +1190,7 @@ def ensure_videos_worksheet(sheet):
         return worksheet
 
     headers = [str(value).strip() for value in header_values[0]]
-    existing_header_keys = set(headers)
-    if find_column_index(headers, ['Системный статус']) is not None:
-        existing_header_keys.add('Системный статус')
+    existing_header_keys = set(header_indexes(headers).keys())
     if all(header in existing_header_keys for header in VIDEO_HEADERS):
         return worksheet
 
@@ -1329,7 +1340,7 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
         worksheet = ensure_videos_worksheet(sheet)
         values = get_values_with_quota_retry(worksheet)
         headers = [str(value).strip() for value in values[0]] if values else []
-        indexes = {header: index + 1 for index, header in enumerate(headers)}
+        indexes = {header: index + 1 for header, index in header_indexes(headers).items()}
         status_index = find_column_index(headers, ['Системный статус'])
         if status_index is not None:
             indexes['Системный статус'] = status_index + 1
@@ -1397,7 +1408,7 @@ def reconcile_pending_published_videos(sheet):
         if len(video_values) < 2 or len(log_values) < 2:
             return 0
         video_headers = [str(value).strip() for value in video_values[0]]
-        video_indexes = {header: index + 1 for index, header in enumerate(video_headers)}
+        video_indexes = {header: index + 1 for header, index in header_indexes(video_headers).items()}
         status_index = find_column_index(video_headers, ['Системный статус'])
         if status_index is not None:
             video_indexes['Системный статус'] = status_index + 1
@@ -1632,9 +1643,7 @@ def ensure_logs_worksheet(sheet):
         return worksheet
 
     headers = [str(value).strip() for value in header_values[0]]
-    existing_header_keys = set(headers)
-    if find_column_index(headers, ['Событие']) is not None:
-        existing_header_keys.add('Событие')
+    existing_header_keys = set(header_indexes(headers).keys())
     if all(header in existing_header_keys for header in LOG_HEADERS) and len(headers) == len(LOG_HEADERS):
         return worksheet
 
