@@ -40,7 +40,7 @@ from sheets import (
     update_youtube_quota,
     parse_datetime_value,
 )
-from subscriptions import deduplicate_subscription_rows, get_subscription_records, sync_subscriptions
+from subscriptions import deduplicate_subscription_rows, get_or_create_subscriptions_worksheet, get_subscription_records, sync_subscriptions
 from telegram_client import delete_telegram_message, format_message, send_to_telegram
 from youtube_client import get_last_youtube_api_error, get_video_info_from_api, get_youtube_api_calls
 
@@ -361,6 +361,7 @@ def main():
             maintain_workbook_layout(master_sheet)
             deduplicate_settings_rows(master_sheet)
             clean_known_workbook_text_values(master_sheet)
+            get_or_create_subscriptions_worksheet(master_sheet)
             update_last_run(master_sheet)
             update_run_status(master_sheet, 'complete: maintenance-only', run_status_details())
             return

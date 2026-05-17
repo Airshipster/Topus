@@ -615,7 +615,7 @@ def normalize_misaligned_settings_rows(worksheet, values, table):
         normalized = [str(cell).strip() for cell in row]
         key_col_value = normalized[table['key_col'] - 1] if len(normalized) >= table['key_col'] else ''
         legacy_key = normalized[0] if normalized else ''
-        if key_col_value or not legacy_key or legacy_key == SETTINGS_MARKER:
+        if not legacy_key or legacy_key == SETTINGS_MARKER or legacy_key == key_col_value:
             continue
         legacy_value = normalized[1] if len(normalized) > 1 else ''
         legacy_description = normalized[2] if len(normalized) > 2 else ''
