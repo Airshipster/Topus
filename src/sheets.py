@@ -926,20 +926,25 @@ def release_lock(sheet):
             _LOCK_ROW_INFO = None
             return
 
-        values = get_values_with_quota_retry(worksheet)
-        existing, table = find_setting_row(values, 'lock_status')
-        if existing and table:
-            updates = [{
-                'range': gspread.utils.rowcol_to_a1(existing['row_number'], table['value_col']),
-                'values': [['unlocked']],
-            }]
-            if table.get('description_col'):
+        values = get_values_with_quota_retry(worksheet, SETTINGS_READ_RANGE)
+        _, table = find_setting_row(values, 'lock_status')
+        if table:
+            updates = []
+            for row_number, key, _, _ in iter_settings_rows(values, table):
+                if key != 'lock_status':
+                    continue
                 updates.append({
-                    'range': gspread.utils.rowcol_to_a1(existing['row_number'], table['description_col']),
-                    'values': [[format_timestamp()]],
+                    'range': gspread.utils.rowcol_to_a1(row_number, table['value_col']),
+                    'values': [['unlocked']],
                 })
-            worksheet.batch_update(updates, value_input_option='USER_ENTERED')
-            print(f"  🔓 Lock released")
+                if table.get('description_col'):
+                    updates.append({
+                        'range': gspread.utils.rowcol_to_a1(row_number, table['description_col']),
+                        'values': [[format_timestamp()]],
+                    })
+            if updates:
+                worksheet.batch_update(updates, value_input_option='USER_ENTERED')
+                print(f"  🔓 Lock released")
             return
     except Exception as e:
         print(f"  ⚠️  Error releasing lock: {e}")
