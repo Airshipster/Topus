@@ -10,6 +10,9 @@ function appendPushEvent_(timestamp, videoId, channelId, rawXml) {
 
   ensurePushEventsHeader_(sheet);
   var nextRow = sheet.getLastRow() + 1;
+  if (nextRow > sheet.getMaxRows()) {
+    sheet.insertRowsAfter(sheet.getMaxRows(), nextRow - sheet.getMaxRows());
+  }
   sheet.getRange(nextRow, 1, 1, PUSH_EVENTS_HEADERS.length)
     .setValues([[timestamp, stripLeadingApostrophe_(videoId), channelLink_(channelId), '❌', '', stripLeadingApostrophe_(rawXml)]]);
   sheet.getRange(nextRow, 1).setNumberFormat('yyyy-mm-dd hh:mm:ss');
@@ -30,7 +33,7 @@ function ensurePushEventsHeader_(sheet) {
 
   sheet.getRange(2, 1, Math.max(sheet.getMaxRows() - 1, 1), 1)
     .setNumberFormat('yyyy-mm-dd hh:mm:ss');
-  sheet.getRange(1, 1, Math.max(sheet.getMaxRows(), 1), PUSH_EVENTS_HEADERS.length)
+  sheet.getRange(1, 6, Math.max(sheet.getMaxRows(), 1), 1)
     .setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
   if (sheet.getLastRow() > 1) {
     sheet.setRowHeights(2, sheet.getLastRow() - 1, 21);
@@ -40,8 +43,11 @@ function ensurePushEventsHeader_(sheet) {
 
 function ensureSheetRows_(sheet, targetRows) {
   var currentRows = sheet.getMaxRows();
+  var desiredRows = Math.max(targetRows, sheet.getLastRow());
   if (currentRows < targetRows) {
-    sheet.insertRowsAfter(currentRows, targetRows - currentRows);
+    sheet.insertRowsAfter(currentRows, desiredRows - currentRows);
+  } else if (currentRows > desiredRows) {
+    sheet.deleteRows(desiredRows + 1, currentRows - desiredRows);
   }
 }
 

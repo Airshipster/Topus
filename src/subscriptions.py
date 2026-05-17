@@ -22,7 +22,7 @@ from sheets import (
 SUBSCRIPTION_SYNC_SETTING = 'last_subscription_sync'
 SUBSCRIPTION_SYNC_INTERVAL_SECONDS = 86400
 SUBSCRIPTIONS_SHEET_NAME = 'Подписки'
-SUBSCRIPTIONS_HEADERS = ['Channel ID', 'Subscribed At', 'Last Renewed', 'Projects', 'Project Count']
+SUBSCRIPTIONS_HEADERS = ['Projects', 'Project Count', 'Channel ID', 'Subscribed At', 'Last Renewed']
 
 
 def normalize_subscription_channel_id(value):
@@ -97,11 +97,10 @@ def get_subscription_records(sheet):
         records = {}
 
         for i, row in enumerate(values[1:], start=2):
-            channel_col = indexes.get('Channel ID', 0)
-            renewed_col = indexes.get('Last Renewed', 2)
-            projects_col = indexes.get('Projects', 3)
-
-            count_col = indexes.get('Project Count', 4)
+            channel_col = indexes.get('Channel ID', 2)
+            renewed_col = indexes.get('Last Renewed', 4)
+            projects_col = indexes.get('Projects', 0)
+            count_col = indexes.get('Project Count', 1)
 
             raw_channel_id = clean_sheet_value(row[channel_col]).strip() if len(row) > channel_col else ''
             channel_id = normalize_subscription_channel_id(raw_channel_id)
@@ -132,7 +131,7 @@ def rewrite_subscriptions_values(worksheet):
         cleaned = [clean_sheet_value(cell) for cell in row[:len(SUBSCRIPTIONS_HEADERS)]]
         if len(cleaned) < len(SUBSCRIPTIONS_HEADERS):
             cleaned.extend([''] * (len(SUBSCRIPTIONS_HEADERS) - len(cleaned)))
-        cleaned[0] = normalize_subscription_channel_id(cleaned[0])
+        cleaned[2] = normalize_subscription_channel_id(cleaned[2])
         updates.append({
             'range': f'A{row_index}:{column_letter(len(SUBSCRIPTIONS_HEADERS))}{row_index}',
             'values': [cleaned],
@@ -143,6 +142,75 @@ def rewrite_subscriptions_values(worksheet):
         time.sleep(0.2)
 
     return len(updates)
+
+
+def normalize_subscriptions_columns(sheet, worksheet, headers):
+    """Move Projects/Project Count to the front with column moves so formatting follows."""
+    stripped = [str(cell).strip() for cell in headers]
+    desired = SUBSCRIPTIONS_HEADERS
+    if stripped[:len(desired)] == desired:
+        return stripped
+
+    try:
+        projects_index = stripped.index('Projects')
+        count_index = stripped.index('Project Count')
+    except ValueError:
+        worksheet.update(
+            range_name=f'A1:{column_letter(len(desired))}1',
+            values=[desired],
+            value_input_option='USER_ENTERED',
+        )
+        return desired
+
+    if count_index == projects_index + 1:
+        sheet.batch_update({
+            'requests': [{
+                'moveDimension': {
+                    'source': {
+                        'sheetId': worksheet.id,
+                        'dimension': 'COLUMNS',
+                        'startIndex': projects_index,
+                        'endIndex': count_index + 1,
+                    },
+                    'destinationIndex': 0,
+                }
+            }]
+        })
+    else:
+        sheet.batch_update({
+            'requests': [
+                {
+                    'moveDimension': {
+                        'source': {
+                            'sheetId': worksheet.id,
+                            'dimension': 'COLUMNS',
+                            'startIndex': count_index,
+                            'endIndex': count_index + 1,
+                        },
+                        'destinationIndex': 0,
+                    }
+                },
+                {
+                    'moveDimension': {
+                        'source': {
+                            'sheetId': worksheet.id,
+                            'dimension': 'COLUMNS',
+                            'startIndex': projects_index + 1 if projects_index < count_index else projects_index,
+                            'endIndex': projects_index + 2 if projects_index < count_index else projects_index + 1,
+                        },
+                        'destinationIndex': 0,
+                    }
+                },
+            ]
+        })
+
+    worksheet.update(
+        range_name=f'A1:{column_letter(len(desired))}1',
+        values=[desired],
+        value_input_option='USER_ENTERED',
+    )
+    print("  ↔️  Moved subscription Projects columns to the front")
+    return desired
 
 def get_or_create_subscriptions_worksheet(sheet):
     try:
@@ -158,15 +226,8 @@ def get_or_create_subscriptions_worksheet(sheet):
         return worksheet
 
     headers = [str(cell).strip() for cell in values[0]]
-    desired_prefix = SUBSCRIPTIONS_HEADERS
-    current_prefix = headers[:len(desired_prefix)]
-    if current_prefix != desired_prefix:
-        worksheet.update(
-            range_name=f'A1:{column_letter(len(desired_prefix))}1',
-            values=[desired_prefix],
-            value_input_option='USER_ENTERED',
-        )
-    worksheet.format('B:C', {
+    normalize_subscriptions_columns(sheet, worksheet, headers)
+    worksheet.format('D:E', {
         'numberFormat': {
             'type': 'DATE_TIME',
             'pattern': 'yyyy-mm-dd hh:mm:ss',
@@ -216,11 +277,11 @@ def save_subscribed_channels_batch(sheet, channel_ids, active_channels_dict):
     timestamp = format_timestamp()
     rows = [
         [
+            format_channel_projects(active_channels_dict, channel_id),
+            len(set(active_channels_dict.get(channel_id, {}).get('projects', []))),
             channel_id,
             sheet_datetime_value(timestamp),
             sheet_datetime_value(timestamp),
-            format_channel_projects(active_channels_dict, channel_id),
-            len(set(active_channels_dict.get(channel_id, {}).get('projects', []))),
         ]
         for channel_id in channel_ids
     ]
@@ -244,7 +305,7 @@ def update_subscription_renewals_batch(sheet, subscription_records, channel_ids)
                 continue
 
             updates.append({
-                'range': f'C{record["row_index"]}',
+                'range': f'E{record["row_index"]}',
                 'values': [[sheet_datetime_value(timestamp)]]
             })
 
@@ -269,12 +330,12 @@ def update_subscription_project_links(sheet, subscription_records, active_channe
 
             row_updates = []
             if record.get('raw_channel_id') != channel_id:
-                row_updates.append({'range': f'A{record["row_index"]}', 'values': [[channel_id]]})
+                row_updates.append({'range': f'C{record["row_index"]}', 'values': [[channel_id]]})
 
             if record.get('projects') != projects_text or str(record.get('project_count')) != str(project_count):
                 row_updates.extend([
-                    {'range': f'D{record["row_index"]}', 'values': [[projects_text]]},
-                    {'range': f'E{record["row_index"]}', 'values': [[project_count]]},
+                    {'range': f'A{record["row_index"]}', 'values': [[projects_text]]},
+                    {'range': f'B{record["row_index"]}', 'values': [[project_count]]},
                 ])
 
             if row_updates:
@@ -300,7 +361,7 @@ def deduplicate_subscription_rows(sheet):
 
         headers = [str(cell).strip() for cell in values[0]]
         indexes = {header: index for index, header in enumerate(headers)}
-        channel_col = indexes.get('Channel ID', 0)
+        channel_col = indexes.get('Channel ID', 2)
         seen = set()
         rows_to_delete = []
 
@@ -368,7 +429,10 @@ def remove_subscribed_channels(sheet, channel_ids):
         for i, row in enumerate(all_values):
             if i == 0:
                 continue
-            if len(row) > 0 and row[0] in channel_ids:
+            headers = [str(cell).strip() for cell in all_values[0]] if all_values else []
+            indexes = {header: index for index, header in enumerate(headers)}
+            channel_col = indexes.get('Channel ID', 2)
+            if len(row) > channel_col and normalize_subscription_channel_id(row[channel_col]) in channel_ids:
                 rows_to_delete.append(i + 1)
         
         delete_rows_batch(sheet, worksheet, rows_to_delete)

@@ -3,8 +3,17 @@ function repairTopusWorkbookMaintenance() {
   ensureWorkbookRows_(ss);
   moveGlobalVideosColumnAConditionalFormatting_(ss);
   repairPushEventsLayout_(ss);
+  moveSubscriptionProjectColumns_(ss);
   repairKnownDateColumns_(ss);
   repairKnownNumericColumns_(ss);
+}
+
+function repairTopusFastLayout() {
+  var ss = SpreadsheetApp.openById(MASTER_SPREADSHEET_ID);
+  ensureWorkbookRows_(ss);
+  moveGlobalVideosColumnAConditionalFormatting_(ss);
+  repairPushEventsLayout_(ss);
+  moveSubscriptionProjectColumns_(ss);
 }
 
 function ensureWorkbookRows_(ss) {
@@ -12,10 +21,7 @@ function ensureWorkbookRows_(ss) {
     if (sheet.getName() === 'Настройки') {
       return;
     }
-    var rows = sheet.getMaxRows();
-    if (rows < 10000) {
-      sheet.insertRowsAfter(rows, 10000 - rows);
-    }
+    ensureSheetRows_(sheet, 10000);
   });
 }
 
@@ -25,7 +31,7 @@ function repairPushEventsLayout_(ss) {
     return;
   }
   ensureSheetRows_(sheet, 10000);
-  sheet.getRange(1, 1, Math.max(sheet.getMaxRows(), 1), PUSH_EVENTS_HEADERS.length)
+  sheet.getRange(1, 6, Math.max(sheet.getMaxRows(), 1), 1)
     .setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
   if (sheet.getMaxRows() > 1) {
     sheet.setRowHeights(2, sheet.getMaxRows() - 1, 21);
@@ -67,6 +73,26 @@ function moveGlobalVideosColumnAConditionalFormatting_(ss) {
   if (changed) {
     sheet.setConditionalFormatRules(rules);
   }
+}
+
+function moveSubscriptionProjectColumns_(ss) {
+  var sheet = ss.getSheetByName('Подписки');
+  if (!sheet) {
+    return;
+  }
+  var desiredHeaders = ['Projects', 'Project Count', 'Channel ID', 'Subscribed At', 'Last Renewed'];
+  var headers = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), desiredHeaders.length)).getValues()[0]
+    .map(function(value) { return String(value || '').trim(); });
+  if (headers.slice(0, desiredHeaders.length).join('\u0001') === desiredHeaders.join('\u0001')) {
+    return;
+  }
+
+  var projectsCol = headers.indexOf('Projects') + 1;
+  var countCol = headers.indexOf('Project Count') + 1;
+  if (projectsCol > 0 && countCol === projectsCol + 1) {
+    sheet.moveColumns(sheet.getRange(1, projectsCol, sheet.getMaxRows(), 2), 1);
+  }
+  sheet.getRange(1, 1, 1, desiredHeaders.length).setValues([desiredHeaders]);
 }
 
 function repairKnownDateColumns_(ss) {

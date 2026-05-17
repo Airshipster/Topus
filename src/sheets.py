@@ -1348,19 +1348,31 @@ def strip_apostrophes_in_worksheet(worksheet):
     return len(updates)
 
 
+def last_used_row(values):
+    for row_index in range(len(values), 0, -1):
+        if any(str(cell).strip() for cell in values[row_index - 1]):
+            return row_index
+    return 0
+
+
 def ensure_non_settings_sheet_row_counts(sheet):
     requests = []
     for worksheet in sheet.worksheets():
         if worksheet.title == config.SHEET_NAME_SETTINGS:
             continue
-        if worksheet.row_count >= TARGET_WORKSHEET_ROWS:
+        try:
+            used_rows = last_used_row(get_values_with_quota_retry(worksheet))
+        except Exception:
+            used_rows = worksheet.row_count
+        target_rows = max(TARGET_WORKSHEET_ROWS, used_rows)
+        if worksheet.row_count == target_rows:
             continue
         requests.append({
             'updateSheetProperties': {
                 'properties': {
                     'sheetId': worksheet.id,
                     'gridProperties': {
-                        'rowCount': TARGET_WORKSHEET_ROWS,
+                        'rowCount': target_rows,
                     },
                 },
                 'fields': 'gridProperties.rowCount',
@@ -1372,7 +1384,7 @@ def ensure_non_settings_sheet_row_counts(sheet):
         time.sleep(0.2)
 
     if requests:
-        print(f"  📐 Expanded non-settings sheets to at least {TARGET_WORKSHEET_ROWS} rows: {len(requests)}")
+        print(f"  📐 Normalized non-settings sheet row counts: {len(requests)}")
 
 
 def move_global_video_column_a_conditional_formatting(sheet):
