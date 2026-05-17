@@ -257,10 +257,18 @@ def select_push_projects(master_sheet, projects, push_events):
         return projects
 
     target_project_names = set()
+    missing_channels = []
     for event in push_events:
         record = subscription_records.get(event['channel_id'])
         if record:
-            target_project_names.update(split_project_names(record.get('projects', '')))
+            project_names = split_project_names(record.get('projects', ''))
+            target_project_names.update(project_names)
+            print(
+                f"  🔎 Push map: {event['channel_id']} / {event['video_id']} -> "
+                f"{', '.join(project_names) if project_names else '(no projects)'}"
+            )
+        else:
+            missing_channels.append(event['channel_id'])
 
     if not target_project_names:
         print("  ⚠️  Push channels not found in subscription project map; checking all projects")
@@ -270,6 +278,9 @@ def select_push_projects(master_sheet, projects, push_events):
     missing = sorted(target_project_names - {project['name'] for project in selected})
     if missing:
         print(f"  ⚠️  Subscription map references missing projects: {', '.join(missing)}")
+    if missing_channels:
+        print(f"  ⚠️  Push channels missing from subscriptions: {', '.join(sorted(set(missing_channels)))}")
+    print(f"  🎯 Push-only targets: {', '.join(project['name'] for project in selected)}")
     print(f"  🎯 Push-only target projects: {len(selected)} of {len(projects)}")
     return selected
 
