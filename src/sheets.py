@@ -552,7 +552,7 @@ def clean_numeric_text_values(worksheet):
         return 0
 
 
-def clean_timestamp_text_values(worksheet):
+def clean_timestamp_text_values(worksheet, force_datetime_serial=False):
     """Rewrite ISO timestamps to YYYY-MM-DD HH:MM:SS in known timestamp columns."""
     try:
         header_values = get_values_with_quota_retry(worksheet, '1:1')
@@ -583,7 +583,7 @@ def clean_timestamp_text_values(worksheet):
                     continue
 
                 cleaned = format_timestamp(parsed)
-                if cleaned != value:
+                if force_datetime_serial or cleaned != value:
                     updates.append({
                         'range': gspread.utils.rowcol_to_a1(row_offset, col_index + 1),
                         'values': [[sheet_datetime_value(cleaned)]],
@@ -621,11 +621,12 @@ def clean_known_workbook_text_values(sheet):
         'Логи',
         config.SHEET_NAME_PUSH_EVENTS,
         'Подписки',
+        config.SHEET_NAME_SETTINGS,
     ]:
         try:
             worksheet = sheet.worksheet(worksheet_name)
             cleaned_total += clean_numeric_text_values(worksheet)
-            cleaned_total += clean_timestamp_text_values(worksheet)
+            cleaned_total += clean_timestamp_text_values(worksheet, force_datetime_serial=True)
         except Exception as e:
             print(f"  ⚠️  Error cleaning known values in {worksheet_name}: {e}")
 
