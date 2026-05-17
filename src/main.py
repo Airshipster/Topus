@@ -305,19 +305,27 @@ def main():
             update_project_channel_counts(master_sheet, projects)
         if push_only_mode():
             print("\n📡 Subscription sync skipped in push-only mode")
+            subscription_sync_result = {'ok': True, 'partial': False, 'reason': ''}
         else:
-            sync_subscriptions(
+            subscription_sync_result = sync_subscriptions(
                 client,
                 master_sheet,
                 projects,
                 force=should_force_subscription_sync(),
                 active_channels_dict=active_channels_dict,
-            )
+            ) or {'ok': False, 'partial': True, 'reason': 'unknown subscription sync result'}
 
         if sync_only_mode():
             print("\n✅ Sync-only mode completed. Skipping RSS/publish processing.")
             update_last_run(master_sheet)
-            update_run_status(master_sheet, 'complete: sync-only', run_status_details())
+            if subscription_sync_result.get('partial'):
+                update_run_status(
+                    master_sheet,
+                    'partial: sync-only',
+                    subscription_sync_result.get('reason') or run_status_details(),
+                )
+            else:
+                update_run_status(master_sheet, 'complete: sync-only', run_status_details())
             return
         
         published_videos = get_published_videos(master_sheet)

@@ -70,6 +70,25 @@ def clean_row(row):
     return clean_sheet_row(row)
 
 
+def is_sheets_quota_error(error):
+    return isinstance(error, gspread.exceptions.APIError) and '[429]' in str(error)
+
+
+def get_values_with_quota_retry(worksheet, range_name=None, attempts=3):
+    delay_seconds = 5
+    for attempt in range(1, attempts + 1):
+        try:
+            if range_name:
+                return worksheet.get(range_name)
+            return worksheet.get_all_values()
+        except Exception as error:
+            if not is_sheets_quota_error(error) or attempt >= attempts:
+                raise
+            print(f"  ⚠️  Sheets quota busy while reading {worksheet.title}; retry {attempt}/{attempts - 1} in {delay_seconds}s")
+            time.sleep(delay_seconds)
+            delay_seconds *= 2
+
+
 def display_timezone():
     return getattr(config, 'DISPLAY_TIMEZONE', 'Asia/Baku') or 'Asia/Baku'
 
@@ -673,16 +692,17 @@ def update_project_channel_counts(sheet, projects):
             project = projects_by_code.get(row_code) or projects_by_name.get(row_name)
             if not project:
                 continue
-            channel_count = str(project.get('channel_count', 0))
             status = 'error' if project.get('channels_error') else 'ready'
             error_text = project.get('channels_error', '')
             provisioned_at = format_timestamp()
-            current = str(row[count_col - 1]).strip() if len(row) >= count_col else ''
-            if current != channel_count:
-                updates.append({
-                    'range': gspread.utils.rowcol_to_a1(row_index, count_col),
-                    'values': [[channel_count]],
-                })
+            if not project.get('channels_error'):
+                channel_count = str(project.get('channel_count', 0))
+                current = str(row[count_col - 1]).strip() if len(row) >= count_col else ''
+                if current != channel_count:
+                    updates.append({
+                        'range': gspread.utils.rowcol_to_a1(row_index, count_col),
+                        'values': [[channel_count]],
+                    })
             current_status = str(row[status_col - 1]).strip() if len(row) >= status_col else ''
             current_error = str(row[error_col - 1]).strip() if len(row) >= error_col else ''
             if current_status != status or current_error != error_text:
@@ -1794,7 +1814,7 @@ def load_youtube_channels(client, project):
 def parse_youtube_channels_worksheet(worksheet, project):
     try:
         print(f"  📄 Channels sheet: {worksheet.title}")
-        values = worksheet.get_all_values()
+        values = get_values_with_quota_retry(worksheet, 'A:V')
         if not values:
             return {}
 

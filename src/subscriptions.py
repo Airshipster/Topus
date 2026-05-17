@@ -345,17 +345,37 @@ def remove_subscribed_channels(sheet, channel_ids):
 def sync_subscriptions(client, master_sheet, projects, force=False, active_channels_dict=None):
     """Синхронизация push-подписок"""
     print("\n📡 Syncing subscriptions...")
+    result = {
+        'ok': True,
+        'partial': False,
+        'reason': '',
+    }
 
     if active_channels_dict is None:
         active_channels_dict = get_all_active_channels(client, projects)
+    channel_load_errors = [
+        f"{project.get('name')}: {project.get('channels_error')}"
+        for project in projects
+        if project.get('channels_error')
+    ]
+    inventory_complete = not channel_load_errors
+    if not inventory_complete:
+        result.update({
+            'ok': False,
+            'partial': True,
+            'reason': f"channel load errors: {len(channel_load_errors)}",
+        })
+        print(f"  ⚠️  Active channel inventory is incomplete ({len(channel_load_errors)} project errors)")
+        print("  🛑 Inactive unsubscribe/removal is disabled for this run")
     active_channels = set(active_channels_dict.keys())
     subscription_records = get_subscription_records(master_sheet)
     if subscription_records is None:
         print("  ⚠️  Subscription sync skipped: could not read existing subscriptions")
-        return
+        result.update({'ok': False, 'partial': True, 'reason': 'could not read subscriptions'})
+        return result
     subscribed_channels = set(subscription_records.keys())
     to_subscribe = active_channels - subscribed_channels
-    to_unsubscribe = subscribed_channels - active_channels
+    to_unsubscribe = set() if not inventory_complete else subscribed_channels - active_channels
 
     if not should_run_subscription_sync(master_sheet, force=force):
         print("  ⏭️  Subscribe/renew skipped (last full sync < 24h)")
@@ -380,9 +400,10 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
         subscription_records = get_subscription_records(master_sheet)
         if subscription_records is None:
             print("  ⚠️  Project link update skipped: could not re-read subscriptions")
-            return
+            result.update({'ok': False, 'partial': True, 'reason': 'could not re-read subscriptions'})
+            return result
         update_subscription_project_links(master_sheet, subscription_records, active_channels_dict)
-        return
+        return result
 
     if force:
         print("  🔁 Forced subscription sync requested")
@@ -440,7 +461,13 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
     subscription_records = get_subscription_records(master_sheet)
     if subscription_records is None:
         print("  ⚠️  Final project link update skipped: could not re-read subscriptions")
-        return
+        result.update({'ok': False, 'partial': True, 'reason': 'could not re-read subscriptions'})
+        return result
     update_subscription_project_links(master_sheet, subscription_records, active_channels_dict)
 
-    update_subscription_sync_state(master_sheet)
+    if inventory_complete:
+        update_subscription_sync_state(master_sheet)
+    else:
+        print("  ⚠️  Full subscription sync timestamp not updated because channel inventory was incomplete")
+
+    return result
