@@ -60,6 +60,7 @@ TARGET_WORKSHEET_ROWS = 10000
 PUSH_EVENT_ROW_HEIGHT_PIXELS = 21
 SETTINGS_READ_RANGE = 'A1:D200'
 PROJECTS_READ_RANGE = 'A1:AZ500'
+PENDING_RETRY_WINDOW_HOURS = 2
 
 
 def clean_sheet_value(value):
@@ -1290,7 +1291,7 @@ def reconcile_pending_published_videos(sheet):
 
 
 def delete_stale_unpublished_video_rows(sheet):
-    """Mark old pending videos as filtered instead of keeping them actionable."""
+    """Mark non-actionable pending videos as filtered instead of leaving them forever."""
     try:
         worksheet = ensure_videos_worksheet(sheet)
         values = get_values_with_quota_retry(worksheet)
@@ -1311,25 +1312,41 @@ def delete_stale_unpublished_video_rows(sheet):
             if status_name not in ('pending', ''):
                 continue
 
+            status_col = headers.index('Системный статус') + 1 if 'Системный статус' in headers else None
+            if not status_col:
+                continue
+
             yt_published = parse_datetime_value(first_value(data, ['Дата публикации YT GMT+4', 'Дата публикации YT UTC']))
             if not yt_published:
+                updates.append({
+                    'range': gspread.utils.rowcol_to_a1(row_index, status_col),
+                    'values': [[combined_status('filtered', 'Missing/invalid YT publication date', method)]],
+                })
                 continue
 
             age_hours = (now - yt_published).total_seconds() / 3600
             if age_hours > config.MAX_PUBLISH_AGE_HOURS:
-                status_col = headers.index('Системный статус') + 1 if 'Системный статус' in headers else None
-                if status_col:
-                    reason = f"Stale video ({age_hours:.1f}h old, limit {config.MAX_PUBLISH_AGE_HOURS}h)"
-                    updates.append({
-                        'range': gspread.utils.rowcol_to_a1(row_index, status_col),
-                        'values': [[combined_status('filtered', reason, method)]],
-                    })
+                reason = f"Stale video ({age_hours:.1f}h old, limit {config.MAX_PUBLISH_AGE_HOURS}h)"
+                updates.append({
+                    'range': gspread.utils.rowcol_to_a1(row_index, status_col),
+                    'values': [[combined_status('filtered', reason, method)]],
+                })
+                continue
+
+            processed_at = parse_datetime_value(first_value(data, ['Дата обработки GMT+4', 'Дата обработки Asia/Baku', 'Дата обработки UTC']))
+            pending_age_hours = (now - processed_at).total_seconds() / 3600 if processed_at else age_hours
+            if pending_age_hours > PENDING_RETRY_WINDOW_HOURS:
+                reason = f"Pending retry window expired ({pending_age_hours:.1f}h old)"
+                updates.append({
+                    'range': gspread.utils.rowcol_to_a1(row_index, status_col),
+                    'values': [[combined_status('filtered', reason, method)]],
+                })
 
         for i in range(0, len(updates), config.BATCH_SIZE):
             batch_update_with_quota_retry(worksheet, updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
             time.sleep(0.2)
         if updates:
-            print(f"  🧹 Marked stale pending rows filtered: {len(updates)}")
+            print(f"  🧹 Marked non-actionable pending rows filtered: {len(updates)}")
         return len(updates)
     except Exception as e:
         print(f"  ⚠️  Error marking stale unpublished video rows: {e}")
