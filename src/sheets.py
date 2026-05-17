@@ -308,19 +308,6 @@ SETTINGS_MARKER = 'Настройки'
 
 GLOBAL_VIDEOS_HEADERS = VIDEO_HEADERS
 
-NUMERIC_CLEANUP_HEADERS = {
-    'просмотры',
-    'просмотров',
-    'лайки',
-    'комменты',
-    'комментарии',
-    'видео',
-    'подписчики',
-    'tg message_id',
-    'project count',
-    'разница в минутах',
-}
-
 TIMESTAMP_CLEANUP_HEADERS = {
     'timestamp',
     'timestamp (utc)',
@@ -608,40 +595,6 @@ def update_setting_value(worksheet, key, value, description=''):
     worksheet.append_row(clean_sheet_row(append_row), value_input_option='USER_ENTERED')
 
 
-def normalize_misaligned_settings_rows(worksheet, values, table):
-    """Move legacy setting rows from A:C into the detected settings table columns."""
-    updates = []
-    max_col = max(table['description_col'] or 0, table['value_col'])
-    for row_number, row in enumerate(values[table['first_data_row'] - 1:], start=table['first_data_row']):
-        normalized = [str(cell).strip() for cell in row]
-        key_col_value = normalized[table['key_col'] - 1] if len(normalized) >= table['key_col'] else ''
-        legacy_key = normalized[0] if normalized else ''
-        if not legacy_key or legacy_key == SETTINGS_MARKER or legacy_key == key_col_value:
-            continue
-        legacy_value = normalized[1] if len(normalized) > 1 else ''
-        legacy_description = normalized[2] if len(normalized) > 2 else ''
-        if not legacy_value and not legacy_description:
-            continue
-
-        row_values = [''] * max_col
-        row_values[table['key_col'] - 1] = legacy_key
-        row_values[table['value_col'] - 1] = legacy_value
-        if table.get('description_col'):
-            row_values[table['description_col'] - 1] = legacy_description
-        updates.append({
-            'range': f'A{row_number}:{a1_column(max_col)}{row_number}',
-            'values': [clean_sheet_row(row_values)],
-        })
-
-    for i in range(0, len(updates), config.BATCH_SIZE):
-        worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
-        time.sleep(0.2)
-
-    if updates:
-        print(f"  ↔️  Normalized misaligned settings rows: {len(updates)}")
-    return len(updates)
-
-
 def deduplicate_settings_rows(sheet):
     """Keep one row per setting key in the settings table, preserving the latest row."""
     try:
@@ -650,13 +603,6 @@ def deduplicate_settings_rows(sheet):
         table = find_settings_table(values)
         if not table:
             return 0
-
-        normalized_count = normalize_misaligned_settings_rows(worksheet, values, table)
-        if normalized_count:
-            values = worksheet.get_all_values()
-            table = find_settings_table(values)
-            if not table:
-                return normalized_count
 
         latest_rows = {}
         duplicate_rows = []
@@ -676,12 +622,12 @@ def deduplicate_settings_rows(sheet):
         duplicate_rows.extend(legacy_status_rows)
         duplicate_rows = sorted(set(duplicate_rows))
         if not duplicate_rows:
-            return normalized_count
+            return 0
 
         delete_rows_batch(sheet, worksheet, duplicate_rows)
         get_settings_values(worksheet, force_refresh=True)
         print(f"  🧹 Removed duplicate settings rows: {len(duplicate_rows)}")
-        return normalized_count + len(duplicate_rows)
+        return len(duplicate_rows)
     except Exception as e:
         print(f"  ⚠️  Error deduplicating settings rows: {e}")
         return 0
@@ -693,211 +639,6 @@ def ensure_global_videos_worksheet(sheet):
 
 def header_index(headers, name):
     return headers.index(name) if name in headers else None
-
-
-def strip_leading_apostrophe(value):
-    text = str(value)
-    if not text.startswith("'"):
-        return value
-
-    stripped = text[1:].strip()
-    if re.fullmatch(r'-?\d+(?:[.,]\d+)?', stripped):
-        return stripped.replace(',', '.')
-
-    return value
-
-
-def clean_numeric_text_values(worksheet):
-    """Remove Sheets text-prefix apostrophes only from known numeric columns."""
-    try:
-        header_values = get_values_with_quota_retry(worksheet, '1:1')
-        if not header_values:
-            return 0
-
-        headers = [str(cell).strip().lower() for cell in header_values[0]]
-        numeric_cols = {
-            index
-            for index, header in enumerate(headers)
-            if header in NUMERIC_CLEANUP_HEADERS
-        }
-        if not numeric_cols:
-            return 0
-
-        updates = []
-        for col_index in numeric_cols:
-            column_name = a1_column(col_index + 1)
-            values = get_values_with_quota_retry(worksheet, f'{column_name}2:{column_name}')
-            for row_offset, row in enumerate(values, start=2):
-                value = row[0] if row else ''
-                cleaned = strip_leading_apostrophe(value)
-                if cleaned != value:
-                    updates.append({
-                        'range': gspread.utils.rowcol_to_a1(row_offset, col_index + 1),
-                        'values': [[cleaned]],
-                    })
-
-        for i in range(0, len(updates), config.BATCH_SIZE):
-            worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
-            time.sleep(0.2)
-
-        return len(updates)
-    except Exception as e:
-        print(f"  ⚠️  Error cleaning numeric values in {worksheet.title}: {e}")
-        return 0
-
-
-def clean_timestamp_text_values(worksheet, force_datetime_serial=False, only_headers=None):
-    """Rewrite parseable timestamps to the project display format in known timestamp columns."""
-    try:
-        header_values = get_values_with_quota_retry(worksheet, '1:1')
-        if not header_values:
-            return 0
-
-        headers = [str(cell).strip().lower() for cell in header_values[0]]
-        allowed_headers = {normalize_header(header) for header in only_headers} if only_headers else None
-        timestamp_cols = {
-            index
-            for index, header in enumerate(headers)
-            if header in TIMESTAMP_CLEANUP_HEADERS and (allowed_headers is None or header in allowed_headers)
-        }
-        if not timestamp_cols:
-            return 0
-
-        updates = []
-        cleaned_count = 0
-        for col_index in timestamp_cols:
-            column_name = a1_column(col_index + 1)
-            values = get_values_with_quota_retry(worksheet, f'{column_name}2:{column_name}')
-            if force_datetime_serial:
-                column_values = []
-                changed = 0
-                for row in values:
-                    value = str(row[0] if row else '').strip()
-                    parsed = parse_datetime_value(value)
-                    if parsed:
-                        column_values.append([sheet_datetime_value(format_timestamp(parsed))])
-                        changed += 1
-                    else:
-                        column_values.append([value])
-
-                for offset in range(0, len(column_values), 1000):
-                    chunk = column_values[offset:offset + 1000]
-                    start_row = 2 + offset
-                    end_row = start_row + len(chunk) - 1
-                    worksheet.update(
-                        range_name=f'{column_name}{start_row}:{column_name}{end_row}',
-                        values=chunk,
-                        value_input_option='USER_ENTERED',
-                    )
-                cleaned_count += changed
-                continue
-
-            for row_offset, row in enumerate(values, start=2):
-                value = str(row[0] if row else '').strip()
-                normalized_value = value.lstrip("'")
-                if not normalized_value:
-                    continue
-
-                parsed = parse_datetime_value(value)
-                if not parsed:
-                    continue
-
-                cleaned = format_timestamp(parsed)
-                if force_datetime_serial or cleaned != value:
-                    updates.append({
-                        'range': gspread.utils.rowcol_to_a1(row_offset, col_index + 1),
-                        'values': [[sheet_datetime_value(cleaned)]],
-                    })
-                    cleaned_count += 1
-
-        for i in range(0, len(updates), config.BATCH_SIZE):
-            worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
-            time.sleep(0.2)
-
-        return cleaned_count
-    except Exception as e:
-        print(f"  ⚠️  Error cleaning timestamp values in {worksheet.title}: {e}")
-        return 0
-
-
-def clean_status_method_text_values(worksheet):
-    """Normalize method prefixes in status cells without touching formatting."""
-    try:
-        header_values = get_values_with_quota_retry(worksheet, '1:1')
-        if not header_values:
-            return 0
-
-        headers = [str(cell).strip() for cell in header_values[0]]
-        if 'Системный статус' not in headers:
-            return 0
-
-        status_col = headers.index('Системный статус') + 1
-        column_name = a1_column(status_col)
-        values = get_values_with_quota_retry(worksheet, f'{column_name}2:{column_name}')
-        updates = []
-        for row_offset, row in enumerate(values, start=2):
-            value = str(row[0] if row else '').strip()
-            if not re.match(r'^Rss:', value):
-                continue
-            updates.append({
-                'range': gspread.utils.rowcol_to_a1(row_offset, status_col),
-                'values': [[re.sub(r'^Rss:', 'RSS:', value, count=1)]],
-            })
-
-        for i in range(0, len(updates), config.BATCH_SIZE):
-            worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
-            time.sleep(0.2)
-
-        return len(updates)
-    except Exception as e:
-        print(f"  ⚠️  Error cleaning status values in {worksheet.title}: {e}")
-        return 0
-
-
-def clean_master_numeric_text_values(sheet):
-    """Clean numeric prefixes and timestamp text in master sheets without touching formatting."""
-    cleaned_total = 0
-    for worksheet in sheet.worksheets():
-        cleaned_total += clean_numeric_text_values(worksheet)
-        cleaned_total += clean_timestamp_text_values(worksheet)
-
-    if cleaned_total:
-        print(f"  ✅ Cleaned text-formatted values: {cleaned_total} cells")
-
-
-def clean_known_workbook_text_values(sheet):
-    """One-off targeted cleanup for known timestamp/numeric columns."""
-    cleaned_total = 0
-    for worksheet_name, timestamp_headers in [
-        (config.SHEET_NAME_SETTINGS, {'provisioned at'}),
-        (config.SHEET_NAME_VIDEOS, {
-            'дата публикации yt gmt+4',
-            'дата обработки gmt+4',
-            'дата публикации tg gmt+4',
-        }),
-        ('Логи', {'timestamp gmt+4'}),
-        (config.SHEET_NAME_PUSH_EVENTS, {'timestamp gmt+4'}),
-        ('Подписки', {'subscribed at', 'last renewed'}),
-    ]:
-        try:
-            worksheet = sheet.worksheet(worksheet_name)
-            cleaned_total += clean_timestamp_text_values(
-                worksheet,
-                force_datetime_serial=True,
-                only_headers=timestamp_headers,
-            )
-        except Exception as e:
-            print(f"  ⚠️  Error cleaning known values in {worksheet_name}: {e}")
-
-    try:
-        worksheet = sheet.worksheet(config.SHEET_NAME_VIDEOS)
-        cleaned_total += clean_numeric_text_values(worksheet)
-        cleaned_total += clean_status_method_text_values(worksheet)
-    except Exception as e:
-        print(f"  ⚠️  Error cleaning known numeric values in {config.SHEET_NAME_VIDEOS}: {e}")
-
-    if cleaned_total:
-        print(f"  ✅ Cleaned known text-formatted values: {cleaned_total} cells")
 
 
 def ensure_master_timestamp_formats(sheet):
@@ -2166,125 +1907,6 @@ def delete_rows_batch(spreadsheet, worksheet, row_indexes):
         time.sleep(0.5)
 
     return deleted_rows
-
-def cleanup_old_records(sheet):
-    """Очистка старых записей"""
-    try:
-        worksheet_settings = sheet.worksheet(config.SHEET_NAME_SETTINGS)
-        values = worksheet_settings.get_all_values()
-
-        last_cleanup_row, _ = find_setting_row(values, 'last_cleanup')
-        last_cleanup = parse_datetime_value(last_cleanup_row.get('value', '')) if last_cleanup_row else None
-        last_cleanup_retention_days = None
-        retention_row, _ = find_setting_row(values, 'last_cleanup_retention_days')
-        if retention_row:
-            try:
-                last_cleanup_retention_days = int(retention_row.get('value', ''))
-            except:
-                pass
-        
-        retention_changed = last_cleanup_retention_days != config.CLEANUP_AFTER_DAYS
-        if last_cleanup and not retention_changed and (current_local_datetime() - last_cleanup).total_seconds() < 86400:
-            print(f"  ⏭️  Cleanup skipped (last run: {format_timestamp(last_cleanup)})")
-            return
-        if retention_changed:
-            print(f"  🔁 Cleanup retention changed: {last_cleanup_retention_days} -> {config.CLEANUP_AFTER_DAYS} days")
-        
-        print("\n🧹 Cleaning up old records...")
-        
-        cutoff_date = current_local_datetime() - timedelta(days=config.CLEANUP_AFTER_DAYS)
-        print(f"  Removing records older than: {format_timestamp(cutoff_date)}")
-        
-        deleted_videos = 0
-        try:
-            worksheet = sheet.worksheet(config.SHEET_NAME_VIDEOS)
-            values = worksheet.get_all_values()
-            
-            rows_to_delete = []
-            for i, row in enumerate(values):
-                if i == 0:
-                    continue
-                
-                if len(row) > 6:
-                    date_str = row[6]
-                    try:
-                        record_date = parse_datetime_value(date_str)
-                        if record_date and record_date < cutoff_date:
-                            rows_to_delete.append(i + 1)
-                    except:
-                        pass
-            
-            deleted_videos = delete_rows_batch(sheet, worksheet, rows_to_delete)
-            
-            if deleted_videos > 0:
-                print(f"  ✅ Deleted {deleted_videos} old videos")
-        except Exception as e:
-            print(f"  ⚠️  Error cleaning videos: {e}")
-        
-        deleted_logs = 0
-        try:
-            worksheet = sheet.worksheet('Логи')
-            values = worksheet.get_all_values()
-            
-            rows_to_delete = []
-            for i, row in enumerate(values):
-                if i == 0:
-                    continue
-                
-                if len(row) > 0:
-                    date_str = row[0]
-                    try:
-                        record_date = parse_datetime_value(date_str)
-                        if record_date and record_date < cutoff_date:
-                            rows_to_delete.append(i + 1)
-                    except:
-                        pass
-            
-            deleted_logs = delete_rows_batch(sheet, worksheet, rows_to_delete)
-            
-            if deleted_logs > 0:
-                print(f"  ✅ Deleted {deleted_logs} old logs")
-        except Exception as e:
-            print(f"  ⚠️  Error cleaning logs: {e}")
-
-        deleted_push_events = 0
-        try:
-            worksheet = sheet.worksheet(config.SHEET_NAME_PUSH_EVENTS)
-            values = worksheet.get_all_values()
-
-            rows_to_delete = []
-            for i, row in enumerate(values):
-                if i == 0:
-                    continue
-
-                if len(row) > 0:
-                    date_str = row[0]
-                    try:
-                        record_date = parse_datetime_value(date_str)
-                        if record_date and record_date < cutoff_date:
-                            rows_to_delete.append(i + 1)
-                    except:
-                        pass
-
-            deleted_push_events = delete_rows_batch(sheet, worksheet, rows_to_delete)
-
-            if deleted_push_events > 0:
-                print(f"  ✅ Deleted {deleted_push_events} old push events")
-        except Exception as e:
-            print(f"  ⚠️  Error cleaning push events: {e}")
-        
-        update_setting_value(worksheet_settings, 'last_cleanup', format_timestamp(), 'Последняя очистка старых записей')
-        update_setting_value(
-            worksheet_settings,
-            'last_cleanup_retention_days',
-            str(config.CLEANUP_AFTER_DAYS),
-            'Retention window used by the last cleanup run',
-        )
-        
-        print(f"  ✅ Cleanup completed: {deleted_videos} videos, {deleted_logs} logs, {deleted_push_events} push events")
-        
-    except Exception as e:
-        print(f"  ❌ Cleanup error: {e}")
 
 def load_settings(sheet):
     """Загрузка настроек"""

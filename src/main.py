@@ -1,6 +1,5 @@
 import time
 import os
-from datetime import datetime
 
 from gspread.exceptions import APIError
 
@@ -10,12 +9,9 @@ from rss import rss_fallback_check
 from sheets import (
     acquire_lock,
     authenticate_google_sheets,
-    clean_master_numeric_text_values,
-    cleanup_old_records,
     current_local_datetime,
     deduplicate_settings_rows,
     format_timestamp,
-    clean_known_workbook_text_values,
     delete_stale_unpublished_video_rows,
     ensure_non_settings_sheet_row_counts,
     get_published_videos,
@@ -360,7 +356,6 @@ def main():
             print("  🧰 Maintenance-only mode: repairing workbook layout and values")
             maintain_workbook_layout(master_sheet)
             deduplicate_settings_rows(master_sheet)
-            clean_known_workbook_text_values(master_sheet)
             get_or_create_subscriptions_worksheet(master_sheet)
             update_last_run(master_sheet)
             update_run_status(master_sheet, 'complete: maintenance-only', run_status_details())
@@ -414,10 +409,6 @@ def main():
         else:
             print("  ⏭️  Publish mode: workbook maintenance is skipped")
 
-        # Автоочистка старых записей
-        if not push_only_mode() and not sync_only_mode():
-            print("  ⏭️  Publish mode: old-record cleanup is skipped")
-        
         print("\n📂 Loading projects...")
         projects = load_projects(master_sheet, update_status=not push_only_mode())
 
