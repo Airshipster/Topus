@@ -505,8 +505,7 @@ def main():
                         print(f"  🚫 Skipped stale: {video['title'][:50]} ({stale_reason})")
                         timestamp = format_timestamp()
                         log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], stale_reason, 'filtered'])
-                        videos_to_save.append((video, project, video_published_date, None, f"FILTERED: {stale_reason}"))
-                        publication_event_rows[key] = event
+                        queue_push_event_mark(event, project['name'])
                         published_videos.add(key)
                         total_filtered += 1
                         continue
@@ -562,7 +561,6 @@ def main():
                         print(f"    🚫 Skipped stale (RSS): {video['title'][:50]} ({stale_reason})")
                         timestamp = format_timestamp()
                         log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], f"RSS: {stale_reason}", 'filtered'])
-                        videos_to_save.append((video, project, video_published_date, None, f"FILTERED: RSS: {stale_reason}"))
                         published_videos.add(key)
                         total_filtered += 1
                         continue
@@ -584,7 +582,6 @@ def main():
                         print(f"    🚫 Skipped stale (RSS): {video['title'][:50]} ({stale_reason})")
                         timestamp = format_timestamp()
                         log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], f"RSS: {stale_reason}", 'filtered'])
-                        videos_to_save.append((video, project, video_published_date, None, f"FILTERED: RSS: {stale_reason}"))
                         published_videos.add(key)
                         total_filtered += 1
                         continue
