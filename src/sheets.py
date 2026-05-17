@@ -57,6 +57,7 @@ _LOCK_ROW_INFO = None
 _RUN_STATUS_ROW = None
 TARGET_WORKSHEET_ROWS = 10000
 PUSH_EVENT_ROW_HEIGHT_PIXELS = 21
+SETTINGS_READ_RANGE = 'A:D'
 
 
 def clean_sheet_value(value):
@@ -465,7 +466,7 @@ def find_setting_row(values, key):
 
 
 def update_setting_value(worksheet, key, value, description=''):
-    values = get_values_with_quota_retry(worksheet)
+    values = get_values_with_quota_retry(worksheet, SETTINGS_READ_RANGE)
     existing, table = find_setting_row(values, key)
 
     if not table:
@@ -838,7 +839,7 @@ def acquire_lock(sheet, stale_after_seconds=900):
     global _LOCK_ROW_INFO
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_SETTINGS)
-        values = get_values_with_quota_retry(worksheet)
+        values = get_values_with_quota_retry(worksheet, SETTINGS_READ_RANGE)
         
         existing, table = find_setting_row(values, 'lock_status')
         if existing and table:
@@ -1826,7 +1827,7 @@ def update_run_status(sheet, status, details=''):
             print(f"  ℹ️  Run status updated: {status}")
             return
 
-        values = get_values_with_quota_retry(worksheet)
+        values = get_values_with_quota_retry(worksheet, SETTINGS_READ_RANGE)
         marker_row = None
 
         for row_index, row in enumerate(values, start=1):

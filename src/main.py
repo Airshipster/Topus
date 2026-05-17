@@ -76,7 +76,14 @@ def maintenance_only_mode():
     return value.lower() in ('1', 'true', 'yes')
 
 
+def unlock_only_mode():
+    value = os.environ.get('TOPUS_UNLOCK_ONLY', '')
+    return value.lower() in ('1', 'true', 'yes')
+
+
 def run_mode_name():
+    if unlock_only_mode():
+        return 'unlock-only'
     if maintenance_only_mode():
         return 'maintenance-only'
     if sync_only_mode():
@@ -269,6 +276,11 @@ def main():
                 print(f"\n⚠️  Google Sheets read quota is busy; push-only run will retry on the next dispatch: {error}")
                 return
             raise
+
+        if unlock_only_mode():
+            print("  🔓 Unlock-only mode: clearing publisher lock")
+            release_lock(master_sheet)
+            return
 
         if maintenance_only_mode():
             print("  🧰 Maintenance-only mode: repairing workbook layout and values")
