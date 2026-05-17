@@ -59,6 +59,7 @@ _SETTINGS_VALUES_CACHE = None
 TARGET_WORKSHEET_ROWS = 10000
 PUSH_EVENT_ROW_HEIGHT_PIXELS = 21
 SETTINGS_READ_RANGE = 'A1:D200'
+PROJECTS_READ_RANGE = 'A1:AZ500'
 
 
 def clean_sheet_value(value):
@@ -1891,7 +1892,7 @@ def update_run_status(sheet, status, details=''):
 def load_projects(sheet, update_status=True):
     """Загрузка активных проектов"""
     worksheet = sheet.worksheet(config.SHEET_NAME_PROJECTS)
-    values = worksheet.get_all_values()
+    values = get_values_with_quota_retry(worksheet, PROJECTS_READ_RANGE)
 
     if not values:
         return []
