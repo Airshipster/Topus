@@ -668,7 +668,7 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
                         continue
                     done = project_renew_done.get(project_name, 0) + 1
                     project_renew_done[project_name] = done
-                    if done == 1 or done == total or done % 50 == 0:
+                    if done == 1 or done == total or done % 10 == 0:
                         status_updates[project_name] = f'checking subscriptions {done}/{total}'
                 update_project_provisioning_status_map(
                     master_sheet,
