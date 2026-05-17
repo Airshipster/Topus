@@ -229,7 +229,7 @@ def hyperlink_formula(url, text):
     safe_url = str(url).replace('"', '""')
     safe_text = str(text).replace('"', '""')
     # Google Sheets in this account uses a Russian locale, so formulas need semicolon separators.
-    return f'=HYPERLINK("{safe_url}";"{safe_text}")'
+    return f'=ГИПЕРССЫЛКА("{safe_url}";"{safe_text}")'
 
 
 def partner_tg_link(value):
@@ -268,7 +268,7 @@ def project_link_formula(project_name, project, tg_message_id=None):
 
 def project_post_link_formula_from_cell(project_cell, project_name, tg_message_id):
     project_cell = str(clean_sheet_value(project_cell) or '').strip()
-    match = re.match(r'=HYPERLINK\("([^"]+)"[;,]"[^"]+"\)', project_cell, flags=re.IGNORECASE)
+    match = re.match(r'=(?:HYPERLINK|ГИПЕРССЫЛКА)\("([^"]+)"[;,]\s*"[^"]+"\)', project_cell, flags=re.IGNORECASE)
     if not match:
         return project_cell or project_name
     return hyperlink_formula(append_tg_message_id(match.group(1), tg_message_id), project_name)
@@ -276,7 +276,7 @@ def project_post_link_formula_from_cell(project_cell, project_name, tg_message_i
 
 def project_name_from_cell(value):
     value = str(clean_sheet_value(value) or '').strip()
-    match = re.match(r'=HYPERLINK\("[^"]+"[;,]"([^"]+)"\)', value, flags=re.IGNORECASE)
+    match = re.match(r'=(?:HYPERLINK|ГИПЕРССЫЛКА)\("[^"]+"[;,]\s*"([^"]+)"\)', value, flags=re.IGNORECASE)
     return match.group(1) if match else value
 
 
