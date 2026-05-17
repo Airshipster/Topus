@@ -97,12 +97,15 @@ def is_sheets_quota_error(error):
     return isinstance(error, gspread.exceptions.APIError) and '[429]' in str(error)
 
 
-def get_values_with_quota_retry(worksheet, range_name=None, attempts=3):
+def get_values_with_quota_retry(worksheet, range_name=None, attempts=3, value_render_option=None):
     delay_seconds = 5
     for attempt in range(1, attempts + 1):
         try:
             if range_name:
-                return worksheet.get(range_name)
+                kwargs = {'value_render_option': value_render_option} if value_render_option else {}
+                return worksheet.get(range_name, **kwargs)
+            if value_render_option:
+                return worksheet.get_all_values(value_render_option=value_render_option)
             return worksheet.get_all_values()
         except Exception as error:
             if not is_sheets_quota_error(error) or attempt >= attempts:
@@ -1891,7 +1894,7 @@ def maintain_workbook_layout(sheet, clean_apostrophes=False):
 def update_video_project_links(sheet, projects):
     try:
         worksheet = ensure_videos_worksheet(sheet)
-        values = worksheet.get_all_values()
+        values = get_values_with_quota_retry(worksheet, value_render_option='FORMULA')
         if not values:
             return
         headers = [str(value).strip() for value in values[0]]
