@@ -278,7 +278,7 @@ def main():
         print_detection_latency_note()
         if maintenance_only_mode():
             print("  🧰 Maintenance-only mode: repairing workbook layout and values")
-            maintain_workbook_layout(master_sheet, clean_apostrophes=True)
+            maintain_workbook_layout(master_sheet)
             clean_master_numeric_text_values(master_sheet)
             update_last_run(master_sheet)
             update_run_status(master_sheet, 'complete: maintenance-only', run_status_details())

@@ -516,11 +516,11 @@ def strip_leading_apostrophe(value):
 def clean_numeric_text_values(worksheet):
     """Remove Sheets text-prefix apostrophes only from known numeric columns."""
     try:
-        values = worksheet.get_all_values()
-        if len(values) < 2:
+        header_values = get_values_with_quota_retry(worksheet, '1:1')
+        if not header_values:
             return 0
 
-        headers = [str(cell).strip().lower() for cell in values[0]]
+        headers = [str(cell).strip().lower() for cell in header_values[0]]
         numeric_cols = {
             index
             for index, header in enumerate(headers)
@@ -530,14 +530,15 @@ def clean_numeric_text_values(worksheet):
             return 0
 
         updates = []
-        for row_index, row in enumerate(values[1:], start=2):
-            for col_index in numeric_cols:
-                if col_index >= len(row):
-                    continue
-                cleaned = strip_leading_apostrophe(row[col_index])
-                if cleaned != row[col_index]:
+        for col_index in numeric_cols:
+            column_name = a1_column(col_index + 1)
+            values = get_values_with_quota_retry(worksheet, f'{column_name}2:{column_name}')
+            for row_offset, row in enumerate(values, start=2):
+                value = row[0] if row else ''
+                cleaned = strip_leading_apostrophe(value)
+                if cleaned != value:
                     updates.append({
-                        'range': gspread.utils.rowcol_to_a1(row_index, col_index + 1),
+                        'range': gspread.utils.rowcol_to_a1(row_offset, col_index + 1),
                         'values': [[cleaned]],
                     })
 
@@ -554,11 +555,11 @@ def clean_numeric_text_values(worksheet):
 def clean_timestamp_text_values(worksheet):
     """Rewrite ISO timestamps to YYYY-MM-DD HH:MM:SS in known timestamp columns."""
     try:
-        values = worksheet.get_all_values()
-        if len(values) < 2:
+        header_values = get_values_with_quota_retry(worksheet, '1:1')
+        if not header_values:
             return 0
 
-        headers = [str(cell).strip().lower() for cell in values[0]]
+        headers = [str(cell).strip().lower() for cell in header_values[0]]
         timestamp_cols = {
             index
             for index, header in enumerate(headers)
@@ -568,12 +569,11 @@ def clean_timestamp_text_values(worksheet):
             return 0
 
         updates = []
-        for row_index, row in enumerate(values[1:], start=2):
-            for col_index in timestamp_cols:
-                if col_index >= len(row):
-                    continue
-
-                value = str(row[col_index]).strip()
+        for col_index in timestamp_cols:
+            column_name = a1_column(col_index + 1)
+            values = get_values_with_quota_retry(worksheet, f'{column_name}2:{column_name}')
+            for row_offset, row in enumerate(values, start=2):
+                value = str(row[0] if row else '').strip()
                 normalized_value = value.lstrip("'")
                 if not normalized_value:
                     continue
@@ -585,7 +585,7 @@ def clean_timestamp_text_values(worksheet):
                 cleaned = format_timestamp(parsed)
                 if cleaned != value:
                     updates.append({
-                        'range': gspread.utils.rowcol_to_a1(row_index, col_index + 1),
+                        'range': gspread.utils.rowcol_to_a1(row_offset, col_index + 1),
                         'values': [[sheet_datetime_value(cleaned)]],
                     })
 
@@ -615,7 +615,7 @@ def ensure_master_timestamp_formats(sheet):
     requests = []
     for worksheet in sheet.worksheets():
         try:
-            values = worksheet.get_all_values()
+            values = get_values_with_quota_retry(worksheet, '1:1')
         except Exception:
             continue
 
