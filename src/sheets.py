@@ -371,6 +371,18 @@ def sheet_datetime_value(value):
     return sheets_datetime_serial(parsed)
 
 
+def sheet_numeric_value(value):
+    cleaned = clean_sheet_value(value)
+    text = str(cleaned or '').strip()
+    if not text:
+        return ''
+    if re.fullmatch(r'-?\d+', text):
+        return int(text)
+    if re.fullmatch(r'-?\d+[.,]\d+', text):
+        return float(text.replace(',', '.'))
+    return cleaned
+
+
 def parse_datetime_value(value):
     if not value:
         return None
@@ -1074,7 +1086,7 @@ def save_videos_batch(sheet, videos_data):
                 sheet_datetime_value(processed_at),
                 publication_delay_minutes(yt_published_at, tg_published_at),
                 sheet_datetime_value(tg_published_at) if tg_published_at else '',
-                str(tg_message_id) if tg_message_id else '',
+                sheet_numeric_value(tg_message_id) if tg_message_id else '',
                 combined_status(row_status, row_error),
             ]))
             rows_publication_keys.append(key)
@@ -1127,7 +1139,7 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
         timestamp = format_timestamp()
         yt_published = clean_sheet_value(values[target_row - 1][5]) if len(values[target_row - 1]) > 5 else ''
         updates = [
-            {'range': gspread.utils.rowcol_to_a1(target_row, 10), 'values': [[str(tg_message_id) if tg_message_id else '']]},
+            {'range': gspread.utils.rowcol_to_a1(target_row, 10), 'values': [[sheet_numeric_value(tg_message_id) if tg_message_id else '']]},
             {'range': gspread.utils.rowcol_to_a1(target_row, 9), 'values': [[sheet_datetime_value(timestamp) if tg_message_id else '']]},
             {'range': gspread.utils.rowcol_to_a1(target_row, 8), 'values': [[publication_delay_minutes(yt_published, timestamp) if tg_message_id else '']]},
             {'range': gspread.utils.rowcol_to_a1(target_row, 11), 'values': [[combined_status(status, error)]]},
