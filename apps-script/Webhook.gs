@@ -1,5 +1,5 @@
 function doPost(e) {
-  var timestamp = formatTimestamp_(new Date());
+  var timestamp = new Date();
   var rawXml = e && e.postData && e.postData.contents ? e.postData.contents : '';
   var payload = parsePushPayload_(rawXml);
 

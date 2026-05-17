@@ -332,9 +332,29 @@ def format_timestamp(dt=None):
     return dt.strftime('%Y-%m-%d %H:%M:%S')
 
 
+def sheets_datetime_serial(dt):
+    if dt.tzinfo:
+        dt = dt.astimezone(ZoneInfo(timezone_name())).replace(tzinfo=None)
+    epoch = datetime(1899, 12, 30)
+    return (dt - epoch).total_seconds() / 86400
+
+
+def sheet_datetime_value(value):
+    parsed = parse_datetime_value(value)
+    if not parsed:
+        return clean_sheet_value(value)
+    return sheets_datetime_serial(parsed)
+
+
 def parse_datetime_value(value):
     if not value:
         return None
+
+    if isinstance(value, (int, float)):
+        try:
+            return datetime(1899, 12, 30) + timedelta(days=float(value))
+        except Exception:
+            return None
 
     text = str(value).strip().lstrip("'")
     for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M'):
@@ -539,10 +559,10 @@ def clean_timestamp_text_values(worksheet):
                     continue
 
                 cleaned = format_timestamp(parsed)
-                if cleaned != normalized_value:
+                if cleaned != value:
                     updates.append({
                         'range': gspread.utils.rowcol_to_a1(row_index, col_index + 1),
-                        'values': [[cleaned]],
+                        'values': [[sheet_datetime_value(cleaned)]],
                     })
 
         for i in range(0, len(updates), config.BATCH_SIZE):
@@ -621,7 +641,7 @@ def update_project_statuses(worksheet, headers, status_updates):
         updates.extend([
             {'range': gspread.utils.rowcol_to_a1(row_index, status_col), 'values': [[status]]},
             {'range': gspread.utils.rowcol_to_a1(row_index, error_col), 'values': [[error_text]]},
-            {'range': gspread.utils.rowcol_to_a1(row_index, at_col), 'values': [[timestamp]]},
+            {'range': gspread.utils.rowcol_to_a1(row_index, at_col), 'values': [[sheet_datetime_value(timestamp)]]},
         ])
 
     worksheet.batch_update(updates, value_input_option='USER_ENTERED')
@@ -669,7 +689,7 @@ def update_project_channel_counts(sheet, projects):
                 updates.extend([
                     {'range': gspread.utils.rowcol_to_a1(row_index, status_col), 'values': [[status]]},
                     {'range': gspread.utils.rowcol_to_a1(row_index, error_col), 'values': [[error_text]]},
-                    {'range': gspread.utils.rowcol_to_a1(row_index, at_col), 'values': [[provisioned_at]]},
+                    {'range': gspread.utils.rowcol_to_a1(row_index, at_col), 'values': [[sheet_datetime_value(provisioned_at)]]},
                 ])
 
         for i in range(0, len(updates), config.BATCH_SIZE):
@@ -951,10 +971,10 @@ def save_videos_batch(sheet, videos_data):
                 channel_link(video.get('channel_id', '')),
                 video.get('title', ''),
                 bare_url(video.get('url', '')),
-                yt_published_at,
-                processed_at,
+                sheet_datetime_value(yt_published_at),
+                sheet_datetime_value(processed_at),
                 publication_delay_minutes(yt_published_at, tg_published_at),
-                tg_published_at,
+                sheet_datetime_value(tg_published_at) if tg_published_at else '',
                 str(tg_message_id) if tg_message_id else '',
                 combined_status(row_status, row_error),
             ]))
@@ -1009,7 +1029,7 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
         yt_published = clean_sheet_value(values[target_row - 1][5]) if len(values[target_row - 1]) > 5 else ''
         updates = [
             {'range': gspread.utils.rowcol_to_a1(target_row, 10), 'values': [[str(tg_message_id) if tg_message_id else '']]},
-            {'range': gspread.utils.rowcol_to_a1(target_row, 9), 'values': [[timestamp if tg_message_id else '']]},
+            {'range': gspread.utils.rowcol_to_a1(target_row, 9), 'values': [[sheet_datetime_value(timestamp) if tg_message_id else '']]},
             {'range': gspread.utils.rowcol_to_a1(target_row, 8), 'values': [[publication_delay_minutes(yt_published, timestamp) if tg_message_id else '']]},
             {'range': gspread.utils.rowcol_to_a1(target_row, 11), 'values': [[combined_status(status, error)]]},
         ]
@@ -1059,7 +1079,7 @@ def reconcile_pending_published_videos(sheet):
             yt_published = row[5] if len(row) > 5 else ''
             updates.extend([
                 {'range': gspread.utils.rowcol_to_a1(row_index, 8), 'values': [[publication_delay_minutes(yt_published, published_at)]]},
-                {'range': gspread.utils.rowcol_to_a1(row_index, 9), 'values': [[published_at]]},
+                {'range': gspread.utils.rowcol_to_a1(row_index, 9), 'values': [[sheet_datetime_value(published_at)]]},
                 {'range': gspread.utils.rowcol_to_a1(row_index, 10), 'values': [[tg_message_id]]},
                 {'range': gspread.utils.rowcol_to_a1(row_index, 11), 'values': [['published']]},
             ])
@@ -1221,7 +1241,7 @@ def format_push_events_sheet(sheet):
                 if normalized_timestamp and normalized_timestamp != timestamp:
                     timestamp_updates.append({
                         'range': gspread.utils.rowcol_to_a1(row_index, 1),
-                        'values': [[normalized_timestamp]],
+                        'values': [[sheet_datetime_value(normalized_timestamp)]],
                     })
 
             if timestamp_updates:
@@ -1316,9 +1336,11 @@ def update_video_project_links(sheet, projects):
 
 def normalize_log_entry(entry):
     if len(entry) >= 6:
-        return clean_row([entry[1], normalize_timestamp(entry[0]), entry[3], merge_log_event(entry[2], entry[4], entry[5])])
+        timestamp = normalize_timestamp(entry[0])
+        return clean_row([entry[1], sheet_datetime_value(timestamp), entry[3], merge_log_event(entry[2], entry[4], entry[5])])
     if len(entry) == 4:
-        return clean_row([entry[1], normalize_timestamp(entry[0]), entry[2], entry[3]])
+        timestamp = normalize_timestamp(entry[0])
+        return clean_row([entry[1], sheet_datetime_value(timestamp), entry[2], entry[3]])
     return clean_row((entry + [''] * len(LOG_HEADERS))[:len(LOG_HEADERS)])
 
 def log_events_batch(sheet, log_entries):
@@ -1651,6 +1673,10 @@ def load_projects(sheet, update_status=True):
             stop_words = [w.lower() for w in parse_list_setting(stop_words_str)]
             shorts_value = str(row.get('Шортсы', '')).strip()
             allow_shorts = shorts_value == '🟢'
+            if str(row.get('Push API', '')).strip() == '':
+                default_updates.append((row_index, 'Push API', '🟢'))
+            if str(row.get('RSS feed', '')).strip() == '':
+                default_updates.append((row_index, 'RSS feed', '🟢'))
             tg_channel = str(row.get('Telegram канал @', '') or row.get('Telegram канал', '')).strip()
             channels_sheet_name = str(row.get('Название листа', '')).strip()
             rss_delete_limit_raw = str(row.get('RSS delete limit', '')).strip()

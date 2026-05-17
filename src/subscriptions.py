@@ -12,6 +12,7 @@ from sheets import (
     format_timestamp,
     get_all_active_channels,
     parse_datetime_value,
+    sheet_datetime_value,
     update_setting_value,
 )
 
@@ -143,37 +144,20 @@ def get_or_create_subscriptions_worksheet(sheet):
         return worksheet
 
     headers = [str(cell).strip() for cell in values[0]]
-    normalized_headers = []
-    changed = False
-    seen = set()
-    for header in headers:
-        if header.lower().startswith('project count'):
-            normalized = 'Project Count'
-            changed = changed or header != 'Project Count'
-        else:
-            normalized = header
-        if normalized in seen:
-            changed = True
-            normalized = ''
-        seen.add(normalized)
-        normalized_headers.append(normalized)
-    if changed:
+    desired_prefix = SUBSCRIPTIONS_HEADERS
+    current_prefix = headers[:len(desired_prefix)]
+    if current_prefix != desired_prefix:
         worksheet.update(
-            range_name=f'A1:{column_letter(len(normalized_headers))}1',
-            values=[normalized_headers],
+            range_name=f'A1:{column_letter(len(desired_prefix))}1',
+            values=[desired_prefix],
             value_input_option='USER_ENTERED',
         )
-        headers = normalized_headers
-
-    missing = [header for header in SUBSCRIPTIONS_HEADERS if header not in headers]
-    if missing:
-        start_col = len(headers) + 1
-        end_col = len(headers) + len(missing)
-        worksheet.update(
-            range_name=f'{column_letter(start_col)}1:{column_letter(end_col)}1',
-            values=[missing],
-            value_input_option='USER_ENTERED',
-        )
+    worksheet.format('B:C', {
+        'numberFormat': {
+            'type': 'DATE_TIME',
+            'pattern': 'yyyy-mm-dd hh:mm:ss',
+        }
+    })
 
     return worksheet
 
@@ -219,8 +203,8 @@ def save_subscribed_channels_batch(sheet, channel_ids, active_channels_dict):
     rows = [
         [
             channel_id,
-            timestamp,
-            timestamp,
+            sheet_datetime_value(timestamp),
+            sheet_datetime_value(timestamp),
             format_channel_projects(active_channels_dict, channel_id),
             len(set(active_channels_dict.get(channel_id, {}).get('projects', []))),
         ]
@@ -247,7 +231,7 @@ def update_subscription_renewals_batch(sheet, subscription_records, channel_ids)
 
             updates.append({
                 'range': f'C{record["row_index"]}',
-                'values': [[timestamp]]
+                'values': [[sheet_datetime_value(timestamp)]]
             })
 
         if updates:

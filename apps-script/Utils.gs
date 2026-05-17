@@ -14,8 +14,10 @@ function parsePushPayload_(rawXml) {
       throw new Error('Missing Atom entry');
     }
 
-    payload.videoId = entry.getChild('videoId', yt).getText();
-    payload.channelId = entry.getChild('channelId', yt).getText();
+    var videoId = entry.getChild('videoId', yt);
+    var channelId = entry.getChild('channelId', yt);
+    payload.videoId = videoId ? videoId.getText().trim() : '';
+    payload.channelId = channelId ? channelId.getText().trim() : '';
   } catch (err) {
     console.error('Failed to parse push payload: ' + err);
   }
