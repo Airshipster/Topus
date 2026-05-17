@@ -8,10 +8,12 @@ function repairTopusFastLayout() {
 function ensureWorkbookRows_(ss) {
   ss.getSheets().forEach(function(sheet) {
     if (sheet.getName() === 'Настройки') {
+      ensureSheetRows_(sheet, 300);
       return;
     }
     ensureSheetRows_(sheet, 10000);
   });
+  extendConditionalFormattingToSheetEnd_(ss);
 }
 
 function repairPushEventsLayout_(ss) {
@@ -45,4 +47,34 @@ function moveSubscriptionProjectColumns_(ss) {
     sheet.moveColumns(sheet.getRange(1, projectsCol, sheet.getMaxRows(), 2), 1);
   }
   sheet.getRange(1, 1, 1, desiredHeaders.length).setValues([desiredHeaders]);
+}
+
+function extendConditionalFormattingToSheetEnd_(ss) {
+  ss.getSheets().forEach(function(sheet) {
+    var rowCount = sheet.getMaxRows();
+    var rules = sheet.getConditionalFormatRules();
+    var changed = false;
+    var updatedRules = rules.map(function(rule) {
+      var ranges = rule.getRanges();
+      var updatedRanges = ranges.map(function(range) {
+        if (range.getSheet().getSheetId() !== sheet.getSheetId()) {
+          return range;
+        }
+        if (range.getNumRows() === rowCount - range.getRow() + 1) {
+          return range;
+        }
+        changed = true;
+        return sheet.getRange(
+          range.getRow(),
+          range.getColumn(),
+          rowCount - range.getRow() + 1,
+          range.getNumColumns()
+        );
+      });
+      return rule.copy().setRanges(updatedRanges).build();
+    });
+    if (changed) {
+      sheet.setConditionalFormatRules(updatedRules);
+    }
+  });
 }

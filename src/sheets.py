@@ -71,8 +71,10 @@ _LOCK_ROW_INFO = None
 _RUN_STATUS_ROW = None
 _SETTINGS_VALUES_CACHE = None
 TARGET_WORKSHEET_ROWS = 10000
+TARGET_SETTINGS_ROWS = 300
+ROW_INSERT_INHERIT_BUFFER = 10
 PUSH_EVENT_ROW_HEIGHT_PIXELS = 21
-SETTINGS_READ_RANGE = 'A1:D200'
+SETTINGS_READ_RANGE = 'A1:D300'
 PROJECTS_READ_RANGE = 'A1:ZZ500'
 PENDING_RETRY_WINDOW_HOURS = 24
 
@@ -1659,36 +1661,113 @@ def last_used_row(values):
     return 0
 
 
-def ensure_non_settings_sheet_row_counts(sheet):
-    requests = []
-    for worksheet in sheet.worksheets():
-        if worksheet.title == config.SHEET_NAME_SETTINGS:
-            continue
-        try:
-            used_rows = last_used_row(get_values_with_quota_retry(worksheet))
-        except Exception:
-            used_rows = worksheet.row_count
-        target_rows = max(TARGET_WORKSHEET_ROWS, used_rows)
-        if worksheet.row_count == target_rows:
-            continue
-        requests.append({
-            'updateSheetProperties': {
-                'properties': {
+def row_count_target(worksheet, used_rows):
+    base_target = TARGET_SETTINGS_ROWS if worksheet.title == config.SHEET_NAME_SETTINGS else TARGET_WORKSHEET_ROWS
+    return max(base_target, used_rows)
+
+
+def sheet_row_count_requests(worksheet, target_rows):
+    current_rows = worksheet.row_count
+    if current_rows == target_rows:
+        return []
+
+    if current_rows < target_rows:
+        insert_count = target_rows - current_rows
+        start_index = max(1, current_rows - ROW_INSERT_INHERIT_BUFFER)
+        return [{
+            'insertDimension': {
+                'range': {
                     'sheetId': worksheet.id,
-                    'gridProperties': {
-                        'rowCount': target_rows,
-                    },
+                    'dimension': 'ROWS',
+                    'startIndex': start_index,
+                    'endIndex': start_index + insert_count,
                 },
-                'fields': 'gridProperties.rowCount',
+                'inheritFromBefore': True,
             }
+        }]
+
+    return [{
+        'deleteDimension': {
+            'range': {
+                'sheetId': worksheet.id,
+                'dimension': 'ROWS',
+                'startIndex': target_rows,
+                'endIndex': current_rows,
+            }
+        }
+    }]
+
+
+def extend_conditional_format_ranges(sheet):
+    try:
+        metadata = sheet.fetch_sheet_metadata(params={
+            'includeGridData': False,
+            'fields': 'sheets(properties(sheetId,gridProperties(rowCount)),conditionalFormats)',
         })
+    except Exception as e:
+        print(f"  ⚠️  Error reading conditional format metadata: {e}")
+        return 0
+
+    requests = []
+    for sheet_info in metadata.get('sheets', []):
+        properties = sheet_info.get('properties', {})
+        sheet_id = properties.get('sheetId')
+        row_count = properties.get('gridProperties', {}).get('rowCount')
+        if sheet_id is None or not row_count:
+            continue
+
+        for rule_index, rule in enumerate(sheet_info.get('conditionalFormats', [])):
+            ranges = rule.get('ranges', [])
+            updated_ranges = []
+            changed = False
+            for grid_range in ranges:
+                updated_range = dict(grid_range)
+                if updated_range.get('sheetId') == sheet_id and updated_range.get('endRowIndex') != row_count:
+                    updated_range['endRowIndex'] = row_count
+                    changed = True
+                updated_ranges.append(updated_range)
+
+            if changed:
+                updated_rule = dict(rule)
+                updated_rule['ranges'] = updated_ranges
+                requests.append({
+                    'updateConditionalFormatRule': {
+                        'sheetId': sheet_id,
+                        'index': rule_index,
+                        'rule': updated_rule,
+                    }
+                })
 
     for i in range(0, len(requests), config.BATCH_SIZE):
         sheet.batch_update({'requests': requests[i:i + config.BATCH_SIZE]})
         time.sleep(0.2)
 
     if requests:
-        print(f"  📐 Normalized non-settings sheet row counts: {len(requests)}")
+        print(f"  🎨 Extended conditional formatting ranges: {len(requests)}")
+    return len(requests)
+
+
+def ensure_workbook_row_counts(sheet):
+    requests = []
+    for worksheet in sheet.worksheets():
+        try:
+            used_rows = last_used_row(get_values_with_quota_retry(worksheet))
+        except Exception:
+            used_rows = worksheet.row_count
+        requests.extend(sheet_row_count_requests(worksheet, row_count_target(worksheet, used_rows)))
+
+    for i in range(0, len(requests), config.BATCH_SIZE):
+        sheet.batch_update({'requests': requests[i:i + config.BATCH_SIZE]})
+        time.sleep(0.2)
+
+    if requests:
+        print(f"  📐 Normalized workbook row counts: {len(requests)}")
+
+    extend_conditional_format_ranges(sheet)
+
+
+def ensure_non_settings_sheet_row_counts(sheet):
+    ensure_workbook_row_counts(sheet)
 
 
 def format_push_events_sheet(sheet, clean_rows=False):

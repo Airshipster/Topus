@@ -71,7 +71,8 @@ function ensureSheetRows_(sheet, targetRows) {
   var currentRows = sheet.getMaxRows();
   var desiredRows = Math.max(targetRows, sheet.getLastRow());
   if (currentRows < targetRows) {
-    sheet.insertRowsAfter(currentRows, desiredRows - currentRows);
+    var insertBefore = Math.max(2, currentRows - 9);
+    sheet.insertRowsBefore(insertBefore, desiredRows - currentRows);
   } else if (currentRows > desiredRows) {
     sheet.deleteRows(desiredRows + 1, currentRows - desiredRows);
   }
