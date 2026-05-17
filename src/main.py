@@ -79,6 +79,8 @@ def publication_status_detail(video):
         labels.append('Shorts')
     if video.get('is_live') or video.get('was_live'):
         labels.append('Stream')
+    if video.get('restored_from_status'):
+        labels.append('Restored after unavailable')
     return '. '.join(labels) + ('.' if labels else '')
 
 

@@ -1199,8 +1199,10 @@ def save_videos_batch(sheet, videos_data):
             tg_published_at = format_timestamp() if tg_message_id else ''
 
             if existing:
-                if existing['status'] == 'pending':
-                    print(f"  🔁 Retrying pending: {video['video_id']} / {project_name}")
+                if existing['status'] == 'pending' or str(existing['status']).startswith('deleted'):
+                    if str(existing['status']).startswith('deleted'):
+                        video['restored_from_status'] = existing['status']
+                    print(f"  🔁 Retrying {existing['status'] or 'tracked'}: {video['video_id']} / {project_name}")
                     saved_publication_keys.append(key)
                     continue
                 print(f"  ⏭️  Already tracked: {video['video_id']} / {project_name} ({existing['status'] or 'no status'})")
@@ -2344,7 +2346,7 @@ def get_published_videos(sheet):
         tracked = set()
         for row in records:
             status = status_name_from_text(row.get('Системный статус', ''))
-            if status == 'pending':
+            if status == 'pending' or str(status).startswith('deleted'):
                 continue
             video_id = video_id_from_url(row.get('Ссылка на видео', '')) or str(row.get('Video ID', '')).strip()
             project_name = project_name_from_cell(row.get('Проект', ''))

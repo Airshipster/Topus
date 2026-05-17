@@ -356,8 +356,8 @@ def update_subscription_statuses(sheet, subscription_records, status_by_channel)
                         'sheetId': worksheet.id,
                         'startRowIndex': row_index - 1,
                         'endRowIndex': row_index,
-                        'startColumnIndex': 5,
-                        'endColumnIndex': 6,
+                        'startColumnIndex': 2,
+                        'endColumnIndex': 3,
                     },
                     'cell': {'userEnteredFormat': {'backgroundColor': {'red': 1.0, 'green': 0.8, 'blue': 0.8}}},
                     'fields': 'userEnteredFormat.backgroundColor',
@@ -370,8 +370,8 @@ def update_subscription_statuses(sheet, subscription_records, status_by_channel)
                         'sheetId': worksheet.id,
                         'startRowIndex': row_index - 1,
                         'endRowIndex': row_index,
-                        'startColumnIndex': 5,
-                        'endColumnIndex': 6,
+                        'startColumnIndex': 2,
+                        'endColumnIndex': 3,
                     },
                     'cell': {'userEnteredFormat': {'backgroundColor': {'red': 0.85, 'green': 1.0, 'blue': 0.85}}},
                     'fields': 'userEnteredFormat.backgroundColor',
@@ -611,6 +611,11 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
 
         if renewed:
             update_subscription_renewals_batch(master_sheet, subscription_records, renewed)
+            update_subscription_statuses(
+                master_sheet,
+                subscription_records,
+                {channel_id: '🟢 renewed' for channel_id in renewed},
+            )
             print(f"  ✅ Successfully renewed: {len(renewed)}")
         failed_renewals = sorted(set(to_renew) - set(renewed))
         if failed_renewals:
