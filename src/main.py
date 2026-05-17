@@ -22,7 +22,7 @@ from sheets import (
     load_settings,
     load_youtube_channels,
     log_events_batch,
-    mark_push_event_processed,
+    mark_push_events_processed_batch,
     maintain_workbook_layout,
     reconcile_pending_published_videos,
     update_video_project_links,
@@ -564,15 +564,7 @@ def main():
 
         if push_events_to_mark:
             print(f"  ✅ Marking processed push events: {len(push_events_to_mark)}")
-            for tracked in push_events_to_mark.values():
-                current_projects = tracked['projects']
-                for project_name in sorted(tracked['project_names']):
-                    current_projects = mark_push_event_processed(
-                        master_sheet,
-                        tracked['row_index'],
-                        project_name,
-                        current_projects,
-                    )
+            mark_push_events_processed_batch(master_sheet, push_events_to_mark.values())
         
         # ТЕПЕРЬ ПУБЛИКУЕМ В TELEGRAM
         print(f"\n📤 Publishing to Telegram...")

@@ -2190,3 +2190,34 @@ def mark_push_event_processed(sheet, row_index, project_name, current_projects='
     except Exception as e:
         print(f"  ⚠️  Error marking event: {e}")
         return current_projects
+
+
+def mark_push_events_processed_batch(sheet, tracked_events):
+    """Mark processed push events in batches instead of one Sheets request per event."""
+    if not tracked_events:
+        return
+
+    try:
+        worksheet = sheet.worksheet(config.SHEET_NAME_PUSH_EVENTS)
+        updates = []
+        for tracked in tracked_events:
+            current_projects = clean_sheet_value(tracked.get('projects', ''))
+            project_names = tracked.get('project_names') or []
+            project_set = {
+                value.strip()
+                for value in str(current_projects).split(',')
+                if value.strip()
+            }
+            project_set.update(str(value).strip() for value in project_names if str(value).strip())
+            new_projects = ', '.join(sorted(project_set))
+            row_index = tracked['row_index']
+            updates.extend([
+                {'range': gspread.utils.rowcol_to_a1(row_index, 4), 'values': [['✅']]},
+                {'range': gspread.utils.rowcol_to_a1(row_index, 5), 'values': [[new_projects]]},
+            ])
+
+        for i in range(0, len(updates), 100):
+            worksheet.batch_update(updates[i:i + 100], value_input_option='USER_ENTERED')
+            time.sleep(0.2)
+    except Exception as e:
+        print(f"  ⚠️  Error marking push events batch: {e}")
