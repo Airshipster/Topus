@@ -33,7 +33,7 @@ from sheets import (
     update_youtube_quota,
     parse_datetime_value,
 )
-from subscriptions import get_subscription_records, sync_subscriptions
+from subscriptions import deduplicate_subscription_rows, get_subscription_records, sync_subscriptions
 from telegram_client import delete_telegram_message, format_message, send_to_telegram
 from youtube_client import get_last_youtube_api_error, get_video_info_from_api, get_youtube_api_calls
 
@@ -300,6 +300,9 @@ def main():
                 return
         elif not sync_only_mode():
             update_video_project_links(master_sheet, projects)
+
+        if not push_only_mode():
+            deduplicate_subscription_rows(master_sheet)
 
         print("\n📺 Loading project channels...")
         project_channels, active_channels_dict = load_project_channels(client, master_sheet, projects)

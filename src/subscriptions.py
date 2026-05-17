@@ -400,7 +400,6 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
         })
         print(f"  ⚠️  Active channel inventory is incomplete ({len(channel_load_errors)} project errors)")
         print("  🛑 Inactive unsubscribe/removal is disabled for this run")
-    deduplicate_subscription_rows(master_sheet)
     active_channels = set(active_channels_dict.keys())
     subscription_records = get_subscription_records(master_sheet)
     if subscription_records is None:
