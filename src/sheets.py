@@ -220,7 +220,9 @@ def status_method_from_text(value):
     match = re.match(r'^(Push|RSS):\s*(.*)$', text, flags=re.IGNORECASE)
     if not match:
         return '', text
-    return match.group(1).capitalize(), match.group(2).strip()
+    method = match.group(1).strip().lower()
+    method = 'RSS' if method == 'rss' else 'Push'
+    return method, match.group(2).strip()
 
 
 def status_name_from_text(value):
