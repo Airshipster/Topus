@@ -226,6 +226,7 @@ def hyperlink_formula(url, text):
         return text
     safe_url = str(url).replace('"', '""')
     safe_text = str(text).replace('"', '""')
+    # Google Sheets in this account uses a Russian locale, so formulas need semicolon separators.
     return f'=HYPERLINK("{safe_url}";"{safe_text}")'
 
 
@@ -1347,10 +1348,14 @@ def save_videos_batch(sheet, videos_data):
                 video_id = video_id_from_url(first_value(data, ['Ссылка на видео', 'Video ID']))
                 status = status_name_from_text(first_value(data, ['Системный статус']))
                 if video_id and project_name:
-                    existing_rows[(video_id, project_name)] = {
+                    key = (video_id, project_name)
+                    current = existing_rows.get(key)
+                    existing = {
                         'row_index': row_index,
                         'status': status,
                     }
+                    if not current or row_status_blocks_retry(status) or not row_status_blocks_retry(current.get('status')):
+                        existing_rows[key] = existing
         except Exception as e:
             print(f"  ⚠️  Could not load existing video rows: {e}")
 
@@ -1429,6 +1434,11 @@ def save_videos_batch(sheet, videos_data):
     except Exception as e:
         print(f"  ❌ Critical error in save_videos_batch: {e}")
         return []
+
+
+def row_status_blocks_retry(status):
+    status = str(status or '').strip().lower()
+    return bool(status and status != 'pending' and not status.startswith('deleted'))
 
 def update_video_publication_status(sheet, video_id, project_name, tg_message_id=None, status='published', error=''):
     """Обновление статуса публикации существующей строки видео"""
@@ -1575,6 +1585,17 @@ def delete_stale_unpublished_video_rows(sheet):
         headers = [str(value).strip() for value in values[0]]
         updates = []
         now = current_local_datetime()
+        blocking_keys = set()
+
+        for row in values[1:]:
+            data = row_as_dict(headers, row)
+            status_name = status_name_from_text(first_value(data, ['Системный статус']))
+            if not row_status_blocks_retry(status_name):
+                continue
+            project_name = project_name_from_cell(first_value(data, ['Проект']))
+            video_id = video_id_from_url(first_value(data, ['Ссылка на видео', 'Video ID']))
+            if video_id and project_name:
+                blocking_keys.add((video_id, project_name))
 
         for row_index, row in enumerate(values[1:], start=2):
             data = row_as_dict(headers, row)
@@ -1588,6 +1609,15 @@ def delete_stale_unpublished_video_rows(sheet):
 
             status_col = headers.index('Системный статус') + 1 if 'Системный статус' in headers else None
             if not status_col:
+                continue
+
+            project_name = project_name_from_cell(first_value(data, ['Проект']))
+            video_id = video_id_from_url(first_value(data, ['Ссылка на видео', 'Video ID']))
+            if video_id and project_name and (video_id, project_name) in blocking_keys:
+                updates.append({
+                    'range': gspread.utils.rowcol_to_a1(row_index, status_col),
+                    'values': [[combined_status('filtered', 'Duplicate already published/tracked', method)]],
+                })
                 continue
 
             yt_published = parse_datetime_value(first_value(data, ['Дата публикации YT GMT+4', 'Дата публикации YT UTC']))

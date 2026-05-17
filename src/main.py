@@ -472,6 +472,7 @@ def main():
 
         if sync_only_mode():
             print("\n✅ Sync-only mode completed. Skipping RSS/publish processing.")
+            duplicate_or_stale_pending = delete_stale_unpublished_video_rows(master_sheet)
             update_last_run(master_sheet)
             if subscription_sync_result.get('partial'):
                 update_run_status(
@@ -480,7 +481,10 @@ def main():
                     subscription_sync_result.get('reason') or run_status_details(),
                 )
             else:
-                update_run_status(master_sheet, 'complete: sync-only', run_status_details())
+                details = run_status_details()
+                if duplicate_or_stale_pending:
+                    details = f'{details}; pending cleaned={duplicate_or_stale_pending}'
+                update_run_status(master_sheet, 'complete: sync-only', details)
             return
         
         published_videos = get_published_videos(master_sheet)
