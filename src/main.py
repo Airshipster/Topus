@@ -13,6 +13,7 @@ from sheets import (
     clean_master_numeric_text_values,
     cleanup_old_records,
     current_local_datetime,
+    deduplicate_settings_rows,
     format_timestamp,
     clean_known_workbook_text_values,
     delete_stale_unpublished_video_rows,
@@ -334,6 +335,7 @@ def main():
         if maintenance_only_mode():
             print("  🧰 Maintenance-only mode: repairing workbook layout and values")
             maintain_workbook_layout(master_sheet)
+            deduplicate_settings_rows(master_sheet)
             clean_known_workbook_text_values(master_sheet)
             update_last_run(master_sheet)
             update_run_status(master_sheet, 'complete: maintenance-only', run_status_details())

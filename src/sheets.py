@@ -548,6 +548,34 @@ def update_setting_value(worksheet, key, value, description=''):
     worksheet.append_row(clean_sheet_row(append_row), value_input_option='USER_ENTERED')
 
 
+def deduplicate_settings_rows(sheet):
+    """Keep one row per setting key in the settings table, preserving the latest row."""
+    try:
+        worksheet = sheet.worksheet(config.SHEET_NAME_SETTINGS)
+        values = worksheet.get_all_values()
+        table = find_settings_table(values)
+        if not table:
+            return 0
+
+        latest_rows = {}
+        duplicate_rows = []
+        for row_number, key, _, _ in iter_settings_rows(values, table):
+            if key in latest_rows:
+                duplicate_rows.append(latest_rows[key])
+            latest_rows[key] = row_number
+
+        if not duplicate_rows:
+            return 0
+
+        delete_rows_batch(sheet, worksheet, duplicate_rows)
+        get_settings_values(worksheet, force_refresh=True)
+        print(f"  🧹 Removed duplicate settings rows: {len(duplicate_rows)}")
+        return len(duplicate_rows)
+    except Exception as e:
+        print(f"  ⚠️  Error deduplicating settings rows: {e}")
+        return 0
+
+
 def ensure_global_videos_worksheet(sheet):
     return ensure_videos_worksheet(sheet), GLOBAL_VIDEOS_HEADERS
 
