@@ -4,6 +4,7 @@ function repairTopusWorkbookMaintenance() {
   moveGlobalVideosColumnAConditionalFormatting_(ss);
   repairPushEventsLayout_(ss);
   repairKnownDateColumns_(ss);
+  repairKnownNumericColumns_(ss);
 }
 
 function ensureWorkbookRows_(ss) {
@@ -115,6 +116,50 @@ function repairDateColumnByHeader_(sheet, headerName) {
   }
 }
 
+function repairKnownNumericColumns_(ss) {
+  [
+    {sheet: 'Глобальные видео', headers: ['TG message_id', 'Разница в минутах']}
+  ].forEach(function(target) {
+    var sheet = ss.getSheetByName(target.sheet);
+    if (!sheet) {
+      return;
+    }
+    target.headers.forEach(function(header) {
+      repairNumericColumnByHeader_(sheet, header);
+    });
+  });
+}
+
+function repairNumericColumnByHeader_(sheet, headerName) {
+  var lastColumn = sheet.getLastColumn();
+  var lastRow = sheet.getLastRow();
+  if (lastColumn < 1 || lastRow < 2) {
+    return;
+  }
+  var headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+  var column = headers.indexOf(headerName) + 1;
+  if (column < 1) {
+    return;
+  }
+
+  var range = sheet.getRange(2, column, lastRow - 1, 1);
+  var values = range.getValues();
+  var changed = false;
+  var repaired = values.map(function(row) {
+    var parsed = parseSheetNumericValue_(row[0]);
+    if (parsed !== null) {
+      changed = true;
+      return [parsed];
+    }
+    return row;
+  });
+
+  if (changed) {
+    range.setValues(repaired);
+    range.setNumberFormat('0');
+  }
+}
+
 function parseSheetDateValue_(value) {
   if (!value) {
     return null;
@@ -139,4 +184,18 @@ function parseSheetDateValue_(value) {
     Number(match[5]),
     Number(match[6] || 0)
   );
+}
+
+function parseSheetNumericValue_(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  if (typeof value === 'number') {
+    return value;
+  }
+  var text = String(value).replace(/^'+/, '').trim().replace(',', '.');
+  if (!/^-?\d+(\.\d+)?$/.test(text)) {
+    return null;
+  }
+  return Number(text);
 }

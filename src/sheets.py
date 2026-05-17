@@ -55,6 +55,7 @@ LOG_HEADERS = ['Проект', 'Timestamp GMT+4', 'Video ID', 'Событие']
 
 _LOCK_ROW_INFO = None
 _RUN_STATUS_ROW = None
+_SETTINGS_VALUES_CACHE = None
 TARGET_WORKSHEET_ROWS = 10000
 PUSH_EVENT_ROW_HEIGHT_PIXELS = 21
 SETTINGS_READ_RANGE = 'A1:D200'
@@ -93,6 +94,14 @@ def get_values_with_quota_retry(worksheet, range_name=None, attempts=3):
             print(f"  ⚠️  Sheets quota busy while reading {worksheet.title}; retry {attempt}/{attempts - 1} in {delay_seconds}s")
             time.sleep(delay_seconds)
             delay_seconds *= 2
+
+
+def get_settings_values(worksheet, force_refresh=False):
+    """Read settings once per run; lock/status/settings all use the same small range."""
+    global _SETTINGS_VALUES_CACHE
+    if force_refresh or _SETTINGS_VALUES_CACHE is None:
+        _SETTINGS_VALUES_CACHE = get_values_with_quota_retry(worksheet, SETTINGS_READ_RANGE)
+    return _SETTINGS_VALUES_CACHE
 
 
 def display_timezone():
@@ -478,7 +487,7 @@ def find_setting_row(values, key):
 
 
 def update_setting_value(worksheet, key, value, description=''):
-    values = get_values_with_quota_retry(worksheet, SETTINGS_READ_RANGE)
+    values = get_settings_values(worksheet)
     existing, table = find_setting_row(values, key)
 
     if not table:
@@ -671,6 +680,12 @@ def clean_known_workbook_text_values(sheet):
         except Exception as e:
             print(f"  ⚠️  Error cleaning known values in {worksheet_name}: {e}")
 
+    try:
+        worksheet = sheet.worksheet(config.SHEET_NAME_VIDEOS)
+        cleaned_total += clean_numeric_text_values(worksheet)
+    except Exception as e:
+        print(f"  ⚠️  Error cleaning known numeric values in {config.SHEET_NAME_VIDEOS}: {e}")
+
     if cleaned_total:
         print(f"  ✅ Cleaned known text-formatted values: {cleaned_total} cells")
 
@@ -851,7 +866,7 @@ def acquire_lock(sheet, stale_after_seconds=900):
     global _LOCK_ROW_INFO
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_SETTINGS)
-        values = get_values_with_quota_retry(worksheet, SETTINGS_READ_RANGE)
+        values = get_settings_values(worksheet, force_refresh=True)
         
         existing, table = find_setting_row(values, 'lock_status')
         if existing and table:
@@ -1741,7 +1756,7 @@ def load_settings(sheet):
     """Загрузка настроек"""
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_SETTINGS)
-        values = get_values_with_quota_retry(worksheet, SETTINGS_READ_RANGE)
+        values = get_settings_values(worksheet)
         table = find_settings_table(values)
         
         settings = {}
@@ -1844,7 +1859,7 @@ def update_run_status(sheet, status, details=''):
             print(f"  ℹ️  Run status updated: {status}")
             return
 
-        values = get_values_with_quota_retry(worksheet, SETTINGS_READ_RANGE)
+        values = get_settings_values(worksheet)
         marker_row = None
 
         for row_index, row in enumerate(values, start=1):
