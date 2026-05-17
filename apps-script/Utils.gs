@@ -60,7 +60,8 @@ function triggerPublisher_(videoId, channelId, options) {
     client_payload: {
       video_id: videoId || '',
       channel_id: channelId || '',
-      force_subscription_sync: options.forceSubscriptionSync ? 'true' : 'false'
+      force_subscription_sync: options.forceSubscriptionSync ? 'true' : 'false',
+      sync_only: options.syncOnly ? 'true' : 'false'
     }
   };
 

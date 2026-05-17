@@ -10,7 +10,7 @@ function addTopusMenu_() {
 }
 
 function runTopusManualRefresh() {
-  triggerPublisher_('', '', {forceSubscriptionSync: true});
+  triggerPublisher_('', '', {syncOnly: true});
   SpreadsheetApp.getActiveSpreadsheet().toast('Запуск Topus отправлен в GitHub Actions', 'Topus', 5);
 }
 
