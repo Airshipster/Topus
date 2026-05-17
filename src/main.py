@@ -63,6 +63,24 @@ def get_stale_reason(published_at, project=None):
     return ''
 
 
+def copy_video_classification(video, video_info):
+    if not video_info:
+        return video
+    for field in ('is_short', 'short_reason', 'is_live', 'duration', 'duration_seconds', 'width', 'height'):
+        if field in video_info:
+            video[field] = video_info[field]
+    return video
+
+
+def publication_status_detail(video):
+    labels = []
+    if video.get('is_short'):
+        labels.append('Shorts')
+    if video.get('is_live'):
+        labels.append('Stream')
+    return '. '.join(labels) + ('.' if labels else '')
+
+
 def should_force_subscription_sync():
     value = os.environ.get('TOPUS_FORCE_SUBSCRIPTION_SYNC', '')
     return value.lower() in ('1', 'true', 'yes')
@@ -518,6 +536,7 @@ def main():
                         'channel_id': event['channel_id'],
                         'source_method': 'Push',
                     }
+                    copy_video_classification(video, video_info_api)
                 
                     video_published_date = video_info_api['published']
                     stale_reason = get_stale_reason(video_published_date, project)
@@ -576,6 +595,7 @@ def main():
                 video_info_api, _ = get_cached_video_info(video['video_id'])
                 
                 if video_info_api:
+                    copy_video_classification(video, video_info_api)
                     video_published_date = video_info_api['published']
                     stale_reason = get_stale_reason(video_published_date, project)
                     if stale_reason:
@@ -664,7 +684,14 @@ def main():
                 print(f"    ✅ Published (msg: {tg_message_id})")
                 timestamp = format_timestamp()
                 log_entries.append([timestamp, project['name'], 'Video published', video['video_id'], f"Telegram msg: {tg_message_id}", 'success'])
-                update_video_publication_status(master_sheet, video['video_id'], project['name'], tg_message_id=tg_message_id, status='published')
+                update_video_publication_status(
+                    master_sheet,
+                    video['video_id'],
+                    project['name'],
+                    tg_message_id=tg_message_id,
+                    status='published',
+                    error=publication_status_detail(video),
+                )
                 total_published += 1
             else:
                 print(f"    ❌ Failed to publish")

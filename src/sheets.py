@@ -240,7 +240,7 @@ def combined_status(status, error, method=''):
     existing_method, bare_status = status_method_from_text(status)
     method = str(method or existing_method or '').strip()
     value = bare_status
-    if bare_status != 'published' and error:
+    if error:
         value = f'{bare_status}. {error}'
     return f'{method}: {value}' if method else value
 

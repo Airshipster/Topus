@@ -1,4 +1,5 @@
 import re
+from html import unescape
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -43,22 +44,31 @@ def is_retryable_youtube_status(status_code):
 
 def detect_shorts_from_web(video_id):
     """Best-effort Shorts check without spending YouTube Data API quota."""
-    try:
-        response = requests.get(
-            f'https://www.youtube.com/watch?v={video_id}',
-            headers={'User-Agent': 'Mozilla/5.0'},
-            timeout=5,
-        )
-        if response.status_code != 200:
-            return False
-        html = response.text
-        return (
-            f'href="https://www.youtube.com/shorts/{video_id}"' in html
-            or f'content="https://www.youtube.com/shorts/{video_id}"' in html
-            or '"isShortsEligible":true' in html
-        )
-    except Exception:
-        return False
+    urls = [
+        f'https://www.youtube.com/watch?v={video_id}',
+        f'https://www.youtube.com/shorts/{video_id}',
+    ]
+    patterns = [
+        rf'https://www\.youtube\.com/shorts/{re.escape(video_id)}',
+        rf'"canonicalUrl"\s*:\s*"https://www\.youtube\.com/shorts/{re.escape(video_id)}"',
+        r'"isShortsEligible"\s*:\s*true',
+    ]
+    for url in urls:
+        try:
+            response = requests.get(
+                url,
+                headers={'User-Agent': 'Mozilla/5.0'},
+                timeout=10,
+            )
+            if response.status_code != 200:
+                continue
+            html = unescape(response.text).replace('\\/', '/')
+            if any(re.search(pattern, html) for pattern in patterns):
+                return True
+        except Exception as error:
+            print(f"  ⚠️  Shorts web check failed for {video_id}: {error}")
+            continue
+    return False
 
 
 def format_youtube_timestamp(value):
