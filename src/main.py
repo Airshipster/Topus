@@ -271,12 +271,14 @@ def main():
         print_detection_latency_note()
         if push_only_mode():
             print("  ⚡ Push-only mode: skipping workbook maintenance")
+        elif sync_only_mode():
+            print("  📡 Sync-only mode: skipping workbook maintenance unrelated to subscriptions")
         else:
             maintain_workbook_layout(master_sheet)
             reconcile_pending_published_videos(master_sheet)
 
         # Автоочистка старых записей
-        if not push_only_mode():
+        if not push_only_mode() and not sync_only_mode():
             cleanup_old_records(master_sheet)
             clean_master_numeric_text_values(master_sheet)
         
@@ -296,13 +298,11 @@ def main():
                 print("\n✅ Push-only mode completed. No target projects for pending push events.")
                 update_run_status(master_sheet, 'complete: no target projects', run_status_details())
                 return
-        else:
+        elif not sync_only_mode():
             update_video_project_links(master_sheet, projects)
 
         print("\n📺 Loading project channels...")
         project_channels, active_channels_dict = load_project_channels(client, master_sheet, projects)
-        if not push_only_mode():
-            update_project_channel_counts(master_sheet, projects)
         if push_only_mode():
             print("\n📡 Subscription sync skipped in push-only mode")
             subscription_sync_result = {'ok': True, 'partial': False, 'reason': ''}
@@ -314,6 +314,7 @@ def main():
                 force=should_force_subscription_sync(),
                 active_channels_dict=active_channels_dict,
             ) or {'ok': False, 'partial': True, 'reason': 'unknown subscription sync result'}
+            update_project_channel_counts(master_sheet, projects)
 
         if sync_only_mode():
             print("\n✅ Sync-only mode completed. Skipping RSS/publish processing.")
