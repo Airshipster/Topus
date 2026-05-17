@@ -1894,15 +1894,17 @@ def maintain_workbook_layout(sheet, clean_apostrophes=False):
 def update_video_project_links(sheet, projects):
     try:
         worksheet = ensure_videos_worksheet(sheet)
-        values = get_values_with_quota_retry(worksheet, value_render_option='FORMULA')
+        values = get_values_with_quota_retry(worksheet)
         if not values:
             return
+        project_formulas = get_values_with_quota_retry(worksheet, 'A:A', value_render_option='FORMULA')
         headers = [str(value).strip() for value in values[0]]
         project_map = {str(project.get('name', '')).strip(): project for project in projects}
         updates = []
         for row_index, row in enumerate(values[1:], start=2):
             data = row_as_dict(headers, row)
-            current = first_value(data, ['Проект'])
+            current_formula = cell_value(project_formulas[row_index - 1], 0) if row_index - 1 < len(project_formulas) else ''
+            current = current_formula if str(current_formula).strip().startswith('=') else first_value(data, ['Проект'])
             project_name = project_name_from_cell(current)
             project = project_map.get(project_name)
             if not project:
