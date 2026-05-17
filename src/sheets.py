@@ -780,22 +780,27 @@ def update_project_channel_counts(sheet, projects):
             status = 'error' if project.get('channels_error') else 'ready'
             error_text = project.get('channels_error', '')
             provisioned_at = format_timestamp()
+            row_updates = []
             if not project.get('channels_error'):
                 channel_count = str(project.get('channel_count', 0))
                 current = str(row[count_col - 1]).strip() if len(row) >= count_col else ''
                 if current != channel_count:
-                    updates.append({
+                    row_updates.append({
                         'range': gspread.utils.rowcol_to_a1(row_index, count_col),
                         'values': [[channel_count]],
                     })
             current_status = str(row[status_col - 1]).strip() if len(row) >= status_col else ''
             current_error = str(row[error_col - 1]).strip() if len(row) >= error_col else ''
             if current_status != status or current_error != error_text:
-                updates.extend([
+                row_updates.extend([
                     {'range': gspread.utils.rowcol_to_a1(row_index, status_col), 'values': [[status]]},
                     {'range': gspread.utils.rowcol_to_a1(row_index, error_col), 'values': [[error_text]]},
-                    {'range': gspread.utils.rowcol_to_a1(row_index, at_col), 'values': [[sheet_datetime_value(provisioned_at)]]},
                 ])
+            row_updates.append({
+                'range': gspread.utils.rowcol_to_a1(row_index, at_col),
+                'values': [[sheet_datetime_value(provisioned_at)]],
+            })
+            updates.extend(row_updates)
 
         for i in range(0, len(updates), config.BATCH_SIZE):
             worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
@@ -1200,6 +1205,20 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
     except Exception as e:
         print(f"  ⚠️  Error updating publication status for {video_id}: {e}")
         return False
+
+
+def repair_video_publication_status(sheet, video_id, project_name, tg_message_id):
+    """Repair one row known to be published when the normal status write failed."""
+    if not video_id or not project_name or not tg_message_id:
+        print("  ⚠️  Target repair skipped: video_id, project_name and tg_message_id are required")
+        return False
+    return update_video_publication_status(
+        sheet,
+        video_id.strip(),
+        project_name.strip(),
+        tg_message_id=str(tg_message_id).strip(),
+        status='published',
+    )
 
 
 def reconcile_pending_published_videos(sheet):
