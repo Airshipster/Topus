@@ -396,8 +396,9 @@ def update_subscription_inventory_warnings(sheet, subscription_records, failed_p
     statuses = {}
     if not failed_project_names:
         for channel_id, record in subscription_records.items():
-            if str(record.get('status', '')).startswith('⚠️ project read failed'):
-                statuses[channel_id] = '✅ project read ok'
+            status = str(record.get('status', ''))
+            if status.startswith('⚠️ project read failed') or status == '✅ project read ok':
+                statuses[channel_id] = ''
         if statuses:
             update_subscription_statuses(sheet, subscription_records, statuses)
             print(f"  ✅ Cleared subscription inventory warnings: {len(statuses)}")

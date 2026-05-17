@@ -2205,6 +2205,8 @@ def load_youtube_channels(client, project):
             channels = parse_youtube_channels_worksheet(worksheet, project)
             if channels:
                 return channels
+            if project.get('channels_error'):
+                return {}
 
         print(f"  ⚠️  No active channels parsed for {project['name']}")
         project['channels_error'] = 'no active channels parsed'
@@ -2265,7 +2267,9 @@ def parse_youtube_channels_worksheet(worksheet, project):
         project['disabled_channel_count'] = len(disabled_channel_ids)
         return channels
     except Exception as e:
-        print(f"  ⚠️  Error reading channels sheet '{worksheet.title}' for {project['name']}: {type(e).__name__}: {e}")
+        error_text = f"{type(e).__name__}: {e}"
+        print(f"  ⚠️  Error reading channels sheet '{worksheet.title}' for {project['name']}: {error_text}")
+        project['channels_error'] = error_text
         return {}
 
 def extract_youtube_channel_id_from_row(row):
