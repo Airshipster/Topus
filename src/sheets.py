@@ -450,7 +450,8 @@ def format_timestamp(dt=None):
         dt = datetime.now(ZoneInfo(timezone_name()))
     elif dt.tzinfo:
         dt = dt.astimezone(ZoneInfo(timezone_name()))
-    return dt.strftime('%Y-%m-%d %H:%M:%S')
+    # User-facing spreadsheet timestamps use Russian/Baku display style.
+    return f'{dt.day:02}.{dt.month:02}.{dt.year} {dt.hour}:{dt.minute:02}:{dt.second:02}'
 
 
 def sheets_datetime_serial(dt):
@@ -746,7 +747,7 @@ def clean_numeric_text_values(worksheet):
 
 
 def clean_timestamp_text_values(worksheet, force_datetime_serial=False, only_headers=None):
-    """Rewrite ISO timestamps to YYYY-MM-DD HH:MM:SS in known timestamp columns."""
+    """Rewrite parseable timestamps to the project display format in known timestamp columns."""
     try:
         header_values = get_values_with_quota_retry(worksheet, '1:1')
         if not header_values:
@@ -869,7 +870,12 @@ def clean_known_workbook_text_values(sheet):
     cleaned_total = 0
     for worksheet_name, timestamp_headers in [
         (config.SHEET_NAME_SETTINGS, {'provisioned at'}),
-        (config.SHEET_NAME_VIDEOS, {'дата публикации tg gmt+4'}),
+        (config.SHEET_NAME_VIDEOS, {
+            'дата публикации yt gmt+4',
+            'дата обработки gmt+4',
+            'дата публикации tg gmt+4',
+        }),
+        ('Логи', {'timestamp gmt+4'}),
         (config.SHEET_NAME_PUSH_EVENTS, {'timestamp gmt+4'}),
         ('Подписки', {'subscribed at', 'last renewed'}),
     ]:
@@ -895,7 +901,87 @@ def clean_known_workbook_text_values(sheet):
 
 
 def ensure_master_timestamp_formats(sheet):
-    return
+    requests = []
+    timestamp_headers = {normalize_header(header) for header in TIMESTAMP_CLEANUP_HEADERS}
+    for worksheet in sheet.worksheets():
+        try:
+            values = get_values_with_quota_retry(worksheet, '1:1')
+        except Exception:
+            continue
+        if not values:
+            continue
+        headers = [normalize_header(header) for header in values[0]]
+        for index, header in enumerate(headers):
+            if header not in timestamp_headers:
+                continue
+            requests.append({
+                'repeatCell': {
+                    'range': {
+                        'sheetId': worksheet.id,
+                        'startRowIndex': 1,
+                        'startColumnIndex': index,
+                        'endColumnIndex': index + 1,
+                    },
+                    'cell': {
+                        'userEnteredFormat': {
+                            'numberFormat': {
+                                'type': 'DATE_TIME',
+                                'pattern': 'dd.mm.yyyy h:mm:ss',
+                            }
+                        }
+                    },
+                    'fields': 'userEnteredFormat.numberFormat',
+                }
+            })
+
+    for i in range(0, len(requests), config.BATCH_SIZE):
+        sheet.batch_update({'requests': requests[i:i + config.BATCH_SIZE]})
+        time.sleep(0.2)
+
+    if requests:
+        print(f"  🕒 Applied timestamp number formats: {len(requests)} columns")
+
+
+def normalize_settings_datetime_values(sheet):
+    try:
+        worksheet = sheet.worksheet(config.SHEET_NAME_SETTINGS)
+        values = get_values_with_quota_retry(worksheet, SETTINGS_READ_RANGE)
+        table = find_settings_table(values)
+        if not table:
+            return 0
+
+        timestamp_value_keys = {'last_run', 'last_cleanup', 'last_subscription_sync'}
+        timestamp_description_keys = {'lock_status'}
+        updates = []
+        for row_number, key, value, description in iter_settings_rows(values, table):
+            if key in timestamp_value_keys:
+                parsed = parse_datetime_value(value)
+                if parsed:
+                    formatted = format_timestamp(parsed)
+                    if formatted != value:
+                        updates.append({
+                            'range': gspread.utils.rowcol_to_a1(row_number, table['value_col']),
+                            'values': [[formatted]],
+                        })
+            if key in timestamp_description_keys and table.get('description_col'):
+                parsed = parse_datetime_value(description)
+                if parsed:
+                    formatted = format_timestamp(parsed)
+                    if formatted != description:
+                        updates.append({
+                            'range': gspread.utils.rowcol_to_a1(row_number, table['description_col']),
+                            'values': [[formatted]],
+                        })
+
+        for i in range(0, len(updates), config.BATCH_SIZE):
+            worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
+            time.sleep(0.2)
+        if updates:
+            print(f"  🕒 Normalized settings timestamp values: {len(updates)}")
+        return len(updates)
+    except Exception as e:
+        print(f"  ⚠️  Error normalizing settings timestamp values: {e}")
+        return 0
 
 
 def update_project_statuses(worksheet, headers, status_updates):
@@ -1937,6 +2023,8 @@ def format_push_events_sheet(sheet, clean_rows=False):
 
 def maintain_workbook_layout(sheet, clean_apostrophes=False):
     ensure_non_settings_sheet_row_counts(sheet)
+    ensure_master_timestamp_formats(sheet)
+    normalize_settings_datetime_values(sheet)
 
     changed_rows = 0
     if clean_apostrophes:
