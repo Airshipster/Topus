@@ -818,6 +818,35 @@ def update_project_statuses(worksheet, headers, status_updates):
     worksheet.batch_update(updates, value_input_option='USER_ENTERED')
 
 
+def update_project_provisioning_statuses(sheet, projects, status, error_text=''):
+    try:
+        worksheet = sheet.worksheet(config.SHEET_NAME_PROJECTS)
+        values = get_values_with_quota_retry(worksheet)
+        if not values:
+            return
+
+        headers = ensure_project_status_columns(worksheet, values[0])
+        code_col = headers.index('Код проекта') if 'Код проекта' in headers else None
+        name_col = headers.index('Название') if 'Название' in headers else None
+        projects_by_code = {str(project.get('code', '')).strip(): project for project in projects if project.get('code')}
+        projects_by_name = {str(project.get('name', '')).strip(): project for project in projects if project.get('name')}
+        status_updates = []
+
+        for row_index, row in enumerate(values[1:], start=2):
+            if any(str(cell).strip() == SETTINGS_MARKER for cell in row):
+                break
+            row_code = row[code_col].strip() if code_col is not None and len(row) > code_col else ''
+            row_name = row[name_col].strip() if name_col is not None and len(row) > name_col else ''
+            if projects_by_code.get(row_code) or projects_by_name.get(row_name):
+                status_updates.append((row_index, status, error_text))
+
+        update_project_statuses(worksheet, headers, status_updates)
+        if status_updates:
+            print(f"  ℹ️  Updated project provisioning statuses: {status} ({len(status_updates)})")
+    except Exception as e:
+        print(f"  ⚠️  Error setting project provisioning statuses: {type(e).__name__}: {e}")
+
+
 def update_project_channel_counts(sheet, projects, update_counts=True):
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_PROJECTS)

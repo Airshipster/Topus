@@ -33,6 +33,7 @@ from sheets import (
     release_lock,
     save_videos_batch,
     update_project_channel_counts,
+    update_project_provisioning_statuses,
     update_video_publication_status,
     update_last_run,
     update_run_status,
@@ -442,6 +443,8 @@ def main():
             deduplicate_subscription_rows(master_sheet)
 
         print("\n📺 Loading project channels...")
+        if should_sync_subscriptions_now:
+            update_project_provisioning_statuses(master_sheet, projects, 'checking', 'reading project document')
         project_channels, active_channels_dict = load_project_channels(client, master_sheet, projects)
         if push_only_mode():
             print("\n📡 Subscription sync skipped in push-only mode")
