@@ -287,7 +287,7 @@ def save_subscribed_channels_batch(sheet, channel_ids, active_channels_dict):
             channel_id,
             sheet_datetime_value(timestamp),
             sheet_datetime_value(timestamp),
-            '🟢 subscribed',
+            '✅ subscribed',
         ]
         for channel_id in channel_ids
     ]
@@ -316,7 +316,7 @@ def update_subscription_renewals_batch(sheet, subscription_records, channel_ids)
             })
             updates.append({
                 'range': f'F{record["row_index"]}',
-                'values': [['🟢 renewed']]
+                'values': [['✅ renewed']]
             })
 
         if updates:
@@ -332,17 +332,17 @@ def update_subscription_statuses(sheet, subscription_records, status_by_channel)
         worksheet = get_or_create_subscriptions_worksheet(sheet)
         updates = []
         red_rows = []
-        green_rows = []
+        clear_rows = []
         for channel_id, status in status_by_channel.items():
             record = subscription_records.get(channel_id)
             if not record:
                 continue
             row_index = record['row_index']
             updates.append({'range': f'F{row_index}', 'values': [[status]]})
-            if str(status).startswith('🔴'):
+            if str(status).startswith('❌'):
                 red_rows.append(row_index)
-            elif str(status).startswith('🟢'):
-                green_rows.append(row_index)
+            else:
+                clear_rows.append(row_index)
 
         for i in range(0, len(updates), config.BATCH_SIZE):
             worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
@@ -363,7 +363,7 @@ def update_subscription_statuses(sheet, subscription_records, status_by_channel)
                     'fields': 'userEnteredFormat.backgroundColor',
                 }
             })
-        for row_index in green_rows:
+        for row_index in clear_rows:
             requests.append({
                 'repeatCell': {
                     'range': {
@@ -373,7 +373,7 @@ def update_subscription_statuses(sheet, subscription_records, status_by_channel)
                         'startColumnIndex': 2,
                         'endColumnIndex': 3,
                     },
-                    'cell': {'userEnteredFormat': {'backgroundColor': {'red': 0.85, 'green': 1.0, 'blue': 0.85}}},
+                    'cell': {'userEnteredFormat': {}},
                     'fields': 'userEnteredFormat.backgroundColor',
                 }
             })
@@ -614,7 +614,7 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
             update_subscription_statuses(
                 master_sheet,
                 subscription_records,
-                {channel_id: '🟢 renewed' for channel_id in renewed},
+                {channel_id: '✅ renewed' for channel_id in renewed},
             )
             print(f"  ✅ Successfully renewed: {len(renewed)}")
         failed_renewals = sorted(set(to_renew) - set(renewed))
@@ -622,9 +622,9 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
             update_subscription_statuses(
                 master_sheet,
                 subscription_records,
-                {channel_id: '🔴 subscribe/renew failed' for channel_id in failed_renewals},
+                {channel_id: '❌ subscribe/renew failed' for channel_id in failed_renewals},
             )
-            print(f"  🔴 Subscription renew failed: {len(failed_renewals)}")
+            print(f"  ❌ Subscription renew failed: {len(failed_renewals)}")
     
     if len(to_unsubscribe) > 0:
         print(f"  Unsubscribing from {len(to_unsubscribe)} inactive channels...")
