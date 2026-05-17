@@ -20,6 +20,7 @@ from sheets import (
     ensure_non_settings_sheet_row_counts,
     get_published_videos,
     get_push_events,
+    get_recent_published_video_rows,
     load_projects,
     load_settings,
     load_youtube_channels,
@@ -39,7 +40,7 @@ from sheets import (
     parse_datetime_value,
 )
 from subscriptions import deduplicate_subscription_rows, get_subscription_records, sync_subscriptions
-from telegram_client import format_message, send_to_telegram
+from telegram_client import delete_telegram_message, format_message, send_to_telegram
 from youtube_client import get_last_youtube_api_error, get_video_info_from_api, get_youtube_api_calls
 
 
@@ -66,7 +67,7 @@ def get_stale_reason(published_at, project=None):
 def copy_video_classification(video, video_info):
     if not video_info:
         return video
-    for field in ('is_short', 'short_reason', 'is_live', 'duration', 'duration_seconds', 'width', 'height'):
+    for field in ('is_short', 'short_reason', 'is_live', 'was_live', 'is_upcoming', 'duration', 'duration_seconds', 'width', 'height'):
         if field in video_info:
             video[field] = video_info[field]
     return video
@@ -76,9 +77,17 @@ def publication_status_detail(video):
     labels = []
     if video.get('is_short'):
         labels.append('Shorts')
-    if video.get('is_live'):
+    if video.get('is_live') or video.get('was_live'):
         labels.append('Stream')
     return '. '.join(labels) + ('.' if labels else '')
+
+
+def pending_hold_reason(video_info, project):
+    if video_info.get('is_upcoming') and not project.get('allow_premieres'):
+        return 'Awaiting premiere publication'
+    if video_info.get('is_live') and not project.get('allow_streams'):
+        return 'Awaiting stream archive'
+    return ''
 
 
 def should_force_subscription_sync():
@@ -191,7 +200,69 @@ def open_master_sheet_with_retry(client, attempts=4):
 
 
 def delete_rss_missing_publications(master_sheet, project, rss_seen_by_channel, log_entries):
-    print("  ⏭️  RSS-missing deletion disabled: RSS absence is not proof that a YouTube video is unavailable")
+    delete_limit = int(project.get('rss_delete_limit', 5))
+    if delete_limit <= 0:
+        print("  ⏭️  RSS-missing deletion disabled for project")
+        return
+
+    recent_rows = get_recent_published_video_rows(
+        master_sheet,
+        project['name'],
+        hours=1,
+    )
+    candidates = []
+    for row in recent_rows:
+        channel_seen = rss_seen_by_channel.get(row['channel_id'])
+        if channel_seen is None or row['video_id'] in channel_seen:
+            continue
+        candidates.append(row)
+
+    if not candidates:
+        return
+
+    if len(candidates) > delete_limit:
+        log_entries.append([
+            format_timestamp(),
+            project['name'],
+            'RSS delete skipped',
+            '',
+            f'Candidates {len(candidates)} exceed project limit {delete_limit}',
+            'skipped',
+        ])
+        print(f"  ⚠️  RSS-missing deletion skipped: {len(candidates)} candidates > limit {delete_limit}")
+        return
+
+    deleted = 0
+    for row in candidates:
+        video_info = get_video_info_from_api(row['video_id'])
+        youtube_error = get_last_youtube_api_error()
+        if video_info:
+            print(f"  ✅ RSS-missing video still exists, keeping post: {row['video_id']}")
+            continue
+        if youtube_error:
+            print(f"  ⏭️  RSS-missing delete skipped; YouTube API uncertain for {row['video_id']}: {youtube_error}")
+            continue
+
+        if delete_telegram_message(project['bot_token'], project['channel_id'], row['message_id']):
+            update_video_publication_status(
+                master_sheet,
+                row['video_id'],
+                project['name'],
+                status='deleted_unavailable',
+                error='Missing from RSS and unavailable via YouTube API',
+            )
+            log_entries.append([
+                format_timestamp(),
+                project['name'],
+                'Telegram post deleted',
+                row['video_id'],
+                'Missing from RSS and unavailable via YouTube API',
+                'deleted',
+            ])
+            deleted += 1
+
+    if deleted:
+        print(f"  🗑️  Deleted unavailable Telegram posts after API check: {deleted}")
 
 
 def load_project_channels(client, master_sheet, projects):
@@ -498,6 +569,16 @@ def main():
                         published_videos.add(key)
                         total_filtered += 1
                         continue
+
+                    hold_reason = pending_hold_reason(video_info_api, project)
+                    if hold_reason:
+                        print(f"  ⏳ Pending: {video['title'][:50]} ({hold_reason})")
+                        timestamp = format_timestamp()
+                        log_entries.append([timestamp, project['name'], 'Video pending', video['video_id'], hold_reason, 'pending'])
+                        videos_to_save.append((video, project, video_published_date, None, f"PENDING: {hold_reason}"))
+                        publication_event_rows[key] = event
+                        published_videos.add(key)
+                        continue
                 
                     should_filter, filter_reason = should_filter_video(video_info_api, project)
                     if should_filter:
@@ -555,6 +636,15 @@ def main():
                         published_videos.add(key)
                         total_filtered += 1
                         continue
+
+                    hold_reason = pending_hold_reason(video_info_api, project)
+                    if hold_reason:
+                        print(f"    ⏳ Pending (RSS): {video['title'][:50]} ({hold_reason})")
+                        timestamp = format_timestamp()
+                        log_entries.append([timestamp, project['name'], 'Video pending', video['video_id'], f"RSS: {hold_reason}", 'pending'])
+                        videos_to_save.append((video, project, video_published_date, None, f"PENDING: RSS: {hold_reason}"))
+                        published_videos.add(key)
+                        continue
                     
                     should_filter, filter_reason = should_filter_video(video_info_api, project)
                     
@@ -600,7 +690,7 @@ def main():
         print(f"\n📤 Publishing to Telegram...")
         
         for video, project, video_published_date, _, error in videos_to_save:
-            if str(error or '').startswith('FILTERED: '):
+            if str(error or '').startswith(('FILTERED: ', 'PENDING: ')):
                 continue
 
             key = publication_key(video['video_id'], project)

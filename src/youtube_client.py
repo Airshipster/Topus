@@ -165,7 +165,11 @@ def get_video_info_from_api(video_id):
                 is_short = True
                 short_reasons.append("YouTube Shorts canonical")
 
-            is_live = live_details.get('actualStartTime') is not None
+            is_live = (
+                live_details.get('actualStartTime') is not None
+                and live_details.get('actualEndTime') is None
+            )
+            was_live = live_details.get('actualStartTime') is not None
             is_upcoming = snippet.get('liveBroadcastContent') == 'upcoming'
 
             return {
@@ -176,6 +180,7 @@ def get_video_info_from_api(video_id):
                 'is_short': is_short,
                 'short_reason': ', '.join(short_reasons),
                 'is_live': is_live,
+                'was_live': was_live,
                 'is_upcoming': is_upcoming,
                 'duration': duration_str,
                 'duration_seconds': duration_seconds,

@@ -64,7 +64,7 @@ TARGET_WORKSHEET_ROWS = 10000
 PUSH_EVENT_ROW_HEIGHT_PIXELS = 21
 SETTINGS_READ_RANGE = 'A1:D200'
 PROJECTS_READ_RANGE = 'A1:ZZ500'
-PENDING_RETRY_WINDOW_HOURS = 2
+PENDING_RETRY_WINDOW_HOURS = 24
 
 
 def clean_sheet_value(value):
@@ -1183,8 +1183,13 @@ def save_videos_batch(sheet, videos_data):
             key = (video['video_id'], project_name)
             existing = existing_rows.get(key)
             is_filtered = str(error or '').startswith('FILTERED: ')
+            is_pending_hold = str(error or '').startswith('PENDING: ')
             row_status = 'filtered' if is_filtered else ('published' if tg_message_id else 'pending')
-            row_error = str(error or '').replace('FILTERED: ', '', 1) if is_filtered else (error or '')
+            row_error = str(error or '')
+            if is_filtered:
+                row_error = row_error.replace('FILTERED: ', '', 1)
+            elif is_pending_hold:
+                row_error = row_error.replace('PENDING: ', '', 1)
             source_method = str(video.get('source_method') or '').strip()
             if source_method.lower() == 'rss' and row_error.startswith('RSS: '):
                 row_error = row_error.replace('RSS: ', '', 1)
