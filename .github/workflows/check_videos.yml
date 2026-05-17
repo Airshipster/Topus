@@ -68,7 +68,7 @@ jobs:
 
     - name: Wake Apps Script callback
       run: |
-        curl -fsSL "https://script.google.com/macros/s/AKfycbwqySnqlEYAMTTQNkcUy9RU-B6UkikW9o-v5lzLxtthnpOE_52XRZThoe2b1xjIj1Zm/exec" -o /dev/null
+        curl -fsSL "https://script.google.com/macros/s/AKfycbwqySnqlEYAMTTQNkcUy9RU-B6UkikW9o-v5lzLxtthnpOE_52XRZThoe2b1xjIj1Zm/exec" -o /dev/null || true
     
     - name: Run main script
       env:
