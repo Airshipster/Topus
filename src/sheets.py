@@ -868,6 +868,40 @@ def update_project_provisioning_statuses(sheet, projects, status, error_text='')
         print(f"  ⚠️  Error setting project provisioning statuses: {type(e).__name__}: {e}")
 
 
+def update_project_provisioning_status_map(sheet, projects, status_by_project, error_text=''):
+    if not status_by_project:
+        return
+    try:
+        worksheet = sheet.worksheet(config.SHEET_NAME_PROJECTS)
+        timestamp = format_timestamp()
+        updates = []
+
+        for project in projects:
+            project_name = str(project.get('name', '')).strip()
+            status = status_by_project.get(project_name)
+            if not status:
+                continue
+            row_index = project.get('_settings_row')
+            status_col = project.get('_provisioning_status_col')
+            error_col = project.get('_provisioning_error_col')
+            at_col = project.get('_provisioned_at_col')
+            if not row_index or not status_col or not error_col or not at_col:
+                continue
+            updates.extend([
+                {'range': gspread.utils.rowcol_to_a1(row_index, status_col), 'values': [[status]]},
+                {'range': gspread.utils.rowcol_to_a1(row_index, error_col), 'values': [[error_text]]},
+                {'range': gspread.utils.rowcol_to_a1(row_index, at_col), 'values': [[sheet_datetime_value(timestamp)]]},
+            ])
+
+        for i in range(0, len(updates), config.BATCH_SIZE):
+            worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
+            time.sleep(0.2)
+        if updates:
+            print(f"  ℹ️  Updated per-project provisioning progress: {len(status_by_project)}")
+    except Exception as e:
+        print(f"  ⚠️  Error setting per-project provisioning progress: {type(e).__name__}: {e}")
+
+
 def update_project_channel_counts(sheet, projects, update_counts=True):
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_PROJECTS)

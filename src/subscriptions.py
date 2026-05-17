@@ -17,6 +17,7 @@ from sheets import (
     sheet_datetime_value,
     update_setting_value,
     update_project_provisioning_statuses,
+    update_project_provisioning_status_map,
 )
 
 
@@ -650,13 +651,29 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
         print(f"  Renewing {len(to_renew)} existing subscriptions...")
         renewed = []
         to_renew_list = sorted(to_renew)
-        total_to_renew = len(to_renew_list)
-        for index, channel_id in enumerate(to_renew_list, start=1):
-            if force and (index == 1 or index == total_to_renew or index % 50 == 0):
-                update_project_provisioning_statuses(
+        project_renew_totals = {}
+        project_renew_done = {}
+        if force:
+            for channel_id in to_renew_list:
+                for project_name in active_channels_dict.get(channel_id, {}).get('projects', []):
+                    project_renew_totals[project_name] = project_renew_totals.get(project_name, 0) + 1
+
+        for channel_id in to_renew_list:
+            if force:
+                touched_projects = active_channels_dict.get(channel_id, {}).get('projects', [])
+                status_updates = {}
+                for project_name in touched_projects:
+                    total = project_renew_totals.get(project_name, 0)
+                    if not total:
+                        continue
+                    done = project_renew_done.get(project_name, 0) + 1
+                    project_renew_done[project_name] = done
+                    if done == 1 or done == total or done % 50 == 0:
+                        status_updates[project_name] = f'checking subscriptions {done}/{total}'
+                update_project_provisioning_status_map(
                     master_sheet,
                     projects,
-                    f'checking subscriptions {index}/{total_to_renew}',
+                    status_updates,
                     'renewing push subscriptions',
                 )
             if subscribe_channel(channel_id):
