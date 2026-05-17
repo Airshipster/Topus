@@ -110,6 +110,9 @@ def publication_key(video_id, project):
 
 
 def acquire_lock_with_wait(master_sheet):
+    if maintenance_only_mode():
+        return acquire_lock(master_sheet, stale_after_seconds=120)
+
     if push_only_mode():
         return acquire_lock(master_sheet)
 

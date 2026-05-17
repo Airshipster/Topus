@@ -782,7 +782,7 @@ def authenticate_google_sheets():
     client = gspread.authorize(credentials)
     return client
 
-def acquire_lock(sheet):
+def acquire_lock(sheet, stale_after_seconds=900):
     """Получить блокировку для предотвращения одновременных запусков"""
     global _LOCK_ROW_INFO
     try:
@@ -802,7 +802,7 @@ def acquire_lock(sheet):
                             lock_time = parse_datetime_value(lock_time_str)
                             if not lock_time:
                                 raise ValueError('invalid lock time')
-                            stale_lock = (current_local_datetime() - lock_time).total_seconds() > 900
+                            stale_lock = (current_local_datetime() - lock_time).total_seconds() > stale_after_seconds
                         except:
                             stale_lock = True
                     else:
