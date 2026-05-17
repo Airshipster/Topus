@@ -276,7 +276,6 @@ def main():
             clean_known_workbook_text_values(master_sheet)
             update_last_run(master_sheet)
             update_run_status(master_sheet, 'complete: maintenance-only', run_status_details())
-            release_lock(master_sheet)
             return
         
         # ПРОВЕРКА БЛОКИРОВКИ
