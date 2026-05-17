@@ -26,6 +26,15 @@ SUBSCRIPTION_SYNC_INTERVAL_SECONDS = 86400
 SUBSCRIPTIONS_SHEET_NAME = 'Подписки'
 SUBSCRIPTIONS_HEADERS = ['Projects', 'Project Count', 'Channel ID', 'Subscribed At', 'Last Renewed', 'Status']
 SUBSCRIPTIONS_READ_RANGE = 'A1:F'
+SUBSCRIPTIONS_TARGET_ROWS = 10000
+
+
+def base_subscription_header(value):
+    return str(value or '').splitlines()[0].strip()
+
+
+def subscription_header_indexes(headers):
+    return {base_subscription_header(header): index for index, header in enumerate(headers)}
 
 
 def normalize_subscription_channel_id(value):
@@ -96,7 +105,7 @@ def get_subscription_records(sheet):
         worksheet = get_or_create_subscriptions_worksheet(sheet)
         values = get_values_with_quota_retry(worksheet, SUBSCRIPTIONS_READ_RANGE)
         headers = [str(cell).strip() for cell in values[0]] if values else []
-        indexes = {header: index for index, header in enumerate(headers)}
+        indexes = subscription_header_indexes(headers)
         records = {}
 
         for i, row in enumerate(values[1:], start=2):
@@ -149,11 +158,58 @@ def rewrite_subscriptions_values(worksheet):
     return len(updates)
 
 
-def normalize_subscriptions_columns(sheet, worksheet, headers):
+def subscription_status_header(values):
+    counts = {'✅': 0, '❌': 0, '⚠️': 0}
+    if values:
+        headers = [str(cell).strip() for cell in values[0]]
+        indexes = subscription_header_indexes(headers)
+        status_col = indexes.get('Status', 5)
+        for row in values[1:]:
+            status = clean_sheet_value(row[status_col]).strip() if len(row) > status_col else ''
+            for marker in counts:
+                if marker in status:
+                    counts[marker] += 1
+
+    summary = ', '.join(f'{marker}{count}' for marker, count in counts.items() if count)
+    return f'Status\n{summary}' if summary else 'Status'
+
+
+def update_subscription_status_header(worksheet, values=None):
+    try:
+        if values is None:
+            values = get_values_with_quota_retry(worksheet, SUBSCRIPTIONS_READ_RANGE)
+        header = subscription_status_header(values)
+        current = str(values[0][5]).strip() if values and values[0] and len(values[0]) > 5 else ''
+        if current == header:
+            return
+        worksheet.update(range_name='F1', values=[[header]], value_input_option='USER_ENTERED')
+    except Exception as e:
+        print(f"  ⚠️  Error updating subscription status header: {e}")
+
+
+def ensure_subscription_row_count(sheet, worksheet):
+    if worksheet.row_count == SUBSCRIPTIONS_TARGET_ROWS:
+        return
+    sheet.batch_update({
+        'requests': [{
+            'updateSheetProperties': {
+                'properties': {
+                    'sheetId': worksheet.id,
+                    'gridProperties': {'rowCount': SUBSCRIPTIONS_TARGET_ROWS},
+                },
+                'fields': 'gridProperties.rowCount',
+            }
+        }]
+    })
+    print(f"  📐 Restored subscriptions row count: {SUBSCRIPTIONS_TARGET_ROWS}")
+
+
+def normalize_subscriptions_columns(sheet, worksheet, headers, values=None):
     """Move Projects/Project Count to the front with column moves so formatting follows."""
-    stripped = [str(cell).strip() for cell in headers]
+    stripped = [base_subscription_header(cell) for cell in headers]
     desired = SUBSCRIPTIONS_HEADERS
     if stripped[:len(desired)] == desired:
+        update_subscription_status_header(worksheet, values)
         return stripped
 
     try:
@@ -165,6 +221,7 @@ def normalize_subscriptions_columns(sheet, worksheet, headers):
             values=[desired],
             value_input_option='USER_ENTERED',
         )
+        update_subscription_status_header(worksheet)
         return desired
 
     if projects_index == 0 and count_index == 1:
@@ -173,6 +230,7 @@ def normalize_subscriptions_columns(sheet, worksheet, headers):
             values=[desired],
             value_input_option='USER_ENTERED',
         )
+        update_subscription_status_header(worksheet)
         return desired
 
     if count_index == projects_index + 1:
@@ -223,23 +281,27 @@ def normalize_subscriptions_columns(sheet, worksheet, headers):
         value_input_option='USER_ENTERED',
     )
     print("  ↔️  Moved subscription Projects columns to the front")
+    update_subscription_status_header(worksheet)
     return desired
 
 def get_or_create_subscriptions_worksheet(sheet):
     try:
         worksheet = sheet.worksheet(SUBSCRIPTIONS_SHEET_NAME)
     except gspread.exceptions.WorksheetNotFound:
-        worksheet = sheet.add_worksheet(SUBSCRIPTIONS_SHEET_NAME, rows=10000, cols=len(SUBSCRIPTIONS_HEADERS))
+        worksheet = sheet.add_worksheet(SUBSCRIPTIONS_SHEET_NAME, rows=SUBSCRIPTIONS_TARGET_ROWS, cols=len(SUBSCRIPTIONS_HEADERS))
         worksheet.append_row(SUBSCRIPTIONS_HEADERS, value_input_option='USER_ENTERED')
         return worksheet
+
+    ensure_subscription_row_count(sheet, worksheet)
 
     values = get_values_with_quota_retry(worksheet, SUBSCRIPTIONS_READ_RANGE)
     if not values:
         worksheet.append_row(SUBSCRIPTIONS_HEADERS, value_input_option='USER_ENTERED')
+        update_subscription_status_header(worksheet)
         return worksheet
 
     headers = [str(cell).strip() for cell in values[0]]
-    normalize_subscriptions_columns(sheet, worksheet, headers)
+    normalize_subscriptions_columns(sheet, worksheet, headers, values)
 
     return worksheet
 
@@ -382,6 +444,7 @@ def update_subscription_statuses(sheet, subscription_records, status_by_channel)
         for i in range(0, len(requests), config.BATCH_SIZE):
             sheet.batch_update({'requests': requests[i:i + config.BATCH_SIZE]})
             time.sleep(0.2)
+        update_subscription_status_header(worksheet)
     except Exception as e:
         print(f"  ⚠️  Error updating subscription statuses: {e}")
 
@@ -467,7 +530,7 @@ def deduplicate_subscription_rows(sheet):
             return 0
 
         headers = [str(cell).strip() for cell in values[0]]
-        indexes = {header: index for index, header in enumerate(headers)}
+        indexes = subscription_header_indexes(headers)
         channel_col = indexes.get('Channel ID', 2)
         seen = set()
         rows_to_delete = []
@@ -483,6 +546,8 @@ def deduplicate_subscription_rows(sheet):
             seen.add(channel_id)
 
         deleted = delete_rows_batch(sheet, worksheet, rows_to_delete)
+        ensure_subscription_row_count(sheet, worksheet)
+        update_subscription_status_header(worksheet)
         if deleted:
             print(f"  🧹 Removed duplicate subscription rows: {deleted}")
         return deleted
@@ -545,12 +610,14 @@ def remove_subscribed_channels(sheet, channel_ids):
             if i == 0:
                 continue
             headers = [str(cell).strip() for cell in all_values[0]] if all_values else []
-            indexes = {header: index for index, header in enumerate(headers)}
+            indexes = subscription_header_indexes(headers)
             channel_col = indexes.get('Channel ID', 2)
             if len(row) > channel_col and normalize_subscription_channel_id(row[channel_col]) in channel_ids:
                 rows_to_delete.append(i + 1)
         
         delete_rows_batch(sheet, worksheet, rows_to_delete)
+        ensure_subscription_row_count(sheet, worksheet)
+        update_subscription_status_header(worksheet)
     except Exception as e:
         print(f"  ❌ Error removing subscriptions: {e}")
 

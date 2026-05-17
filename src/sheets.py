@@ -607,6 +607,40 @@ def update_setting_value(worksheet, key, value, description=''):
     worksheet.append_row(clean_sheet_row(append_row), value_input_option='USER_ENTERED')
 
 
+def normalize_misaligned_settings_rows(worksheet, values, table):
+    """Move legacy setting rows from A:C into the detected settings table columns."""
+    updates = []
+    max_col = max(table['description_col'] or 0, table['value_col'])
+    for row_number, row in enumerate(values[table['first_data_row'] - 1:], start=table['first_data_row']):
+        normalized = [str(cell).strip() for cell in row]
+        key_col_value = normalized[table['key_col'] - 1] if len(normalized) >= table['key_col'] else ''
+        legacy_key = normalized[0] if normalized else ''
+        if key_col_value or not legacy_key or legacy_key == SETTINGS_MARKER:
+            continue
+        legacy_value = normalized[1] if len(normalized) > 1 else ''
+        legacy_description = normalized[2] if len(normalized) > 2 else ''
+        if not legacy_value and not legacy_description:
+            continue
+
+        row_values = [''] * max_col
+        row_values[table['key_col'] - 1] = legacy_key
+        row_values[table['value_col'] - 1] = legacy_value
+        if table.get('description_col'):
+            row_values[table['description_col'] - 1] = legacy_description
+        updates.append({
+            'range': f'A{row_number}:{a1_column(max_col)}{row_number}',
+            'values': [clean_sheet_row(row_values)],
+        })
+
+    for i in range(0, len(updates), config.BATCH_SIZE):
+        worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
+        time.sleep(0.2)
+
+    if updates:
+        print(f"  ↔️  Normalized misaligned settings rows: {len(updates)}")
+    return len(updates)
+
+
 def deduplicate_settings_rows(sheet):
     """Keep one row per setting key in the settings table, preserving the latest row."""
     try:
@@ -615,6 +649,13 @@ def deduplicate_settings_rows(sheet):
         table = find_settings_table(values)
         if not table:
             return 0
+
+        normalized_count = normalize_misaligned_settings_rows(worksheet, values, table)
+        if normalized_count:
+            values = worksheet.get_all_values()
+            table = find_settings_table(values)
+            if not table:
+                return normalized_count
 
         latest_rows = {}
         duplicate_rows = []
@@ -634,12 +675,12 @@ def deduplicate_settings_rows(sheet):
         duplicate_rows.extend(legacy_status_rows)
         duplicate_rows = sorted(set(duplicate_rows))
         if not duplicate_rows:
-            return 0
+            return normalized_count
 
         delete_rows_batch(sheet, worksheet, duplicate_rows)
         get_settings_values(worksheet, force_refresh=True)
         print(f"  🧹 Removed duplicate settings rows: {len(duplicate_rows)}")
-        return len(duplicate_rows)
+        return normalized_count + len(duplicate_rows)
     except Exception as e:
         print(f"  ⚠️  Error deduplicating settings rows: {e}")
         return 0
