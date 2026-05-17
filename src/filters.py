@@ -10,10 +10,10 @@ def should_filter_video(video_info, project):
         reason = video_info.get('short_reason') or f"{video_info.get('duration_seconds', 0)}s"
         return True, f"Short video ({reason})"
     
-    if config.FILTER_LIVE and video_info.get('is_live'):
+    if config.FILTER_LIVE and video_info.get('is_live') and not project.get('allow_streams'):
         return True, "Live stream"
     
-    if video_info.get('is_upcoming'):
+    if video_info.get('is_upcoming') and not project.get('allow_premieres'):
         return True, "Upcoming/Premiere"
     
     if project.get('stop_words'):

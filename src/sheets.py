@@ -15,6 +15,10 @@ PROJECT_STATUS_COLUMNS = [
     'Push API',
     'RSS feed',
     'Кол. 🟢 каналов',
+    'Кол. 🔴 каналов',
+    'Стримы',
+    'Премьеры',
+    'Возраст видео, ч',
     'RSS delete limit',
     'Provisioning status',
     'Provisioning error',
@@ -59,7 +63,7 @@ _SETTINGS_VALUES_CACHE = None
 TARGET_WORKSHEET_ROWS = 10000
 PUSH_EVENT_ROW_HEIGHT_PIXELS = 21
 SETTINGS_READ_RANGE = 'A1:D200'
-PROJECTS_READ_RANGE = 'A1:AZ500'
+PROJECTS_READ_RANGE = 'A1:ZZ500'
 PENDING_RETRY_WINDOW_HOURS = 2
 
 
@@ -785,6 +789,7 @@ def update_project_channel_counts(sheet, projects):
 
         headers = ensure_project_status_columns(worksheet, values[0])
         count_col = headers.index('Кол. 🟢 каналов') + 1
+        disabled_count_col = headers.index('Кол. 🔴 каналов') + 1
         status_col = headers.index('Provisioning status') + 1
         error_col = headers.index('Provisioning error') + 1
         at_col = headers.index('Provisioned at') + 1
@@ -813,6 +818,13 @@ def update_project_channel_counts(sheet, projects):
                     row_updates.append({
                         'range': gspread.utils.rowcol_to_a1(row_index, count_col),
                         'values': [[channel_count]],
+                    })
+                disabled_channel_count = str(project.get('disabled_channel_count', 0))
+                current_disabled = str(row[disabled_count_col - 1]).strip() if len(row) >= disabled_count_col else ''
+                if current_disabled != disabled_channel_count:
+                    row_updates.append({
+                        'range': gspread.utils.rowcol_to_a1(row_index, disabled_count_col),
+                        'values': [[disabled_channel_count]],
                     })
             current_status = str(row[status_col - 1]).strip() if len(row) >= status_col else ''
             current_error = str(row[error_col - 1]).strip() if len(row) >= error_col else ''
@@ -2050,6 +2062,12 @@ def load_projects(sheet, update_status=True):
             stop_words = [w.lower() for w in parse_list_setting(stop_words_str)]
             shorts_value = str(row.get('Шортсы', '')).strip()
             allow_shorts = shorts_value == '🟢'
+            allow_streams = is_enabled_marker(row.get('Стримы'), default=False)
+            allow_premieres = is_enabled_marker(row.get('Премьеры'), default=False)
+            max_publish_age_hours = parse_positive_int_setting(
+                row.get('Возраст видео, ч'),
+                config.MAX_PUBLISH_AGE_HOURS,
+            )
             if str(row.get('Push API', '')).strip() == '':
                 default_updates.append((row_index, 'Push API', '🟢'))
             if str(row.get('RSS feed', '')).strip() == '':
@@ -2077,10 +2095,14 @@ def load_projects(sheet, update_status=True):
                 'default_template': row.get('Шаблон по умолчанию', config.DEFAULT_MESSAGE_TEMPLATE),
                 'stop_words': stop_words,
                 'allow_shorts': allow_shorts,
+                'allow_streams': allow_streams,
+                'allow_premieres': allow_premieres,
+                'max_publish_age_hours': max_publish_age_hours,
                 'push_api_enabled': is_enabled_marker(row.get('Push API'), default=True),
                 'rss_feed_enabled': is_enabled_marker(row.get('RSS feed'), default=True),
                 'rss_delete_limit': rss_delete_limit,
                 'channel_count': 0,
+                'disabled_channel_count': 0,
             })
             queue_status(row_index, row, 'ready', '')
         else:
@@ -2096,6 +2118,7 @@ def load_projects(sheet, update_status=True):
 def load_youtube_channels(client, project):
     """Загрузка активных YouTube каналов проекта"""
     project.pop('channels_error', None)
+    project['disabled_channel_count'] = 0
     try:
         sheet = client.open_by_key(project['sheet_id'])
         configured_name = project.get('channels_sheet_name', '')
@@ -2148,6 +2171,7 @@ def parse_youtube_channels_worksheet(worksheet, project):
         template_col_text = template_col + 1 if template_col is not None else 'fallback 21'
         print(f"  📌 Channel columns: template={template_col_text}")
         channels = {}
+        disabled_channel_ids = set()
         for i, row in enumerate(values):
             if i == 0:
                 continue
@@ -2159,10 +2183,15 @@ def parse_youtube_channels_worksheet(worksheet, project):
             if any(cell == '🔵' for cell in normalized):
                 break
 
+            channel_id = get_row_value(normalized, header_indexes, 'ID') or extract_youtube_channel_id_from_row(normalized)
+            if '🔴' in normalized:
+                if channel_id:
+                    disabled_channel_ids.add(channel_id)
+                continue
+
             if '🟢' not in normalized:
                 continue
 
-            channel_id = get_row_value(normalized, header_indexes, 'ID') or extract_youtube_channel_id_from_row(normalized)
             if not channel_id:
                 print(f"  ⚠️  Active row {i + 1} has no YouTube channel ID")
                 continue
@@ -2176,6 +2205,7 @@ def parse_youtube_channels_worksheet(worksheet, project):
                 'tg_channel': ''
             }
 
+        project['disabled_channel_count'] = len(disabled_channel_ids)
         return channels
     except Exception as e:
         print(f"  ⚠️  Error reading channels sheet '{worksheet.title}' for {project['name']}: {type(e).__name__}: {e}")
@@ -2217,6 +2247,18 @@ def is_enabled_marker(value, default=True):
     if text in ('🔴', 'no', 'false', '0', 'off', 'нет', 'выкл'):
         return False
     return default
+
+
+def parse_positive_int_setting(value, default):
+    text = str(clean_sheet_value(value) or '').strip()
+    if not text:
+        return default
+    try:
+        parsed = int(float(text.replace(',', '.')))
+        return parsed if parsed > 0 else default
+    except ValueError:
+        return default
+
 
 def get_all_active_channels(client, projects):
     """Получение всех уникальных активных каналов"""

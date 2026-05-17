@@ -47,14 +47,18 @@ def parse_datetime(value):
     return parse_datetime_value(value)
 
 
-def get_stale_reason(published_at):
+def get_stale_reason(published_at, project=None):
     published = parse_datetime(published_at)
     if not published:
         return ''
 
+    limit_hours = config.MAX_PUBLISH_AGE_HOURS
+    if project:
+        limit_hours = project.get('max_publish_age_hours') or limit_hours
+
     age_hours = (current_local_datetime() - published).total_seconds() / 3600
-    if age_hours > config.MAX_PUBLISH_AGE_HOURS:
-        return f"Stale video ({age_hours:.1f}h old, limit {config.MAX_PUBLISH_AGE_HOURS}h)"
+    if age_hours > limit_hours:
+        return f"Stale video ({age_hours:.1f}h old, limit {limit_hours}h)"
 
     return ''
 
@@ -516,7 +520,7 @@ def main():
                     }
                 
                     video_published_date = video_info_api['published']
-                    stale_reason = get_stale_reason(video_published_date)
+                    stale_reason = get_stale_reason(video_published_date, project)
                     if stale_reason:
                         print(f"  🚫 Skipped stale: {video['title'][:50]} ({stale_reason})")
                         timestamp = format_timestamp()
@@ -573,7 +577,7 @@ def main():
                 
                 if video_info_api:
                     video_published_date = video_info_api['published']
-                    stale_reason = get_stale_reason(video_published_date)
+                    stale_reason = get_stale_reason(video_published_date, project)
                     if stale_reason:
                         print(f"    🚫 Skipped stale (RSS): {video['title'][:50]} ({stale_reason})")
                         timestamp = format_timestamp()
@@ -594,7 +598,7 @@ def main():
                         continue
                 else:
                     video_published_date = video.get('published', format_timestamp())
-                    stale_reason = get_stale_reason(video_published_date)
+                    stale_reason = get_stale_reason(video_published_date, project)
                     if stale_reason:
                         print(f"    🚫 Skipped stale (RSS): {video['title'][:50]} ({stale_reason})")
                         timestamp = format_timestamp()
@@ -634,7 +638,7 @@ def main():
                 print(f"  ⏭️  Skipping {video['video_id']} / {project['name']} - already tracked or not saved")
                 continue
 
-            stale_reason = get_stale_reason(video_published_date)
+            stale_reason = get_stale_reason(video_published_date, project)
             if stale_reason:
                 print(f"  🚫 Skipping publish stale: {video['title'][:50]} ({stale_reason})")
                 timestamp = format_timestamp()
