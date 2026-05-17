@@ -53,6 +53,9 @@ VIDEO_HEADERS = [
 
 LOG_HEADERS = ['Проект', 'Timestamp GMT+4', 'Video ID', 'Событие']
 
+_LOCK_ROW_INFO = None
+_RUN_STATUS_ROW = None
+
 
 def clean_sheet_value(value):
     if value is None:
@@ -460,7 +463,7 @@ def find_setting_row(values, key):
 
 
 def update_setting_value(worksheet, key, value, description=''):
-    values = worksheet.get_all_values()
+    values = get_values_with_quota_retry(worksheet)
     existing, table = find_setting_row(values, key)
 
     if not table:
@@ -669,7 +672,7 @@ def update_project_statuses(worksheet, headers, status_updates):
 def update_project_channel_counts(sheet, projects):
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_PROJECTS)
-        values = worksheet.get_all_values()
+        values = get_values_with_quota_retry(worksheet)
         if not values:
             return
 
@@ -779,9 +782,10 @@ def authenticate_google_sheets():
 
 def acquire_lock(sheet):
     """Получить блокировку для предотвращения одновременных запусков"""
+    global _LOCK_ROW_INFO
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_SETTINGS)
-        values = worksheet.get_all_values()
+        values = get_values_with_quota_retry(worksheet)
         
         existing, table = find_setting_row(values, 'lock_status')
         if existing and table:
@@ -819,6 +823,11 @@ def acquire_lock(sheet):
                         'values': [[current_time]],
                     })
                 worksheet.batch_update(updates, value_input_option='USER_ENTERED')
+                _LOCK_ROW_INFO = {
+                    'row_number': lock_row,
+                    'value_col': table['value_col'],
+                    'description_col': table.get('description_col'),
+                }
                 print(f"  🔒 Lock acquired at {current_time}")
                 return True
         
@@ -833,10 +842,25 @@ def acquire_lock(sheet):
 
 def release_lock(sheet):
     """Освободить блокировку"""
+    global _LOCK_ROW_INFO
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_SETTINGS)
-        values = worksheet.get_all_values()
-        
+        if _LOCK_ROW_INFO:
+            updates = [{
+                'range': gspread.utils.rowcol_to_a1(_LOCK_ROW_INFO['row_number'], _LOCK_ROW_INFO['value_col']),
+                'values': [['unlocked']],
+            }]
+            if _LOCK_ROW_INFO.get('description_col'):
+                updates.append({
+                    'range': gspread.utils.rowcol_to_a1(_LOCK_ROW_INFO['row_number'], _LOCK_ROW_INFO['description_col']),
+                    'values': [[format_timestamp()]],
+                })
+            worksheet.batch_update(updates, value_input_option='USER_ENTERED')
+            print(f"  🔓 Lock released")
+            _LOCK_ROW_INFO = None
+            return
+
+        values = get_values_with_quota_retry(worksheet)
         existing, table = find_setting_row(values, 'lock_status')
         if existing and table:
             updates = [{
@@ -1650,9 +1674,19 @@ def update_last_run(sheet):
 
 def update_run_status(sheet, status, details=''):
     """Write the current publisher status after the blue separator row."""
+    global _RUN_STATUS_ROW
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_SETTINGS)
-        values = worksheet.get_all_values()
+        if _RUN_STATUS_ROW:
+            worksheet.update(
+                range_name=f'A{_RUN_STATUS_ROW}:D{_RUN_STATUS_ROW}',
+                values=[['Статус run-ов', clean_sheet_value(status), clean_sheet_value(details), format_timestamp()]],
+                value_input_option='USER_ENTERED',
+            )
+            print(f"  ℹ️  Run status updated: {status}")
+            return
+
+        values = get_values_with_quota_retry(worksheet)
         marker_row = None
 
         for row_index, row in enumerate(values, start=1):
@@ -1676,6 +1710,7 @@ def update_run_status(sheet, status, details=''):
             values=[['Статус run-ов', clean_sheet_value(status), clean_sheet_value(details), format_timestamp()]],
             value_input_option='USER_ENTERED',
         )
+        _RUN_STATUS_ROW = target_row
         print(f"  ℹ️  Run status updated: {status}")
     except Exception as e:
         print(f"  ⚠️  Error updating run status: {e}")
