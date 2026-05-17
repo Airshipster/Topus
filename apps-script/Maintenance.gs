@@ -1,7 +1,6 @@
 function repairTopusWorkbookMaintenance() {
   var ss = SpreadsheetApp.openById(MASTER_SPREADSHEET_ID);
   ensureWorkbookRows_(ss);
-  moveGlobalVideosColumnAConditionalFormatting_(ss);
   repairPushEventsLayout_(ss);
   moveSubscriptionProjectColumns_(ss);
   repairKnownDateColumns_(ss);
@@ -11,7 +10,6 @@ function repairTopusWorkbookMaintenance() {
 function repairTopusFastLayout() {
   var ss = SpreadsheetApp.openById(MASTER_SPREADSHEET_ID);
   ensureWorkbookRows_(ss);
-  moveGlobalVideosColumnAConditionalFormatting_(ss);
   repairPushEventsLayout_(ss);
   moveSubscriptionProjectColumns_(ss);
 }
@@ -31,47 +29,10 @@ function repairPushEventsLayout_(ss) {
     return;
   }
   ensureSheetRows_(sheet, 10000);
-  sheet.getRange(1, 6, Math.max(sheet.getMaxRows(), 1), 1)
+  sheet.getRange(1, 1, Math.max(sheet.getMaxRows(), 1), PUSH_EVENTS_HEADERS.length)
     .setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
   if (sheet.getMaxRows() > 1) {
-    sheet.setRowHeights(2, sheet.getMaxRows() - 1, 21);
-  }
-}
-
-function moveGlobalVideosColumnAConditionalFormatting_(ss) {
-  var sheet = ss.getSheetByName('Глобальные видео');
-  if (!sheet) {
-    return;
-  }
-  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  var targetColumn = headers.indexOf('Ссылка на видео') + 1;
-  if (targetColumn < 1) {
-    targetColumn = 5;
-  }
-
-  var changed = false;
-  var rules = sheet.getConditionalFormatRules().map(function(rule) {
-    var ranges = rule.getRanges();
-    if (!ranges.length) {
-      return rule;
-    }
-    var shouldMove = ranges.every(function(range) {
-      return range.getSheet().getSheetId() === sheet.getSheetId()
-        && range.getColumn() === 1
-        && range.getNumColumns() === 1;
-    });
-    if (!shouldMove) {
-      return rule;
-    }
-    changed = true;
-    var movedRanges = ranges.map(function(range) {
-      return sheet.getRange(range.getRow(), targetColumn, range.getNumRows(), 1);
-    });
-    return rule.copy().setRanges(movedRanges).build();
-  });
-
-  if (changed) {
-    sheet.setConditionalFormatRules(rules);
+    sheet.setRowHeightsForced(2, sheet.getMaxRows() - 1, 21);
   }
 }
 

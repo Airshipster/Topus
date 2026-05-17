@@ -1387,58 +1387,6 @@ def ensure_non_settings_sheet_row_counts(sheet):
         print(f"  📐 Normalized non-settings sheet row counts: {len(requests)}")
 
 
-def move_global_video_column_a_conditional_formatting(sheet):
-    try:
-        worksheet = sheet.worksheet(config.SHEET_NAME_VIDEOS)
-        headers = get_values_with_quota_retry(worksheet, '1:1')
-        header_row = [str(cell).strip() for cell in headers[0]] if headers else []
-        target_col = header_row.index('Ссылка на видео') if 'Ссылка на видео' in header_row else 4
-        metadata = sheet.fetch_sheet_metadata(params={
-            'fields': 'sheets(properties(sheetId,title),conditionalFormats)'
-        })
-        requests = []
-
-        for sheet_meta in metadata.get('sheets', []):
-            properties = sheet_meta.get('properties', {})
-            if properties.get('sheetId') != worksheet.id:
-                continue
-            for index, rule in enumerate(sheet_meta.get('conditionalFormats', [])):
-                ranges = rule.get('ranges', [])
-                if not ranges:
-                    continue
-                should_move = all(
-                    value_range.get('sheetId') == worksheet.id
-                    and value_range.get('startColumnIndex', 0) == 0
-                    and value_range.get('endColumnIndex', 1) == 1
-                    for value_range in ranges
-                )
-                if not should_move:
-                    continue
-
-                updated_rule = dict(rule)
-                updated_rule['ranges'] = [
-                    {
-                        **value_range,
-                        'startColumnIndex': target_col,
-                        'endColumnIndex': target_col + 1,
-                    }
-                    for value_range in ranges
-                ]
-                requests.append({
-                    'updateConditionalFormatRule': {
-                        'sheetId': worksheet.id,
-                        'index': index,
-                        'rule': updated_rule,
-                    }
-                })
-
-        if requests:
-            sheet.batch_update({'requests': requests})
-            print(f"  🎨 Moved Global Videos column A conditional formatting rules: {len(requests)}")
-    except Exception as e:
-        print(f"  ⚠️  Error moving Global Videos conditional formatting: {e}")
-
-
 def format_push_events_sheet(sheet, clean_rows=False):
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_PUSH_EVENTS)
@@ -1483,7 +1431,7 @@ def format_push_events_sheet(sheet, clean_rows=False):
                 'range': {
                     'sheetId': worksheet.id,
                     'startRowIndex': 1,
-                    'startColumnIndex': 5,
+                    'startColumnIndex': 0,
                     'endColumnIndex': 6,
                 },
                 'cell': {
@@ -1514,7 +1462,6 @@ def format_push_events_sheet(sheet, clean_rows=False):
 
 def maintain_workbook_layout(sheet, clean_apostrophes=False):
     ensure_non_settings_sheet_row_counts(sheet)
-    move_global_video_column_a_conditional_formatting(sheet)
 
     changed_rows = 0
     if clean_apostrophes:
