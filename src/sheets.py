@@ -935,15 +935,16 @@ def ensure_videos_worksheet(sheet):
         print(f"  📋 Created '{config.SHEET_NAME_VIDEOS}' worksheet")
         return worksheet
 
-    values = worksheet.get_all_values()
-    if not values:
+    header_values = get_values_with_quota_retry(worksheet, '1:1')
+    if not header_values:
         worksheet.append_row(VIDEO_HEADERS, value_input_option='USER_ENTERED')
         return worksheet
 
-    headers = [str(value).strip() for value in values[0]]
+    headers = [str(value).strip() for value in header_values[0]]
     if headers[:len(VIDEO_HEADERS)] == VIDEO_HEADERS and len(headers) == len(VIDEO_HEADERS):
         return worksheet
 
+    values = get_values_with_quota_retry(worksheet)
     migrated_rows = [migrate_video_row(headers, row) for row in values[1:] if any(str(cell).strip() for cell in row)]
     worksheet.clear()
     worksheet.update(range_name='A1', values=[VIDEO_HEADERS] + migrated_rows, value_input_option='USER_ENTERED')
@@ -1214,15 +1215,16 @@ def ensure_logs_worksheet(sheet):
         worksheet.append_row(LOG_HEADERS, value_input_option='USER_ENTERED')
         return worksheet
 
-    values = worksheet.get_all_values()
-    if not values:
+    header_values = get_values_with_quota_retry(worksheet, '1:1')
+    if not header_values:
         worksheet.append_row(LOG_HEADERS, value_input_option='USER_ENTERED')
         return worksheet
 
-    headers = [str(value).strip() for value in values[0]]
+    headers = [str(value).strip() for value in header_values[0]]
     if headers[:len(LOG_HEADERS)] == LOG_HEADERS and len(headers) == len(LOG_HEADERS):
         return worksheet
 
+    values = get_values_with_quota_retry(worksheet)
     migrated_rows = [migrate_log_row(headers, row) for row in values[1:] if any(str(cell).strip() for cell in row)]
     worksheet.clear()
     worksheet.update(range_name='A1', values=[LOG_HEADERS] + migrated_rows, value_input_option='USER_ENTERED')
@@ -1340,10 +1342,10 @@ def move_global_video_column_a_conditional_formatting(sheet):
         print(f"  ⚠️  Error moving Global Videos conditional formatting: {e}")
 
 
-def format_push_events_sheet(sheet):
+def format_push_events_sheet(sheet, clean_rows=False):
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_PUSH_EVENTS)
-        values = worksheet.get_all_values()
+        values = get_values_with_quota_retry(worksheet, '1:1')
         if values:
             headers = list(values[0])
             headers = ['Timestamp GMT+4' if str(h).strip().lower().startswith('timestamp') else h for h in headers]
@@ -1353,21 +1355,23 @@ def format_push_events_sheet(sheet):
 
             rows_to_delete = []
             timestamp_updates = []
-            for row_index, row in enumerate(values[1:], start=2):
-                cleaned = clean_row(row)
-                video_id = cleaned[1] if len(cleaned) > 1 else ''
-                channel_value = cleaned[2] if len(cleaned) > 2 else ''
-                channel_id = channel_id_from_link(channel_value) or channel_value
-                if not video_id or not channel_id:
-                    rows_to_delete.append(row_index)
-                    continue
-                timestamp = cleaned[0] if cleaned else ''
-                normalized_timestamp = normalize_timestamp(timestamp)
-                if normalized_timestamp and normalized_timestamp != timestamp:
-                    timestamp_updates.append({
-                        'range': gspread.utils.rowcol_to_a1(row_index, 1),
-                        'values': [[sheet_datetime_value(normalized_timestamp)]],
-                    })
+            if clean_rows:
+                values = get_values_with_quota_retry(worksheet)
+                for row_index, row in enumerate(values[1:], start=2):
+                    cleaned = clean_row(row)
+                    video_id = cleaned[1] if len(cleaned) > 1 else ''
+                    channel_value = cleaned[2] if len(cleaned) > 2 else ''
+                    channel_id = channel_id_from_link(channel_value) or channel_value
+                    if not video_id or not channel_id:
+                        rows_to_delete.append(row_index)
+                        continue
+                    timestamp = cleaned[0] if cleaned else ''
+                    normalized_timestamp = normalize_timestamp(timestamp)
+                    if normalized_timestamp and normalized_timestamp != timestamp:
+                        timestamp_updates.append({
+                            'range': gspread.utils.rowcol_to_a1(row_index, 1),
+                            'values': [[sheet_datetime_value(normalized_timestamp)]],
+                        })
 
             if timestamp_updates:
                 for i in range(0, len(timestamp_updates), config.BATCH_SIZE):
