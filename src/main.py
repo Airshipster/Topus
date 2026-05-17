@@ -306,13 +306,11 @@ def main():
         elif sync_only_mode():
             print("  📡 Sync-only mode: skipping workbook maintenance unrelated to subscriptions")
         else:
-            maintain_workbook_layout(master_sheet)
-            reconcile_pending_published_videos(master_sheet)
+            print("  ⏭️  Publish mode: workbook maintenance is skipped")
 
         # Автоочистка старых записей
         if not push_only_mode() and not sync_only_mode():
-            cleanup_old_records(master_sheet)
-            clean_master_numeric_text_values(master_sheet)
+            print("  ⏭️  Publish mode: old-record cleanup is skipped")
         
         print("\n📂 Loading projects...")
         projects = load_projects(master_sheet, update_status=not push_only_mode())
