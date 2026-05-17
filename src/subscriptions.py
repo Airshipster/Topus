@@ -384,6 +384,34 @@ def update_subscription_statuses(sheet, subscription_records, status_by_channel)
         print(f"  ⚠️  Error updating subscription statuses: {e}")
 
 
+def split_project_names(projects_text):
+    return {
+        name.strip()
+        for name in str(projects_text or '').split(',')
+        if name.strip()
+    }
+
+
+def update_subscription_inventory_warnings(sheet, subscription_records, failed_project_names):
+    if not failed_project_names:
+        return
+
+    statuses = {}
+    for channel_id, record in subscription_records.items():
+        channel_projects = split_project_names(record.get('projects', ''))
+        failed_for_channel = sorted(channel_projects & failed_project_names)
+        if not failed_for_channel:
+            continue
+        project_text = ', '.join(failed_for_channel[:2])
+        if len(failed_for_channel) > 2:
+            project_text += f" +{len(failed_for_channel) - 2}"
+        statuses[channel_id] = f"⚠️ project read failed: {project_text}"
+
+    if statuses:
+        update_subscription_statuses(sheet, subscription_records, statuses)
+        print(f"  ⚠️  Marked subscription inventory warnings: {len(statuses)}")
+
+
 def update_subscription_project_links(sheet, subscription_records, active_channels_dict):
     try:
         worksheet = get_or_create_subscriptions_worksheet(sheet)
@@ -540,6 +568,13 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
         print("  ⚠️  Subscription sync skipped: could not read existing subscriptions")
         result.update({'ok': False, 'partial': True, 'reason': 'could not read subscriptions'})
         return result
+    if not inventory_complete:
+        failed_project_names = {
+            str(project.get('name', '')).strip()
+            for project in projects
+            if project.get('channels_error') and str(project.get('name', '')).strip()
+        }
+        update_subscription_inventory_warnings(master_sheet, subscription_records, failed_project_names)
     subscribed_channels = set(subscription_records.keys())
     to_subscribe = active_channels - subscribed_channels
     to_unsubscribe = set() if not inventory_complete else subscribed_channels - active_channels
