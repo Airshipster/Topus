@@ -44,7 +44,7 @@ on:
         default: 'false'
 
 concurrency:
-  group: topus-publisher
+  group: topus-publisher-${{ (github.event_name == 'repository_dispatch' || github.event.schedule == '*/5 * * * *') && 'push' || 'full' }}
   cancel-in-progress: false
 
 jobs:

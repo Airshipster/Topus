@@ -501,8 +501,12 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
         print("  🔁 Forced subscription sync requested")
 
     stale_channels = get_stale_subscriptions(subscription_records, active_channels)
-    
-    to_renew = active_channels & stale_channels
+
+    if force:
+        to_renew = set(active_channels)
+        print("  🔁 Force mode: renewing all active push subscriptions")
+    else:
+        to_renew = active_channels & stale_channels
     
     print(f"  Active channels: {len(active_channels)}")
     print(f"  Already subscribed: {len(subscribed_channels)}")
