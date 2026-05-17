@@ -821,6 +821,27 @@ def update_project_statuses(worksheet, headers, status_updates):
 def update_project_provisioning_statuses(sheet, projects, status, error_text=''):
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_PROJECTS)
+        cached_updates = []
+        timestamp = format_timestamp()
+        for project in projects:
+            row_index = project.get('_settings_row')
+            status_col = project.get('_provisioning_status_col')
+            error_col = project.get('_provisioning_error_col')
+            at_col = project.get('_provisioned_at_col')
+            if not row_index or not status_col or not error_col or not at_col:
+                cached_updates = []
+                break
+            cached_updates.extend([
+                {'range': gspread.utils.rowcol_to_a1(row_index, status_col), 'values': [[status]]},
+                {'range': gspread.utils.rowcol_to_a1(row_index, error_col), 'values': [[error_text]]},
+                {'range': gspread.utils.rowcol_to_a1(row_index, at_col), 'values': [[sheet_datetime_value(timestamp)]]},
+            ])
+
+        if cached_updates:
+            worksheet.batch_update(cached_updates, value_input_option='USER_ENTERED')
+            print(f"  ℹ️  Updated project provisioning statuses: {status} ({len(projects)})")
+            return
+
         values = get_values_with_quota_retry(worksheet)
         if not values:
             return
@@ -850,6 +871,42 @@ def update_project_provisioning_statuses(sheet, projects, status, error_text='')
 def update_project_channel_counts(sheet, projects, update_counts=True):
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_PROJECTS)
+        cached_updates = []
+        timestamp = format_timestamp()
+        for project in projects:
+            row_index = project.get('_settings_row')
+            status_col = project.get('_provisioning_status_col')
+            error_col = project.get('_provisioning_error_col')
+            at_col = project.get('_provisioned_at_col')
+            count_col = project.get('_channel_count_col')
+            disabled_count_col = project.get('_disabled_channel_count_col')
+            if not row_index or not status_col or not error_col or not at_col:
+                cached_updates = []
+                break
+            status = 'error' if project.get('channels_error') else 'ready'
+            error_text = project.get('channels_error', '')
+            if update_counts and not project.get('channels_error'):
+                if not count_col or not disabled_count_col:
+                    cached_updates = []
+                    break
+                cached_updates.extend([
+                    {'range': gspread.utils.rowcol_to_a1(row_index, count_col), 'values': [[project.get('channel_count', 0)]]},
+                    {'range': gspread.utils.rowcol_to_a1(row_index, disabled_count_col), 'values': [[project.get('disabled_channel_count', 0)]]},
+                ])
+            cached_updates.extend([
+                {'range': gspread.utils.rowcol_to_a1(row_index, status_col), 'values': [[status]]},
+                {'range': gspread.utils.rowcol_to_a1(row_index, error_col), 'values': [[error_text]]},
+                {'range': gspread.utils.rowcol_to_a1(row_index, at_col), 'values': [[sheet_datetime_value(timestamp)]]},
+            ])
+
+        if cached_updates:
+            for i in range(0, len(cached_updates), config.BATCH_SIZE):
+                worksheet.batch_update(cached_updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
+                time.sleep(0.2)
+            action = 'project channel counts' if update_counts else 'project provisioning statuses'
+            print(f"  🟢 Updated {action}: {len(cached_updates)}")
+            return
+
         values = get_values_with_quota_retry(worksheet)
         if not values:
             return
@@ -2190,6 +2247,12 @@ def load_projects(sheet, update_status=True):
                 'rss_delete_limit': rss_delete_limit,
                 'channel_count': 0,
                 'disabled_channel_count': 0,
+                '_settings_row': row_index,
+                '_channel_count_col': headers.index('Кол. 🟢 каналов') + 1,
+                '_disabled_channel_count_col': headers.index('Кол. 🔴 каналов') + 1,
+                '_provisioning_status_col': headers.index('Provisioning status') + 1,
+                '_provisioning_error_col': headers.index('Provisioning error') + 1,
+                '_provisioned_at_col': headers.index('Provisioned at') + 1,
             })
             queue_status(row_index, row, 'ready', '')
         else:
