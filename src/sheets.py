@@ -1394,8 +1394,6 @@ def format_push_events_sheet(sheet, clean_rows=False):
         if values:
             headers = list(values[0])
             headers = ['Timestamp GMT+4' if str(h).strip().lower().startswith('timestamp') else h for h in headers]
-            if len(headers) > 2:
-                headers[2] = 'Ссылка на канал'
             worksheet.update(range_name=f'A1:{a1_column(len(headers))}1', values=[headers], value_input_option='USER_ENTERED')
 
             rows_to_delete = []
@@ -2105,26 +2103,33 @@ def get_push_events(sheet):
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_PUSH_EVENTS)
         values = worksheet.get_all_values()
+        if not values:
+            return []
+
+        headers = [str(value).strip() for value in values[0]]
+        indexes = {header: index for index, header in enumerate(headers)}
+        video_col = indexes.get('Video ID')
+        channel_col = indexes.get('Ссылка на канал')
+        status_col = indexes.get('Обработано')
+        projects_col = indexes.get('Проекты')
+        if video_col is None or channel_col is None or status_col is None:
+            print("❌ Push events headers missing required columns")
+            return []
         
         events = []
-        for i, row in enumerate(values):
-            if i == 0:
-                continue
-            
-            if len(row) < 4:
-                continue
-            
+        for i, row in enumerate(values[1:], start=2):
             row = clean_row(row)
-            status = row[3] if len(row) > 3 else ''
+            status = row[status_col] if len(row) > status_col else ''
             if status == '' or status == '❌':
-                video_id = row[1] if len(row) > 1 else ''
-                channel_id = channel_id_from_link(row[2]) or (row[2] if len(row) > 2 else '')
+                video_id = row[video_col] if len(row) > video_col else ''
+                channel_value = row[channel_col] if len(row) > channel_col else ''
+                channel_id = channel_id_from_link(channel_value) or channel_value
                 if video_id and channel_id:
                     events.append({
-                        'row_index': i + 1,
+                        'row_index': i,
                         'video_id': video_id,
                         'channel_id': channel_id,
-                        'projects': row[4] if len(row) > 4 else '',
+                        'projects': row[projects_col] if projects_col is not None and len(row) > projects_col else '',
                     })
         
         return events
@@ -2141,9 +2146,16 @@ def mark_push_event_processed(sheet, row_index, project_name, current_projects='
             new_projects = (current_projects + ', ' + project_name).strip(', ')
         else:
             new_projects = current_projects
+        headers = get_values_with_quota_retry(worksheet, '1:1')
+        header_row = [str(value).strip() for value in headers[0]] if headers else []
+        indexes = {header: index + 1 for index, header in enumerate(header_row)}
+        status_col = indexes.get('Обработано')
+        projects_col = indexes.get('Проекты')
+        if not status_col or not projects_col:
+            raise ValueError('Push events headers missing Обработано/Проекты')
         worksheet.batch_update([
-            {'range': gspread.utils.rowcol_to_a1(row_index, 4), 'values': [['✅']]},
-            {'range': gspread.utils.rowcol_to_a1(row_index, 5), 'values': [[new_projects]]},
+            {'range': gspread.utils.rowcol_to_a1(row_index, status_col), 'values': [['✅']]},
+            {'range': gspread.utils.rowcol_to_a1(row_index, projects_col), 'values': [[new_projects]]},
         ], value_input_option='USER_ENTERED')
         return new_projects
     except Exception as e:
@@ -2158,6 +2170,13 @@ def mark_push_events_processed_batch(sheet, tracked_events):
 
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_PUSH_EVENTS)
+        headers = get_values_with_quota_retry(worksheet, '1:1')
+        header_row = [str(value).strip() for value in headers[0]] if headers else []
+        indexes = {header: index + 1 for index, header in enumerate(header_row)}
+        status_col = indexes.get('Обработано')
+        projects_col = indexes.get('Проекты')
+        if not status_col or not projects_col:
+            raise ValueError('Push events headers missing Обработано/Проекты')
         updates = []
         for tracked in tracked_events:
             current_projects = clean_sheet_value(tracked.get('projects', ''))
@@ -2171,8 +2190,8 @@ def mark_push_events_processed_batch(sheet, tracked_events):
             new_projects = ', '.join(sorted(project_set))
             row_index = tracked['row_index']
             updates.extend([
-                {'range': gspread.utils.rowcol_to_a1(row_index, 4), 'values': [['✅']]},
-                {'range': gspread.utils.rowcol_to_a1(row_index, 5), 'values': [[new_projects]]},
+                {'range': gspread.utils.rowcol_to_a1(row_index, status_col), 'values': [['✅']]},
+                {'range': gspread.utils.rowcol_to_a1(row_index, projects_col), 'values': [[new_projects]]},
             ])
 
         for i in range(0, len(updates), 100):

@@ -29,7 +29,7 @@ function repairPushEventsLayout_(ss) {
     return;
   }
   ensureSheetRows_(sheet, 10000);
-  sheet.getRange(1, 1, Math.max(sheet.getMaxRows(), 1), PUSH_EVENTS_HEADERS.length)
+  sheet.getRange(1, 1, Math.max(sheet.getMaxRows(), 1), Math.max(sheet.getLastColumn(), PUSH_EVENTS_HEADERS.length))
     .setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
   if (sheet.getMaxRows() > 1) {
     sheet.setRowHeightsForced(2, sheet.getMaxRows() - 1, 21);
