@@ -18,7 +18,6 @@ from sheets import (
     clean_known_workbook_text_values,
     delete_stale_unpublished_video_rows,
     ensure_non_settings_sheet_row_counts,
-    get_recent_published_video_rows,
     get_published_videos,
     get_push_events,
     load_projects,
@@ -40,7 +39,7 @@ from sheets import (
     parse_datetime_value,
 )
 from subscriptions import deduplicate_subscription_rows, get_subscription_records, sync_subscriptions
-from telegram_client import delete_telegram_message, format_message, send_to_telegram
+from telegram_client import format_message, send_to_telegram
 from youtube_client import get_last_youtube_api_error, get_video_info_from_api, get_youtube_api_calls
 
 
@@ -192,58 +191,7 @@ def open_master_sheet_with_retry(client, attempts=4):
 
 
 def delete_rss_missing_publications(master_sheet, project, rss_seen_by_channel, log_entries):
-    delete_limit = int(project.get('rss_delete_limit', 5))
-    if delete_limit <= 0:
-        print("  ⏭️  RSS-missing deletion disabled for project")
-        return
-
-    recent_rows = get_recent_published_video_rows(
-        master_sheet,
-        project['name'],
-        hours=config.RSS_FALLBACK_AGE_HOURS,
-    )
-    deleted = 0
-    candidates = []
-
-    for row in recent_rows:
-        channel_seen = rss_seen_by_channel.get(row['channel_id'])
-        if channel_seen is None or row['video_id'] in channel_seen:
-            continue
-        candidates.append(row)
-
-    if len(candidates) > delete_limit:
-        log_entries.append([
-            format_timestamp(),
-            project['name'],
-            'RSS delete skipped',
-            '',
-            f'Candidates {len(candidates)} exceed project limit {delete_limit}',
-            'skipped',
-        ])
-        print(f"  ⚠️  RSS-missing deletion skipped: {len(candidates)} candidates > limit {delete_limit}")
-        return
-
-    for row in candidates:
-        if delete_telegram_message(project['bot_token'], project['channel_id'], row['message_id']):
-            update_video_publication_status(
-                master_sheet,
-                row['video_id'],
-                project['name'],
-                status='deleted_rss_missing',
-                error='RSS missing within recent window',
-            )
-            log_entries.append([
-                format_timestamp(),
-                project['name'],
-                'Telegram post deleted',
-                row['video_id'],
-                'RSS missing within recent window',
-                'deleted',
-            ])
-            deleted += 1
-
-    if deleted:
-        print(f"  🗑️  Deleted RSS-missing Telegram posts: {deleted}")
+    print("  ⏭️  RSS-missing deletion disabled: RSS absence is not proof that a YouTube video is unavailable")
 
 
 def load_project_channels(client, master_sheet, projects):

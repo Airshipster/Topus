@@ -467,7 +467,7 @@ def find_settings_table(values):
         return None
 
     header_index = None
-    for index in range(marker_index + 1, min(len(values), marker_index + 6)):
+    for index in range(marker_index, min(len(values), marker_index + 6)):
         normalized = [str(cell).strip() for cell in values[index]]
         if 'Параметр' in normalized and 'Значение' in normalized:
             header_index = index
@@ -559,11 +559,21 @@ def deduplicate_settings_rows(sheet):
 
         latest_rows = {}
         duplicate_rows = []
+        legacy_status_rows = []
+        key_index = table['key_col'] - 1
+        for row_number, row in enumerate(values, start=1):
+            normalized = [str(cell).strip() for cell in row]
+            key = normalized[key_index] if len(normalized) > key_index else ''
+            if 'Статус run-ов' in normalized and key != 'Статус run-ов':
+                legacy_status_rows.append(row_number)
+
         for row_number, key, _, _ in iter_settings_rows(values, table):
             if key in latest_rows:
                 duplicate_rows.append(latest_rows[key])
             latest_rows[key] = row_number
 
+        duplicate_rows.extend(legacy_status_rows)
+        duplicate_rows = sorted(set(duplicate_rows))
         if not duplicate_rows:
             return 0
 
@@ -2002,41 +2012,53 @@ def update_last_run(sheet):
 
 
 def update_run_status(sheet, status, details=''):
-    """Write the current publisher status after the blue separator row."""
+    """Write the current publisher status inside the settings table."""
     global _RUN_STATUS_ROW
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_SETTINGS)
         if _RUN_STATUS_ROW:
+            values = get_settings_values(worksheet)
+            _, table = find_setting_row(values, 'Статус run-ов')
+            row_values = [''] * max(table['description_col'] or 0, table['value_col']) if table else [
+                'Статус run-ов',
+                clean_sheet_value(status),
+                f"{clean_sheet_value(details)} | {format_timestamp()}".strip(),
+            ]
+            if table:
+                row_values[table['key_col'] - 1] = 'Статус run-ов'
+                row_values[table['value_col'] - 1] = clean_sheet_value(status)
+                if table.get('description_col'):
+                    row_values[table['description_col'] - 1] = f"{clean_sheet_value(details)} | {format_timestamp()}".strip()
             worksheet.update(
-                range_name=f'A{_RUN_STATUS_ROW}:D{_RUN_STATUS_ROW}',
-                values=[['Статус run-ов', clean_sheet_value(status), clean_sheet_value(details), format_timestamp()]],
+                range_name=f'A{_RUN_STATUS_ROW}:{a1_column(len(row_values))}{_RUN_STATUS_ROW}',
+                values=[row_values],
                 value_input_option='USER_ENTERED',
             )
             print(f"  ℹ️  Run status updated: {status}")
             return
 
         values = get_settings_values(worksheet)
-        marker_row = None
+        existing, table = find_setting_row(values, 'Статус run-ов')
+        status_details = f"{clean_sheet_value(details)} | {format_timestamp()}".strip()
 
-        for row_index, row in enumerate(values, start=1):
-            first_cell = str(row[0]).strip() if row else ''
-            if first_cell == '🔵':
-                marker_row = row_index
-                break
+        if not table:
+            update_setting_value(worksheet, 'Статус run-ов', status, status_details)
+            print(f"  ℹ️  Run status updated: {status}")
+            return
 
-        if marker_row is None:
-            target_row = len(values) + 1
-        else:
-            target_row = marker_row + 1
-            existing_label = ''
-            if len(values) >= target_row and values[target_row - 1]:
-                existing_label = str(values[target_row - 1][0]).strip()
-            if existing_label and existing_label != 'Статус run-ов':
-                worksheet.insert_row([''], index=target_row, value_input_option='USER_ENTERED')
+        target_row = existing['row_number'] if existing else table['first_data_row']
+        if not existing:
+            worksheet.insert_row([''], index=target_row, value_input_option='USER_ENTERED')
+
+        row_values = [''] * max(table['description_col'] or 0, table['value_col'])
+        row_values[table['key_col'] - 1] = 'Статус run-ов'
+        row_values[table['value_col'] - 1] = clean_sheet_value(status)
+        if table.get('description_col'):
+            row_values[table['description_col'] - 1] = status_details
 
         worksheet.update(
-            range_name=f'A{target_row}:D{target_row}',
-            values=[['Статус run-ов', clean_sheet_value(status), clean_sheet_value(details), format_timestamp()]],
+            range_name=f'A{target_row}:{a1_column(len(row_values))}{target_row}',
+            values=[row_values],
             value_input_option='USER_ENTERED',
         )
         _RUN_STATUS_ROW = target_row
