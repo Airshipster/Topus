@@ -12,6 +12,7 @@ from sheets import (
     find_setting_row,
     format_timestamp,
     get_all_active_channels,
+    get_values_with_quota_retry,
     parse_datetime_value,
     sheet_datetime_value,
     update_setting_value,
@@ -90,7 +91,7 @@ def get_subscription_records(sheet):
     """Получение подписок вместе со строками и датой обновления"""
     try:
         worksheet = get_or_create_subscriptions_worksheet(sheet)
-        values = worksheet.get_all_values()
+        values = get_values_with_quota_retry(worksheet)
         headers = [str(cell).strip() for cell in values[0]] if values else []
         indexes = {header: index for index, header in enumerate(headers)}
         records = {}
@@ -122,7 +123,7 @@ def get_subscription_records(sheet):
 
 
 def rewrite_subscriptions_values(worksheet):
-    values = worksheet.get_all_values()
+    values = get_values_with_quota_retry(worksheet)
     if len(values) < 2:
         return 0
 
@@ -151,7 +152,7 @@ def get_or_create_subscriptions_worksheet(sheet):
         worksheet.append_row(SUBSCRIPTIONS_HEADERS, value_input_option='USER_ENTERED')
         return worksheet
 
-    values = worksheet.get_all_values()
+    values = get_values_with_quota_retry(worksheet)
     if not values:
         worksheet.append_row(SUBSCRIPTIONS_HEADERS, value_input_option='USER_ENTERED')
         return worksheet
@@ -289,6 +290,38 @@ def update_subscription_project_links(sheet, subscription_records, active_channe
     except Exception as e:
         print(f"  ⚠️  Error updating subscription project links: {e}")
 
+
+def deduplicate_subscription_rows(sheet):
+    try:
+        worksheet = get_or_create_subscriptions_worksheet(sheet)
+        values = get_values_with_quota_retry(worksheet)
+        if len(values) < 3:
+            return 0
+
+        headers = [str(cell).strip() for cell in values[0]]
+        indexes = {header: index for index, header in enumerate(headers)}
+        channel_col = indexes.get('Channel ID', 0)
+        seen = set()
+        rows_to_delete = []
+
+        for row_index, row in enumerate(values[1:], start=2):
+            raw_channel_id = clean_sheet_value(row[channel_col]).strip() if len(row) > channel_col else ''
+            channel_id = normalize_subscription_channel_id(raw_channel_id)
+            if not channel_id:
+                continue
+            if channel_id in seen:
+                rows_to_delete.append(row_index)
+                continue
+            seen.add(channel_id)
+
+        deleted = delete_rows_batch(sheet, worksheet, rows_to_delete)
+        if deleted:
+            print(f"  🧹 Removed duplicate subscription rows: {deleted}")
+        return deleted
+    except Exception as e:
+        print(f"  ⚠️  Error deduplicating subscriptions: {type(e).__name__}: {e}")
+        return 0
+
 def subscribe_channel(channel_id):
     """Подписка на push-уведомления"""
     hub_url = "https://pubsubhubbub.appspot.com/subscribe"
@@ -367,6 +400,7 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
         })
         print(f"  ⚠️  Active channel inventory is incomplete ({len(channel_load_errors)} project errors)")
         print("  🛑 Inactive unsubscribe/removal is disabled for this run")
+    deduplicate_subscription_rows(master_sheet)
     active_channels = set(active_channels_dict.keys())
     subscription_records = get_subscription_records(master_sheet)
     if subscription_records is None:
