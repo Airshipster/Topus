@@ -660,7 +660,6 @@ def clean_timestamp_text_values(worksheet, force_datetime_serial=False, only_hea
 
 def clean_master_numeric_text_values(sheet):
     """Clean numeric prefixes and timestamp text in master sheets without touching formatting."""
-    ensure_master_timestamp_formats(sheet)
     cleaned_total = 0
     for worksheet in sheet.worksheets():
         cleaned_total += clean_numeric_text_values(worksheet)
@@ -672,7 +671,6 @@ def clean_master_numeric_text_values(sheet):
 
 def clean_known_workbook_text_values(sheet):
     """One-off targeted cleanup for known timestamp/numeric columns."""
-    ensure_master_timestamp_formats(sheet)
     cleaned_total = 0
     for worksheet_name, timestamp_headers in [
         (config.SHEET_NAME_SETTINGS, {'provisioned at'}),
@@ -701,43 +699,7 @@ def clean_known_workbook_text_values(sheet):
 
 
 def ensure_master_timestamp_formats(sheet):
-    requests = []
-    for worksheet in sheet.worksheets():
-        try:
-            values = get_values_with_quota_retry(worksheet, '1:1')
-        except Exception:
-            continue
-
-        if not values:
-            continue
-
-        headers = [str(cell).strip().lower() for cell in values[0]]
-        for col_index, header in enumerate(headers):
-            if header not in TIMESTAMP_CLEANUP_HEADERS:
-                continue
-            requests.append({
-                'repeatCell': {
-                    'range': {
-                        'sheetId': worksheet.id,
-                        'startRowIndex': 1,
-                        'startColumnIndex': col_index,
-                        'endColumnIndex': col_index + 1,
-                    },
-                    'cell': {
-                        'userEnteredFormat': {
-                            'numberFormat': {
-                                'type': 'DATE_TIME',
-                                'pattern': 'yyyy-mm-dd hh:mm:ss',
-                            }
-                        }
-                    },
-                    'fields': 'userEnteredFormat.numberFormat',
-                }
-            })
-
-    for i in range(0, len(requests), config.BATCH_SIZE):
-        sheet.batch_update({'requests': requests[i:i + config.BATCH_SIZE]})
-        time.sleep(0.2)
+    return
 
 
 def update_project_statuses(worksheet, headers, status_updates):
@@ -1125,6 +1087,10 @@ def save_videos_batch(sheet, videos_data):
             tg_published_at = format_timestamp() if tg_message_id else ''
 
             if existing:
+                if existing['status'] == 'pending':
+                    print(f"  🔁 Retrying pending: {video['video_id']} / {project_name}")
+                    saved_publication_keys.append(key)
+                    continue
                 print(f"  ⏭️  Already tracked: {video['video_id']} / {project_name} ({existing['status'] or 'no status'})")
                 continue
 
@@ -1297,8 +1263,8 @@ def reconcile_pending_published_videos(sheet):
         return 0
 
 
-def delete_stale_filtered_video_rows(sheet):
-    """Remove old videos that were only tracked to explain a stale filter decision."""
+def delete_stale_unpublished_video_rows(sheet):
+    """Remove old unpublished videos that should be ignored instead of tracked."""
     try:
         worksheet = ensure_videos_worksheet(sheet)
         values = get_values_with_quota_retry(worksheet)
@@ -1312,7 +1278,10 @@ def delete_stale_filtered_video_rows(sheet):
         for row_index, row in enumerate(values[1:], start=2):
             data = row_as_dict(headers, row)
             status_text = str(first_value(data, ['Системный статус'])).lower()
-            if not status_text.startswith('filtered') or 'stale video' not in status_text:
+            status_name = status_text.split('.', 1)[0]
+            if status_name == 'published':
+                continue
+            if status_name not in ('pending', 'filtered', '') and 'stale video' not in status_text:
                 continue
 
             yt_published = parse_datetime_value(first_value(data, ['Дата публикации YT GMT+4', 'Дата публикации YT UTC']))
@@ -1325,10 +1294,10 @@ def delete_stale_filtered_video_rows(sheet):
 
         deleted = delete_rows_batch(sheet, worksheet, rows_to_delete)
         if deleted:
-            print(f"  🧹 Deleted stale filtered video rows: {deleted}")
+            print(f"  🧹 Deleted stale unpublished video rows: {deleted}")
         return deleted
     except Exception as e:
-        print(f"  ⚠️  Error deleting stale filtered video rows: {e}")
+        print(f"  ⚠️  Error deleting stale unpublished video rows: {e}")
         return 0
 
 
@@ -2188,6 +2157,9 @@ def get_published_videos(sheet):
         records = worksheet.get_all_records()
         tracked = set()
         for row in records:
+            status = str(row.get('Системный статус', '')).split('.', 1)[0].lower()
+            if status == 'pending':
+                continue
             video_id = video_id_from_url(row.get('Ссылка на видео', '')) or str(row.get('Video ID', '')).strip()
             project_name = project_name_from_cell(row.get('Проект', ''))
             if video_id and project_name:

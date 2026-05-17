@@ -99,7 +99,6 @@ function repairDateColumnByHeader_(sheet, headerName) {
 
   if (changed) {
     range.setValues(repaired);
-    range.setNumberFormat('yyyy-mm-dd hh:mm:ss');
   }
 }
 

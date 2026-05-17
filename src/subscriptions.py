@@ -228,12 +228,6 @@ def get_or_create_subscriptions_worksheet(sheet):
 
     headers = [str(cell).strip() for cell in values[0]]
     normalize_subscriptions_columns(sheet, worksheet, headers)
-    worksheet.format('D:E', {
-        'numberFormat': {
-            'type': 'DATE_TIME',
-            'pattern': 'yyyy-mm-dd hh:mm:ss',
-        }
-    })
 
     return worksheet
 
