@@ -16,6 +16,7 @@ from sheets import (
     parse_datetime_value,
     sheet_datetime_value,
     update_setting_value,
+    update_project_provisioning_statuses,
 )
 
 
@@ -648,7 +649,16 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
     if len(to_renew) > 0:
         print(f"  Renewing {len(to_renew)} existing subscriptions...")
         renewed = []
-        for channel_id in to_renew:
+        to_renew_list = sorted(to_renew)
+        total_to_renew = len(to_renew_list)
+        for index, channel_id in enumerate(to_renew_list, start=1):
+            if force and (index == 1 or index == total_to_renew or index % 50 == 0):
+                update_project_provisioning_statuses(
+                    master_sheet,
+                    projects,
+                    f'checking subscriptions {index}/{total_to_renew}',
+                    'renewing push subscriptions',
+                )
             if subscribe_channel(channel_id):
                 renewed.append(channel_id)
             time.sleep(0.1)
