@@ -229,7 +229,7 @@ def hyperlink_formula(url, text):
     safe_url = str(url).replace('"', '""')
     safe_text = str(text).replace('"', '""')
     # Google Sheets in this account uses a Russian locale, so formulas need semicolon separators.
-    return f'=ГИПЕРССЫЛКА("{safe_url}";"{safe_text}")'
+    return f'=HYPERLINK("{safe_url}";"{safe_text}")'
 
 
 def partner_tg_link(value):
