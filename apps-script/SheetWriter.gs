@@ -18,6 +18,7 @@ function appendPushEvent_(timestamp, videoId, channelId, rawXml) {
 }
 
 function ensurePushEventsHeader_(sheet) {
+  ensureSheetRows_(sheet, 10000);
   var current = sheet.getRange(1, 1, 1, PUSH_EVENTS_HEADERS.length).getValues()[0];
   var hasHeader = current.some(function(value) {
     return String(value || '').trim() !== '';
@@ -35,6 +36,13 @@ function ensurePushEventsHeader_(sheet) {
     sheet.setRowHeights(2, sheet.getLastRow() - 1, 21);
   }
   sheet.setFrozenRows(1);
+}
+
+function ensureSheetRows_(sheet, targetRows) {
+  var currentRows = sheet.getMaxRows();
+  if (currentRows < targetRows) {
+    sheet.insertRowsAfter(currentRows, targetRows - currentRows);
+  }
 }
 
 function channelLink_(channelId) {

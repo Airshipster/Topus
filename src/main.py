@@ -69,7 +69,14 @@ def push_only_mode():
     return value.lower() in ('1', 'true', 'yes')
 
 
+def maintenance_only_mode():
+    value = os.environ.get('TOPUS_MAINTENANCE_ONLY', '')
+    return value.lower() in ('1', 'true', 'yes')
+
+
 def run_mode_name():
+    if maintenance_only_mode():
+        return 'maintenance-only'
     if sync_only_mode():
         return 'sync-only'
     if push_only_mode():
@@ -269,6 +276,14 @@ def main():
         print("\n⚙️  Loading settings...")
         settings = load_settings(master_sheet)
         print_detection_latency_note()
+        if maintenance_only_mode():
+            print("  🧰 Maintenance-only mode: repairing workbook layout and values")
+            maintain_workbook_layout(master_sheet, clean_apostrophes=True)
+            clean_master_numeric_text_values(master_sheet)
+            update_last_run(master_sheet)
+            update_run_status(master_sheet, 'complete: maintenance-only', run_status_details())
+            return
+
         if push_only_mode():
             print("  ⚡ Push-only mode: skipping workbook maintenance")
         elif sync_only_mode():

@@ -148,7 +148,7 @@ def get_or_create_subscriptions_worksheet(sheet):
     try:
         worksheet = sheet.worksheet(SUBSCRIPTIONS_SHEET_NAME)
     except gspread.exceptions.WorksheetNotFound:
-        worksheet = sheet.add_worksheet(SUBSCRIPTIONS_SHEET_NAME, rows=5000, cols=len(SUBSCRIPTIONS_HEADERS))
+        worksheet = sheet.add_worksheet(SUBSCRIPTIONS_SHEET_NAME, rows=10000, cols=len(SUBSCRIPTIONS_HEADERS))
         worksheet.append_row(SUBSCRIPTIONS_HEADERS, value_input_option='USER_ENTERED')
         return worksheet
 

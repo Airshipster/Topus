@@ -55,6 +55,8 @@ LOG_HEADERS = ['Проект', 'Timestamp GMT+4', 'Video ID', 'Событие']
 
 _LOCK_ROW_INFO = None
 _RUN_STATUS_ROW = None
+TARGET_WORKSHEET_ROWS = 10000
+PUSH_EVENT_ROW_HEIGHT_PIXELS = 21
 
 
 def clean_sheet_value(value):
@@ -1242,7 +1244,7 @@ def ensure_logs_worksheet(sheet):
 
 
 def strip_apostrophes_in_worksheet(worksheet):
-    values = worksheet.get_all_values()
+    values = get_values_with_quota_retry(worksheet)
     updates = []
     for row_index, row in enumerate(values, start=1):
         cleaned = clean_row(row)
@@ -1257,6 +1259,85 @@ def strip_apostrophes_in_worksheet(worksheet):
         time.sleep(0.2)
 
     return len(updates)
+
+
+def ensure_non_settings_sheet_row_counts(sheet):
+    requests = []
+    for worksheet in sheet.worksheets():
+        if worksheet.title == config.SHEET_NAME_SETTINGS:
+            continue
+        if worksheet.row_count >= TARGET_WORKSHEET_ROWS:
+            continue
+        requests.append({
+            'updateSheetProperties': {
+                'properties': {
+                    'sheetId': worksheet.id,
+                    'gridProperties': {
+                        'rowCount': TARGET_WORKSHEET_ROWS,
+                    },
+                },
+                'fields': 'gridProperties.rowCount',
+            }
+        })
+
+    for i in range(0, len(requests), config.BATCH_SIZE):
+        sheet.batch_update({'requests': requests[i:i + config.BATCH_SIZE]})
+        time.sleep(0.2)
+
+    if requests:
+        print(f"  📐 Expanded non-settings sheets to at least {TARGET_WORKSHEET_ROWS} rows: {len(requests)}")
+
+
+def move_global_video_column_a_conditional_formatting(sheet):
+    try:
+        worksheet = sheet.worksheet(config.SHEET_NAME_VIDEOS)
+        headers = get_values_with_quota_retry(worksheet, '1:1')
+        header_row = [str(cell).strip() for cell in headers[0]] if headers else []
+        target_col = header_row.index('Ссылка на видео') if 'Ссылка на видео' in header_row else 4
+        metadata = sheet.fetch_sheet_metadata(params={
+            'fields': 'sheets(properties(sheetId,title),conditionalFormats)'
+        })
+        requests = []
+
+        for sheet_meta in metadata.get('sheets', []):
+            properties = sheet_meta.get('properties', {})
+            if properties.get('sheetId') != worksheet.id:
+                continue
+            for index, rule in enumerate(sheet_meta.get('conditionalFormats', [])):
+                ranges = rule.get('ranges', [])
+                if not ranges:
+                    continue
+                should_move = all(
+                    value_range.get('sheetId') == worksheet.id
+                    and value_range.get('startColumnIndex', 0) == 0
+                    and value_range.get('endColumnIndex', 1) == 1
+                    for value_range in ranges
+                )
+                if not should_move:
+                    continue
+
+                updated_rule = dict(rule)
+                updated_rule['ranges'] = [
+                    {
+                        **value_range,
+                        'startColumnIndex': target_col,
+                        'endColumnIndex': target_col + 1,
+                    }
+                    for value_range in ranges
+                ]
+                requests.append({
+                    'updateConditionalFormatRule': {
+                        'sheetId': worksheet.id,
+                        'index': index,
+                        'rule': updated_rule,
+                    }
+                })
+
+        if requests:
+            sheet.batch_update({'requests': requests})
+            print(f"  🎨 Moved Global Videos column A conditional formatting rules: {len(requests)}")
+    except Exception as e:
+        print(f"  ⚠️  Error moving Global Videos conditional formatting: {e}")
 
 
 def format_push_events_sheet(sheet):
@@ -1321,7 +1402,7 @@ def format_push_events_sheet(sheet):
                         'startIndex': 1,
                         'endIndex': worksheet.row_count,
                     },
-                    'properties': {'pixelSize': 21},
+                    'properties': {'pixelSize': PUSH_EVENT_ROW_HEIGHT_PIXELS},
                     'fields': 'pixelSize',
                 }
             })
@@ -1330,21 +1411,25 @@ def format_push_events_sheet(sheet):
         print(f"  ⚠️  Error formatting push events: {e}")
 
 
-def maintain_workbook_layout(sheet):
+def maintain_workbook_layout(sheet, clean_apostrophes=False):
+    ensure_non_settings_sheet_row_counts(sheet)
+    move_global_video_column_a_conditional_formatting(sheet)
+
     changed_rows = 0
-    for worksheet_name in [
-        config.SHEET_NAME_PROJECTS,
-        config.SHEET_NAME_VIDEOS,
-        'Логи',
-        config.SHEET_NAME_PUSH_EVENTS,
-        'Подписки',
-        config.SHEET_NAME_SETTINGS,
-    ]:
-        try:
-            worksheet = sheet.worksheet(worksheet_name)
-            changed_rows += strip_apostrophes_in_worksheet(worksheet)
-        except Exception:
-            pass
+    if clean_apostrophes:
+        for worksheet_name in [
+            config.SHEET_NAME_PROJECTS,
+            config.SHEET_NAME_VIDEOS,
+            'Логи',
+            config.SHEET_NAME_PUSH_EVENTS,
+            'Подписки',
+            config.SHEET_NAME_SETTINGS,
+        ]:
+            try:
+                worksheet = sheet.worksheet(worksheet_name)
+                changed_rows += strip_apostrophes_in_worksheet(worksheet)
+            except Exception:
+                pass
 
     ensure_videos_worksheet(sheet)
     ensure_logs_worksheet(sheet)
