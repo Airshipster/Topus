@@ -456,6 +456,7 @@ def main():
             ) or {'ok': False, 'partial': True, 'reason': 'unknown subscription sync result'}
             if any(project.get('channels_error') for project in projects):
                 print("  ⚠️  Project channel counts skipped: channel inventory is incomplete")
+                update_project_channel_counts(master_sheet, projects, update_counts=False)
             else:
                 update_project_channel_counts(master_sheet, projects)
         else:

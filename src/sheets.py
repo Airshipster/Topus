@@ -818,7 +818,7 @@ def update_project_statuses(worksheet, headers, status_updates):
     worksheet.batch_update(updates, value_input_option='USER_ENTERED')
 
 
-def update_project_channel_counts(sheet, projects):
+def update_project_channel_counts(sheet, projects, update_counts=True):
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_PROJECTS)
         values = get_values_with_quota_retry(worksheet)
@@ -849,7 +849,7 @@ def update_project_channel_counts(sheet, projects):
             error_text = project.get('channels_error', '')
             provisioned_at = format_timestamp()
             row_updates = []
-            if not project.get('channels_error'):
+            if update_counts and not project.get('channels_error'):
                 channel_count = str(project.get('channel_count', 0))
                 current = str(row[count_col - 1]).strip() if len(row) >= count_col else ''
                 if current != channel_count:
@@ -881,7 +881,8 @@ def update_project_channel_counts(sheet, projects):
             worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
             time.sleep(0.2)
         if updates:
-            print(f"  🟢 Updated project channel counts: {len(updates)}")
+            action = 'project channel counts' if update_counts else 'project provisioning statuses'
+            print(f"  🟢 Updated {action}: {len(updates)}")
     except Exception as e:
         print(f"  ⚠️  Error updating project channel counts: {e}")
 
