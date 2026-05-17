@@ -6,6 +6,7 @@ import requests
 
 import config
 from sheets import (
+    channel_id_from_link,
     clean_sheet_value,
     delete_rows_batch,
     find_setting_row,
@@ -21,6 +22,11 @@ SUBSCRIPTION_SYNC_SETTING = 'last_subscription_sync'
 SUBSCRIPTION_SYNC_INTERVAL_SECONDS = 86400
 SUBSCRIPTIONS_SHEET_NAME = 'Подписки'
 SUBSCRIPTIONS_HEADERS = ['Channel ID', 'Subscribed At', 'Last Renewed', 'Projects', 'Project Count']
+
+
+def normalize_subscription_channel_id(value):
+    cleaned = clean_sheet_value(value).strip()
+    return channel_id_from_link(cleaned) or cleaned
 
 
 def get_subscription_sync_state(sheet):
@@ -72,7 +78,11 @@ def get_subscribed_channels(sheet):
     try:
         worksheet = sheet.worksheet(SUBSCRIPTIONS_SHEET_NAME)
         records = worksheet.get_all_records()
-        return set(clean_sheet_value(row.get('Channel ID', '')) for row in records if clean_sheet_value(row.get('Channel ID', '')))
+        return set(
+            normalize_subscription_channel_id(row.get('Channel ID', ''))
+            for row in records
+            if normalize_subscription_channel_id(row.get('Channel ID', ''))
+        )
     except:
         return set()
 
@@ -92,12 +102,14 @@ def get_subscription_records(sheet):
 
             count_col = indexes.get('Project Count', 4)
 
-            channel_id = clean_sheet_value(row[channel_col]).strip() if len(row) > channel_col else ''
+            raw_channel_id = clean_sheet_value(row[channel_col]).strip() if len(row) > channel_col else ''
+            channel_id = normalize_subscription_channel_id(raw_channel_id)
             if not channel_id:
                 continue
 
             records[channel_id] = {
                 'row_index': i,
+                'raw_channel_id': raw_channel_id,
                 'last_renewed': clean_sheet_value(row[renewed_col]).strip() if len(row) > renewed_col else '',
                 'projects': clean_sheet_value(row[projects_col]).strip() if len(row) > projects_col else '',
                 'project_count': clean_sheet_value(row[count_col]).strip() if len(row) > count_col else '',
@@ -119,6 +131,7 @@ def rewrite_subscriptions_values(worksheet):
         cleaned = [clean_sheet_value(cell) for cell in row[:len(SUBSCRIPTIONS_HEADERS)]]
         if len(cleaned) < len(SUBSCRIPTIONS_HEADERS):
             cleaned.extend([''] * (len(SUBSCRIPTIONS_HEADERS) - len(cleaned)))
+        cleaned[0] = normalize_subscription_channel_id(cleaned[0])
         updates.append({
             'range': f'A{row_index}:{column_letter(len(SUBSCRIPTIONS_HEADERS))}{row_index}',
             'values': [cleaned],
@@ -243,6 +256,7 @@ def update_subscription_project_links(sheet, subscription_records, active_channe
     try:
         worksheet = get_or_create_subscriptions_worksheet(sheet)
         updates = []
+        updated_rows = set()
 
         for channel_id, record in subscription_records.items():
             if channel_id not in active_channels_dict:
@@ -252,20 +266,26 @@ def update_subscription_project_links(sheet, subscription_records, active_channe
             projects_text = ', '.join(projects)
             project_count = len(projects)
 
-            if record.get('projects') == projects_text and str(record.get('project_count')) == str(project_count):
-                continue
+            row_updates = []
+            if record.get('raw_channel_id') != channel_id:
+                row_updates.append({'range': f'A{record["row_index"]}', 'values': [[channel_id]]})
 
-            updates.extend([
-                {'range': f'D{record["row_index"]}', 'values': [[projects_text]]},
-                {'range': f'E{record["row_index"]}', 'values': [[project_count]]},
-            ])
+            if record.get('projects') != projects_text or str(record.get('project_count')) != str(project_count):
+                row_updates.extend([
+                    {'range': f'D{record["row_index"]}', 'values': [[projects_text]]},
+                    {'range': f'E{record["row_index"]}', 'values': [[project_count]]},
+                ])
+
+            if row_updates:
+                updates.extend(row_updates)
+                updated_rows.add(record['row_index'])
 
         for i in range(0, len(updates), config.BATCH_SIZE):
             worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
             time.sleep(0.2)
 
         if updates:
-            print(f"  ✅ Updated project links for {len(updates) // 2} subscriptions")
+            print(f"  ✅ Updated project links for {len(updated_rows)} subscriptions")
     except Exception as e:
         print(f"  ⚠️  Error updating subscription project links: {e}")
 
