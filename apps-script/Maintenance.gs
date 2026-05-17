@@ -1,0 +1,142 @@
+function repairTopusWorkbookMaintenance() {
+  var ss = SpreadsheetApp.openById(MASTER_SPREADSHEET_ID);
+  ensureWorkbookRows_(ss);
+  moveGlobalVideosColumnAConditionalFormatting_(ss);
+  repairPushEventsLayout_(ss);
+  repairKnownDateColumns_(ss);
+}
+
+function ensureWorkbookRows_(ss) {
+  ss.getSheets().forEach(function(sheet) {
+    if (sheet.getName() === 'Настройки') {
+      return;
+    }
+    var rows = sheet.getMaxRows();
+    if (rows < 10000) {
+      sheet.insertRowsAfter(rows, 10000 - rows);
+    }
+  });
+}
+
+function repairPushEventsLayout_(ss) {
+  var sheet = ss.getSheetByName(PUSH_EVENTS_SHEET_NAME);
+  if (!sheet) {
+    return;
+  }
+  ensureSheetRows_(sheet, 10000);
+  sheet.getRange(1, 1, Math.max(sheet.getMaxRows(), 1), PUSH_EVENTS_HEADERS.length)
+    .setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
+  if (sheet.getMaxRows() > 1) {
+    sheet.setRowHeights(2, sheet.getMaxRows() - 1, 21);
+  }
+}
+
+function moveGlobalVideosColumnAConditionalFormatting_(ss) {
+  var sheet = ss.getSheetByName('Глобальные видео');
+  if (!sheet) {
+    return;
+  }
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var targetColumn = headers.indexOf('Ссылка на видео') + 1;
+  if (targetColumn < 1) {
+    targetColumn = 5;
+  }
+
+  var changed = false;
+  var rules = sheet.getConditionalFormatRules().map(function(rule) {
+    var ranges = rule.getRanges();
+    if (!ranges.length) {
+      return rule;
+    }
+    var shouldMove = ranges.every(function(range) {
+      return range.getSheet().getSheetId() === sheet.getSheetId()
+        && range.getColumn() === 1
+        && range.getNumColumns() === 1;
+    });
+    if (!shouldMove) {
+      return rule;
+    }
+    changed = true;
+    var movedRanges = ranges.map(function(range) {
+      return sheet.getRange(range.getRow(), targetColumn, range.getNumRows(), 1);
+    });
+    return rule.copy().setRanges(movedRanges).build();
+  });
+
+  if (changed) {
+    sheet.setConditionalFormatRules(rules);
+  }
+}
+
+function repairKnownDateColumns_(ss) {
+  [
+    {sheet: 'Настройки', headers: ['Provisioned at']},
+    {sheet: 'Глобальные видео', headers: ['Дата публикации TG GMT+4']},
+    {sheet: PUSH_EVENTS_SHEET_NAME, headers: ['Timestamp GMT+4']},
+    {sheet: 'Подписки', headers: ['Subscribed At', 'Last Renewed']}
+  ].forEach(function(target) {
+    var sheet = ss.getSheetByName(target.sheet);
+    if (!sheet) {
+      return;
+    }
+    target.headers.forEach(function(header) {
+      repairDateColumnByHeader_(sheet, header);
+    });
+  });
+}
+
+function repairDateColumnByHeader_(sheet, headerName) {
+  var lastColumn = sheet.getLastColumn();
+  var lastRow = sheet.getLastRow();
+  if (lastColumn < 1 || lastRow < 2) {
+    return;
+  }
+  var headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+  var column = headers.indexOf(headerName) + 1;
+  if (column < 1) {
+    return;
+  }
+
+  var range = sheet.getRange(2, column, lastRow - 1, 1);
+  var values = range.getValues();
+  var changed = false;
+  var repaired = values.map(function(row) {
+    var parsed = parseSheetDateValue_(row[0]);
+    if (parsed) {
+      changed = true;
+      return [parsed];
+    }
+    return row;
+  });
+
+  if (changed) {
+    range.setValues(repaired);
+    range.setNumberFormat('yyyy-mm-dd hh:mm:ss');
+  }
+}
+
+function parseSheetDateValue_(value) {
+  if (!value) {
+    return null;
+  }
+  if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime())) {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return new Date(Math.round((value - 25569) * 86400000));
+  }
+
+  var text = String(value).replace(/^'+/, '').trim();
+  var match = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) {
+    return null;
+  }
+  return new Date(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    Number(match[4]),
+    Number(match[5]),
+    Number(match[6] || 0)
+  );
+}
