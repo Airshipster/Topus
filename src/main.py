@@ -333,7 +333,12 @@ def main():
         elif not sync_only_mode():
             print("  ⏭️  Video project link maintenance skipped during publish run")
 
-        if not push_only_mode():
+        should_sync_subscriptions_now = (
+            not push_only_mode()
+            and (sync_only_mode() or should_force_subscription_sync())
+        )
+
+        if should_sync_subscriptions_now:
             deduplicate_subscription_rows(master_sheet)
 
         print("\n📺 Loading project channels...")
@@ -341,7 +346,7 @@ def main():
         if push_only_mode():
             print("\n📡 Subscription sync skipped in push-only mode")
             subscription_sync_result = {'ok': True, 'partial': False, 'reason': ''}
-        else:
+        elif should_sync_subscriptions_now:
             subscription_sync_result = sync_subscriptions(
                 client,
                 master_sheet,
@@ -350,6 +355,9 @@ def main():
                 active_channels_dict=active_channels_dict,
             ) or {'ok': False, 'partial': True, 'reason': 'unknown subscription sync result'}
             update_project_channel_counts(master_sheet, projects)
+        else:
+            print("\n📡 Subscription sync skipped during publish run")
+            subscription_sync_result = {'ok': True, 'partial': False, 'reason': ''}
 
         if sync_only_mode():
             print("\n✅ Sync-only mode completed. Skipping RSS/publish processing.")
