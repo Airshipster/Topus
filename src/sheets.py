@@ -1097,11 +1097,15 @@ def release_lock(sheet):
 
 
 def row_as_dict(headers, row):
-    return {
+    data = {
         str(header).strip(): clean_sheet_value(row[i]) if i < len(row) else ''
         for i, header in enumerate(headers)
         if str(header).strip()
     }
+    status_index = find_column_index(headers, ['Системный статус'])
+    if status_index is not None:
+        data['Системный статус'] = clean_sheet_value(row[status_index]) if status_index < len(row) else ''
+    return data
 
 
 def first_value(row, names):
@@ -1117,9 +1121,13 @@ def header_indexes(headers):
 
 
 def row_for_headers(headers, values_by_header):
+    status_index = find_column_index(headers, ['Системный статус'])
     return [
-        clean_sheet_value(values_by_header.get(str(header).strip(), ''))
-        for header in headers
+        clean_sheet_value(values_by_header.get(
+            'Системный статус' if i == status_index else str(header).strip(),
+            ''
+        ))
+        for i, header in enumerate(headers)
     ]
 
 
@@ -1167,7 +1175,10 @@ def ensure_videos_worksheet(sheet):
         return worksheet
 
     headers = [str(value).strip() for value in header_values[0]]
-    if all(header in headers for header in VIDEO_HEADERS):
+    existing_header_keys = set(headers)
+    if find_column_index(headers, ['Системный статус']) is not None:
+        existing_header_keys.add('Системный статус')
+    if all(header in existing_header_keys for header in VIDEO_HEADERS):
         return worksheet
 
     if headers[:len(VIDEO_HEADERS)] == VIDEO_HEADERS and len(headers) == len(VIDEO_HEADERS):
@@ -1317,6 +1328,9 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
         values = get_values_with_quota_retry(worksheet)
         headers = [str(value).strip() for value in values[0]] if values else []
         indexes = {header: index + 1 for index, header in enumerate(headers)}
+        status_index = find_column_index(headers, ['Системный статус'])
+        if status_index is not None:
+            indexes['Системный статус'] = status_index + 1
         target_row = None
         target_data = {}
 
@@ -1382,6 +1396,9 @@ def reconcile_pending_published_videos(sheet):
             return 0
         video_headers = [str(value).strip() for value in video_values[0]]
         video_indexes = {header: index + 1 for index, header in enumerate(video_headers)}
+        status_index = find_column_index(video_headers, ['Системный статус'])
+        if status_index is not None:
+            video_indexes['Системный статус'] = status_index + 1
         log_headers = [str(value).strip() for value in log_values[0]]
 
         published_logs = {}
@@ -1477,7 +1494,8 @@ def delete_stale_unpublished_video_rows(sheet):
             if status_name not in ('pending', ''):
                 continue
 
-            status_col = headers.index('Системный статус') + 1 if 'Системный статус' in headers else None
+            status_index = find_column_index(headers, ['Системный статус'])
+            status_col = status_index + 1 if status_index is not None else None
             if not status_col:
                 continue
 
