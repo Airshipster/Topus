@@ -552,7 +552,7 @@ def clean_numeric_text_values(worksheet):
         return 0
 
 
-def clean_timestamp_text_values(worksheet, force_datetime_serial=False):
+def clean_timestamp_text_values(worksheet, force_datetime_serial=False, only_headers=None):
     """Rewrite ISO timestamps to YYYY-MM-DD HH:MM:SS in known timestamp columns."""
     try:
         header_values = get_values_with_quota_retry(worksheet, '1:1')
@@ -560,10 +560,11 @@ def clean_timestamp_text_values(worksheet, force_datetime_serial=False):
             return 0
 
         headers = [str(cell).strip().lower() for cell in header_values[0]]
+        allowed_headers = {normalize_header(header) for header in only_headers} if only_headers else None
         timestamp_cols = {
             index
             for index, header in enumerate(headers)
-            if header in TIMESTAMP_CLEANUP_HEADERS
+            if header in TIMESTAMP_CLEANUP_HEADERS and (allowed_headers is None or header in allowed_headers)
         }
         if not timestamp_cols:
             return 0
@@ -615,18 +616,19 @@ def clean_known_workbook_text_values(sheet):
     """One-off targeted cleanup for known timestamp/numeric columns."""
     ensure_master_timestamp_formats(sheet)
     cleaned_total = 0
-    for worksheet_name in [
-        config.SHEET_NAME_PROJECTS,
-        config.SHEET_NAME_VIDEOS,
-        'Логи',
-        config.SHEET_NAME_PUSH_EVENTS,
-        'Подписки',
-        config.SHEET_NAME_SETTINGS,
+    for worksheet_name, timestamp_headers in [
+        (config.SHEET_NAME_SETTINGS, {'provisioned at'}),
+        (config.SHEET_NAME_VIDEOS, {'дата публикации tg gmt+4'}),
+        (config.SHEET_NAME_PUSH_EVENTS, {'timestamp gmt+4'}),
+        ('Подписки', {'subscribed at', 'last renewed'}),
     ]:
         try:
             worksheet = sheet.worksheet(worksheet_name)
-            cleaned_total += clean_numeric_text_values(worksheet)
-            cleaned_total += clean_timestamp_text_values(worksheet, force_datetime_serial=True)
+            cleaned_total += clean_timestamp_text_values(
+                worksheet,
+                force_datetime_serial=True,
+                only_headers=timestamp_headers,
+            )
         except Exception as e:
             print(f"  ⚠️  Error cleaning known values in {worksheet_name}: {e}")
 
