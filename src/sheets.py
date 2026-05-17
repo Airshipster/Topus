@@ -223,7 +223,7 @@ def hyperlink_formula(url, text):
         return text
     safe_url = str(url).replace('"', '""')
     safe_text = str(text).replace('"', '""')
-    return f'=HYPERLINK("{safe_url}","{safe_text}")'
+    return f'=HYPERLINK("{safe_url}";"{safe_text}")'
 
 
 def partner_tg_link(value):
@@ -1669,6 +1669,17 @@ def merge_log_event(event, details, status=''):
     event = str(clean_sheet_value(event) or '').strip()
     details = str(clean_sheet_value(details) or '').strip()
     status = str(clean_sheet_value(status) or '').strip()
+    method = ''
+    method_match = re.match(r'^(Push|RSS):\s*(.*)$', event, flags=re.IGNORECASE)
+    if method_match:
+        method = 'RSS' if method_match.group(1).lower() == 'rss' else 'Push'
+        event = method_match.group(2).strip()
+    details_method_match = re.match(r'^(Push|RSS):\s*(.*)$', details, flags=re.IGNORECASE)
+    if details_method_match:
+        method = 'RSS' if details_method_match.group(1).lower() == 'rss' else 'Push'
+        details = details_method_match.group(2).strip()
+    if method and event:
+        event = f'{method}: {event}'
     if event and details:
         return f'{event}. {details}'
     return event or details or status
@@ -1906,6 +1917,11 @@ def update_video_project_links(sheet, projects):
 
 
 def normalize_log_entry(entry):
+    if len(entry) >= 7:
+        timestamp = normalize_timestamp(entry[0])
+        method = str(clean_sheet_value(entry[6]) or '').strip()
+        event = f'{method}: {entry[2]}' if method and not re.match(r'^(Push|RSS):', str(entry[2]), flags=re.IGNORECASE) else entry[2]
+        return clean_row([entry[1], sheet_datetime_value(timestamp), entry[3], merge_log_event(event, entry[4], entry[5])])
     if len(entry) >= 6:
         timestamp = normalize_timestamp(entry[0])
         return clean_row([entry[1], sheet_datetime_value(timestamp), entry[3], merge_log_event(entry[2], entry[4], entry[5])])

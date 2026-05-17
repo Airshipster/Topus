@@ -231,6 +231,7 @@ def delete_rss_missing_publications(master_sheet, project, rss_seen_by_channel, 
             '',
             f'Candidates {len(candidates)} exceed project limit {delete_limit}',
             'skipped',
+            'RSS',
         ])
         print(f"  ⚠️  RSS-missing deletion skipped: {len(candidates)} candidates > limit {delete_limit}")
         return
@@ -261,6 +262,7 @@ def delete_rss_missing_publications(master_sheet, project, rss_seen_by_channel, 
                 row['video_id'],
                 'Missing from RSS and unavailable via YouTube API',
                 'deleted',
+                'RSS',
             ])
             deleted += 1
 
@@ -552,6 +554,7 @@ def main():
                                 event['video_id'],
                                 youtube_error,
                                 'error',
+                                'Push',
                             ])
                             total_failed += 1
                             continue
@@ -575,7 +578,7 @@ def main():
                     if stale_reason:
                         print(f"  🚫 Skipped stale: {video['title'][:50]} ({stale_reason})")
                         timestamp = format_timestamp()
-                        log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], stale_reason, 'filtered'])
+                        log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], stale_reason, 'filtered', 'Push'])
                         queue_push_event_mark(event, project['name'])
                         published_videos.add(key)
                         total_filtered += 1
@@ -585,7 +588,7 @@ def main():
                     if hold_reason:
                         print(f"  ⏳ Pending: {video['title'][:50]} ({hold_reason})")
                         timestamp = format_timestamp()
-                        log_entries.append([timestamp, project['name'], 'Video pending', video['video_id'], hold_reason, 'pending'])
+                        log_entries.append([timestamp, project['name'], 'Video pending', video['video_id'], hold_reason, 'pending', 'Push'])
                         videos_to_save.append((video, project, video_published_date, None, f"PENDING: {hold_reason}"))
                         publication_event_rows[key] = event
                         published_videos.add(key)
@@ -595,7 +598,7 @@ def main():
                     if should_filter:
                         print(f"  🚫 Filtered: {video['title'][:50]} ({filter_reason})")
                         timestamp = format_timestamp()
-                        log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], filter_reason, 'filtered'])
+                        log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], filter_reason, 'filtered', 'Push'])
                         videos_to_save.append((video, project, video_published_date, None, f"FILTERED: {filter_reason}"))
                         publication_event_rows[key] = event
                         published_videos.add(key)
@@ -713,7 +716,7 @@ def main():
             if stale_reason:
                 print(f"  🚫 Skipping publish stale: {video['title'][:50]} ({stale_reason})")
                 timestamp = format_timestamp()
-                log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], stale_reason, 'filtered'])
+                log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], stale_reason, 'filtered', video.get('source_method', '')])
                 update_video_publication_status(master_sheet, video['video_id'], project['name'], status='filtered', error=stale_reason)
                 total_filtered += 1
                 continue
@@ -734,7 +737,7 @@ def main():
             if tg_message_id:
                 print(f"    ✅ Published (msg: {tg_message_id})")
                 timestamp = format_timestamp()
-                log_entries.append([timestamp, project['name'], 'Video published', video['video_id'], f"Telegram msg: {tg_message_id}", 'success'])
+                log_entries.append([timestamp, project['name'], 'Video published', video['video_id'], f"Telegram msg: {tg_message_id}", 'success', video.get('source_method', '')])
                 update_video_publication_status(
                     master_sheet,
                     video['video_id'],
@@ -747,7 +750,7 @@ def main():
             else:
                 print(f"    ❌ Failed to publish")
                 timestamp = format_timestamp()
-                log_entries.append([timestamp, project['name'], 'Publish failed', video['video_id'], 'Telegram error', 'error'])
+                log_entries.append([timestamp, project['name'], 'Publish failed', video['video_id'], 'Telegram error', 'error', video.get('source_method', '')])
                 update_video_publication_status(master_sheet, video['video_id'], project['name'], status='failed', error='Telegram error')
                 total_failed += 1
             
