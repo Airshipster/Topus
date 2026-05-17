@@ -982,6 +982,17 @@ def first_value(row, names):
     return ''
 
 
+def header_indexes(headers):
+    return {str(header).strip(): index for index, header in enumerate(headers) if str(header).strip()}
+
+
+def row_for_headers(headers, values_by_header):
+    return [
+        clean_sheet_value(values_by_header.get(str(header).strip(), ''))
+        for header in headers
+    ]
+
+
 def migrate_video_row(headers, row):
     data = row_as_dict(headers, row)
     video_url = first_value(data, ['Ссылка на видео', 'Ссылка'])
@@ -1026,6 +1037,9 @@ def ensure_videos_worksheet(sheet):
         return worksheet
 
     headers = [str(value).strip() for value in header_values[0]]
+    if all(header in headers for header in VIDEO_HEADERS):
+        return worksheet
+
     if headers[:len(VIDEO_HEADERS)] == VIDEO_HEADERS and len(headers) == len(VIDEO_HEADERS):
         return worksheet
 
@@ -1061,15 +1075,18 @@ def save_videos_batch(sheet, videos_data):
     
     try:
         worksheet = ensure_videos_worksheet(sheet)
+        header_values = get_values_with_quota_retry(worksheet, '1:1')
+        headers = [str(value).strip() for value in header_values[0]] if header_values else VIDEO_HEADERS
         
         existing_rows = {}
         try:
             values = worksheet.get_all_values()
+            existing_headers = [str(value).strip() for value in values[0]] if values else headers
             for row_index, row in enumerate(values[1:], start=2):
-                row = clean_row(row)
-                project_name = project_name_from_cell(row[0] if len(row) > 0 else '')
-                video_id = video_id_from_url(row[4] if len(row) > 4 else '')
-                status = str(row[10] if len(row) > 10 else '').split('.', 1)[0].lower()
+                data = row_as_dict(existing_headers, row)
+                project_name = project_name_from_cell(first_value(data, ['Проект']))
+                video_id = video_id_from_url(first_value(data, ['Ссылка на видео', 'Video ID']))
+                status = str(first_value(data, ['Системный статус'])).split('.', 1)[0].lower()
                 if video_id and project_name:
                     existing_rows[(video_id, project_name)] = {
                         'row_index': row_index,
@@ -1097,19 +1114,20 @@ def save_videos_batch(sheet, videos_data):
                 print(f"  ⏭️  Already tracked: {video['video_id']} / {project_name} ({existing['status'] or 'no status'})")
                 continue
 
-            rows.append(clean_row([
-                project_display,
-                video.get('channel', ''),
-                channel_link(video.get('channel_id', '')),
-                video.get('title', ''),
-                bare_url(video.get('url', '')),
-                sheet_datetime_value(yt_published_at),
-                sheet_datetime_value(processed_at),
-                publication_delay_minutes(yt_published_at, tg_published_at),
-                sheet_datetime_value(tg_published_at) if tg_published_at else '',
-                sheet_numeric_value(tg_message_id) if tg_message_id else '',
-                combined_status(row_status, row_error),
-            ]))
+            row_values = {
+                'Проект': project_display,
+                'Название канала': video.get('channel', ''),
+                'Ссылка на канал': channel_link(video.get('channel_id', '')),
+                'Название видео': video.get('title', ''),
+                'Ссылка на видео': bare_url(video.get('url', '')),
+                'Дата публикации YT GMT+4': sheet_datetime_value(yt_published_at),
+                'Дата обработки GMT+4': sheet_datetime_value(processed_at),
+                'Разница в минутах': publication_delay_minutes(yt_published_at, tg_published_at),
+                'Дата публикации TG GMT+4': sheet_datetime_value(tg_published_at) if tg_published_at else '',
+                'TG message_id': sheet_numeric_value(tg_message_id) if tg_message_id else '',
+                'Системный статус': combined_status(row_status, row_error),
+            }
+            rows.append(row_for_headers(headers, row_values))
             rows_publication_keys.append(key)
         
         # Дробим на батчи по config.BATCH_SIZE
@@ -1144,26 +1162,38 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
     try:
         worksheet = ensure_videos_worksheet(sheet)
         values = worksheet.get_all_values()
+        headers = [str(value).strip() for value in values[0]] if values else []
+        indexes = {header: index + 1 for index, header in enumerate(headers)}
         target_row = None
+        target_data = {}
 
         for row_index, row in enumerate(values[1:], start=2):
-            row = clean_row(row)
-            row_project_name = project_name_from_cell(row[0] if len(row) > 0 else '')
-            row_video_id = video_id_from_url(row[4] if len(row) > 4 else '')
+            data = row_as_dict(headers, row)
+            row_project_name = project_name_from_cell(first_value(data, ['Проект']))
+            row_video_id = video_id_from_url(first_value(data, ['Ссылка на видео', 'Video ID']))
             if row_video_id == video_id and row_project_name == project_name:
                 target_row = row_index
+                target_data = data
 
         if not target_row:
             print(f"  ⚠️  Could not find video row to update: {video_id} / {project_name}")
             return False
 
         timestamp = format_timestamp()
-        yt_published = clean_sheet_value(values[target_row - 1][5]) if len(values[target_row - 1]) > 5 else ''
+        yt_published = first_value(target_data, ['Дата публикации YT GMT+4', 'Дата публикации YT UTC'])
+        column_updates = {
+            'TG message_id': sheet_numeric_value(tg_message_id) if tg_message_id else '',
+            'Дата публикации TG GMT+4': sheet_datetime_value(timestamp) if tg_message_id else '',
+            'Разница в минутах': publication_delay_minutes(yt_published, timestamp) if tg_message_id else '',
+            'Системный статус': combined_status(status, error),
+        }
         updates = [
-            {'range': gspread.utils.rowcol_to_a1(target_row, 10), 'values': [[sheet_numeric_value(tg_message_id) if tg_message_id else '']]},
-            {'range': gspread.utils.rowcol_to_a1(target_row, 9), 'values': [[sheet_datetime_value(timestamp) if tg_message_id else '']]},
-            {'range': gspread.utils.rowcol_to_a1(target_row, 8), 'values': [[publication_delay_minutes(yt_published, timestamp) if tg_message_id else '']]},
-            {'range': gspread.utils.rowcol_to_a1(target_row, 11), 'values': [[combined_status(status, error)]]},
+            {
+                'range': gspread.utils.rowcol_to_a1(target_row, indexes[header]),
+                'values': [[value]],
+            }
+            for header, value in column_updates.items()
+            if header in indexes
         ]
         worksheet.batch_update(updates, value_input_option='USER_ENTERED')
         return True
@@ -1181,25 +1211,28 @@ def reconcile_pending_published_videos(sheet):
         log_values = logs_worksheet.get_all_values()
         if len(video_values) < 2 or len(log_values) < 2:
             return 0
+        video_headers = [str(value).strip() for value in video_values[0]]
+        video_indexes = {header: index + 1 for index, header in enumerate(video_headers)}
+        log_headers = [str(value).strip() for value in log_values[0]]
 
         published_logs = {}
         for row in log_values[1:]:
-            row = clean_row(row)
-            project_name = project_name_from_cell(row[0] if len(row) > 0 else '')
-            timestamp = normalize_timestamp(row[1] if len(row) > 1 else '')
-            video_id = row[2] if len(row) > 2 else ''
-            event = row[3] if len(row) > 3 else ''
+            data = row_as_dict(log_headers, row)
+            project_name = project_name_from_cell(first_value(data, ['Проект']))
+            timestamp = normalize_timestamp(first_value(data, ['Timestamp GMT+4', 'Timestamp']))
+            video_id = first_value(data, ['Video ID'])
+            event = first_value(data, ['Событие'])
             match = re.search(r'Telegram msg:\s*(\d+)', event)
             if project_name and video_id and match:
                 published_logs[(video_id, project_name)] = (timestamp, match.group(1))
 
         updates = []
         for row_index, row in enumerate(video_values[1:], start=2):
-            row = clean_row(row)
-            project_name = project_name_from_cell(row[0] if len(row) > 0 else '')
-            video_id = video_id_from_url(row[4] if len(row) > 4 else '')
-            status = str(row[10] if len(row) > 10 else '').split('.', 1)[0].lower()
-            message_id = row[9] if len(row) > 9 else ''
+            data = row_as_dict(video_headers, row)
+            project_name = project_name_from_cell(first_value(data, ['Проект']))
+            video_id = video_id_from_url(first_value(data, ['Ссылка на видео', 'Video ID']))
+            status = str(first_value(data, ['Системный статус'])).split('.', 1)[0].lower()
+            message_id = first_value(data, ['TG message_id'])
             if status == 'published' and message_id:
                 continue
 
@@ -1208,13 +1241,18 @@ def reconcile_pending_published_videos(sheet):
                 continue
 
             published_at, tg_message_id = log_entry
-            yt_published = row[5] if len(row) > 5 else ''
-            updates.extend([
-                {'range': gspread.utils.rowcol_to_a1(row_index, 8), 'values': [[publication_delay_minutes(yt_published, published_at)]]},
-                {'range': gspread.utils.rowcol_to_a1(row_index, 9), 'values': [[sheet_datetime_value(published_at)]]},
-                {'range': gspread.utils.rowcol_to_a1(row_index, 10), 'values': [[tg_message_id]]},
-                {'range': gspread.utils.rowcol_to_a1(row_index, 11), 'values': [['published']]},
-            ])
+            yt_published = first_value(data, ['Дата публикации YT GMT+4', 'Дата публикации YT UTC'])
+            for header, value in {
+                'Разница в минутах': publication_delay_minutes(yt_published, published_at),
+                'Дата публикации TG GMT+4': sheet_datetime_value(published_at),
+                'TG message_id': tg_message_id,
+                'Системный статус': 'published',
+            }.items():
+                if header in video_indexes:
+                    updates.append({
+                        'range': gspread.utils.rowcol_to_a1(row_index, video_indexes[header]),
+                        'values': [[value]],
+                    })
 
         for i in range(0, len(updates), config.BATCH_SIZE):
             videos_worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
@@ -1235,30 +1273,27 @@ def get_recent_published_video_rows(sheet, project_name, hours=24):
         worksheet = ensure_videos_worksheet(sheet)
         values = worksheet.get_all_values()
         cutoff = datetime.utcnow() - timedelta(hours=hours)
+        headers = [str(value).strip() for value in values[0]] if values else []
 
         rows = []
         for row_index, row in enumerate(values[1:], start=2):
-            row = clean_row(row)
-            row_project = project_name_from_cell(row[0] if len(row) > 0 else '')
+            data = row_as_dict(headers, row)
+            row_project = project_name_from_cell(first_value(data, ['Проект']))
             if row_project != project_name:
                 continue
 
-            status = str(row[10] if len(row) > 10 else '').split('.', 1)[0].lower()
-            message_id = row[9] if len(row) > 9 else ''
+            status = str(first_value(data, ['Системный статус'])).split('.', 1)[0].lower()
+            message_id = first_value(data, ['TG message_id'])
             if status != 'published' or not message_id:
                 continue
 
-            date_value = ''
-            for col in (5, 6):
-                if len(row) > col and row[col]:
-                    date_value = row[col]
-                    break
+            date_value = first_value(data, ['Дата публикации YT GMT+4', 'Дата обработки GMT+4'])
             record_date = parse_datetime_value(date_value)
             if not record_date or record_date < cutoff:
                 continue
 
-            video_id = video_id_from_url(row[4] if len(row) > 4 else '')
-            channel_id = channel_id_from_link(row[2] if len(row) > 2 else '')
+            video_id = video_id_from_url(first_value(data, ['Ссылка на видео', 'Video ID']))
+            channel_id = channel_id_from_link(first_value(data, ['Ссылка на канал', 'Channel ID']))
             if video_id and channel_id:
                 rows.append({
                     'row_index': row_index,
