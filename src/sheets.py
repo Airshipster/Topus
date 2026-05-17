@@ -34,6 +34,16 @@ CHANNEL_TEMPLATE_HEADERS = [
     'Шаблон для каждого канала',
 ]
 
+CHANNEL_TG_HEADERS = [
+    'TG-каналы партнёров',
+    'TG-каналы партнеров',
+    'TG канал партнёра',
+    'TG канал партнера',
+    'Telegram канал партнёра',
+    'Telegram канал партнера',
+    'Telegram-папка',
+]
+
 CHANNEL_NAME_HEADERS = [
     'Название',
     'Название канала',
@@ -213,7 +223,28 @@ def hyperlink_formula(url, text):
         return text
     safe_url = str(url).replace('"', '""')
     safe_text = str(text).replace('"', '""')
-    return f'=HYPERLINK("{safe_url}";"{safe_text}")'
+    return f'=HYPERLINK("{safe_url}","{safe_text}")'
+
+
+def partner_tg_link(value):
+    text = str(clean_sheet_value(value) or '').strip()
+    if not text:
+        return ''
+
+    match = re.search(r'(https?://t\.me/[^\s,;]+|t\.me/[^\s,;]+|@[A-Za-z0-9_]{5,})', text)
+    if not match:
+        return ''
+
+    before = text[:match.start()].rstrip()
+    if before.endswith('-') or before.endswith('–') or before.endswith('—'):
+        return ''
+
+    link = match.group(1).rstrip(').,;')
+    if link.startswith('@'):
+        return f'https://t.me/{link[1:]}'
+    if link.startswith('t.me/'):
+        return f'https://{link}'
+    return link
 
 
 def append_tg_message_id(url, tg_message_id):
@@ -1850,15 +1881,19 @@ def update_video_project_links(sheet, projects):
     try:
         worksheet = ensure_videos_worksheet(sheet)
         values = worksheet.get_all_values()
+        if not values:
+            return
+        headers = [str(value).strip() for value in values[0]]
         project_map = {str(project.get('name', '')).strip(): project for project in projects}
         updates = []
         for row_index, row in enumerate(values[1:], start=2):
-            current = row[0] if row else ''
+            data = row_as_dict(headers, row)
+            current = first_value(data, ['Проект'])
             project_name = project_name_from_cell(current)
             project = project_map.get(project_name)
             if not project:
                 continue
-            linked = project_link_formula(project_name, project)
+            linked = project_link_formula(project_name, project, first_value(data, ['TG message_id']))
             if linked != current:
                 updates.append({'range': f'A{row_index}', 'values': [[linked]]})
         for i in range(0, len(updates), config.BATCH_SIZE):
@@ -2379,8 +2414,10 @@ def parse_youtube_channels_worksheet(worksheet, project):
         headers = [str(cell).strip() for cell in values[0]]
         header_indexes = {header: index for index, header in enumerate(headers) if header}
         template_col = find_column_index(headers, CHANNEL_TEMPLATE_HEADERS)
+        tg_col = find_column_index(headers, CHANNEL_TG_HEADERS)
         template_col_text = template_col + 1 if template_col is not None else 'fallback 21'
-        print(f"  📌 Channel columns: template={template_col_text}")
+        tg_col_text = tg_col + 1 if tg_col is not None else 'not found'
+        print(f"  📌 Channel columns: template={template_col_text}, tg_partner={tg_col_text}")
         channels = {}
         disabled_channel_ids = set()
         for i, row in enumerate(values):
@@ -2409,11 +2446,12 @@ def parse_youtube_channels_worksheet(worksheet, project):
 
             channel_name = column_value(normalized, headers, CHANNEL_NAME_HEADERS) or get_row_value(normalized, header_indexes, 'Название') or infer_channel_name(normalized, channel_id)
             channel_template = column_value(normalized, headers, CHANNEL_TEMPLATE_HEADERS, fallback_index=20)
+            tg_channel = partner_tg_link(column_value(normalized, headers, CHANNEL_TG_HEADERS))
 
             channels[channel_id] = {
                 'name': channel_name,
                 'template': channel_template,
-                'tg_channel': ''
+                'tg_channel': tg_channel
             }
 
         project['disabled_channel_count'] = len(disabled_channel_ids)

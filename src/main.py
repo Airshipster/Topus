@@ -446,6 +446,8 @@ def main():
         if should_sync_subscriptions_now:
             update_project_provisioning_statuses(master_sheet, projects, 'checking', 'reading project document')
         project_channels, active_channels_dict = load_project_channels(client, master_sheet, projects)
+        if sync_only_mode():
+            update_video_project_links(master_sheet, projects)
         if push_only_mode():
             print("\n📡 Subscription sync skipped in push-only mode")
             subscription_sync_result = {'ok': True, 'partial': False, 'reason': ''}
