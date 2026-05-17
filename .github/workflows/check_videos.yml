@@ -22,6 +22,10 @@ on:
         description: 'Only sync subscriptions; do not publish'
         required: false
         default: 'false'
+      repair_pending_only:
+        description: 'Only reconcile rows that were published but stayed pending'
+        required: false
+        default: 'false'
       force_subscription_sync:
         description: 'Force subscription sync during this run'
         required: false
@@ -60,6 +64,7 @@ jobs:
         PYTHONUNBUFFERED: '1'
         TOPUS_MAINTENANCE_ONLY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.maintenance_only == 'true' }}
         TOPUS_UNLOCK_ONLY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.unlock_only == 'true' }}
+        TOPUS_REPAIR_PENDING_ONLY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.repair_pending_only == 'true' }}
         TOPUS_FORCE_SUBSCRIPTION_SYNC: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.force_subscription_sync == 'true') || github.event.schedule == '17 2 * * *' || github.event.client_payload.force_subscription_sync == 'true' || (github.event_name == 'repository_dispatch' && github.event.client_payload.video_id == '' && github.event.client_payload.channel_id == '') }}
         TOPUS_SYNC_ONLY: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.sync_only == 'true') || github.event.schedule == '17 2 * * *' }}
         TOPUS_PUSH_ONLY: ${{ github.event.schedule == '*/5 * * * *' || (github.event_name == 'repository_dispatch' && github.event.client_payload.video_id != '' && github.event.client_payload.channel_id != '') }}

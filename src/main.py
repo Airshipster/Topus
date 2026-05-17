@@ -76,6 +76,11 @@ def maintenance_only_mode():
     return value.lower() in ('1', 'true', 'yes')
 
 
+def repair_pending_only_mode():
+    value = os.environ.get('TOPUS_REPAIR_PENDING_ONLY', '')
+    return value.lower() in ('1', 'true', 'yes')
+
+
 def unlock_only_mode():
     value = os.environ.get('TOPUS_UNLOCK_ONLY', '')
     return value.lower() in ('1', 'true', 'yes')
@@ -84,6 +89,8 @@ def unlock_only_mode():
 def run_mode_name():
     if unlock_only_mode():
         return 'unlock-only'
+    if repair_pending_only_mode():
+        return 'repair-pending-only'
     if maintenance_only_mode():
         return 'maintenance-only'
     if sync_only_mode():
@@ -288,6 +295,17 @@ def main():
             clean_known_workbook_text_values(master_sheet)
             update_last_run(master_sheet)
             update_run_status(master_sheet, 'complete: maintenance-only', run_status_details())
+            return
+
+        if repair_pending_only_mode():
+            print("  🧩 Repair-pending-only mode: reconciling published rows")
+            if not acquire_lock_with_wait(master_sheet):
+                print("\n❌ Cannot acquire lock. Another process is running. Exiting.")
+                update_run_status(master_sheet, 'busy: another run holds lock', run_status_details())
+                return
+            lock_acquired = True
+            fixed = reconcile_pending_published_videos(master_sheet)
+            update_run_status(master_sheet, f'complete: repaired pending rows={fixed}', run_status_details())
             return
         
         # ПРОВЕРКА БЛОКИРОВКИ

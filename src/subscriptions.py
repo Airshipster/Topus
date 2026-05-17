@@ -23,6 +23,7 @@ SUBSCRIPTION_SYNC_SETTING = 'last_subscription_sync'
 SUBSCRIPTION_SYNC_INTERVAL_SECONDS = 86400
 SUBSCRIPTIONS_SHEET_NAME = 'Подписки'
 SUBSCRIPTIONS_HEADERS = ['Projects', 'Project Count', 'Channel ID', 'Subscribed At', 'Last Renewed']
+SUBSCRIPTIONS_READ_RANGE = 'A1:E'
 
 
 def normalize_subscription_channel_id(value):
@@ -91,7 +92,7 @@ def get_subscription_records(sheet):
     """Получение подписок вместе со строками и датой обновления"""
     try:
         worksheet = get_or_create_subscriptions_worksheet(sheet)
-        values = get_values_with_quota_retry(worksheet)
+        values = get_values_with_quota_retry(worksheet, SUBSCRIPTIONS_READ_RANGE)
         headers = [str(cell).strip() for cell in values[0]] if values else []
         indexes = {header: index for index, header in enumerate(headers)}
         records = {}
@@ -122,7 +123,7 @@ def get_subscription_records(sheet):
 
 
 def rewrite_subscriptions_values(worksheet):
-    values = get_values_with_quota_retry(worksheet)
+    values = get_values_with_quota_retry(worksheet, SUBSCRIPTIONS_READ_RANGE)
     if len(values) < 2:
         return 0
 
@@ -220,7 +221,7 @@ def get_or_create_subscriptions_worksheet(sheet):
         worksheet.append_row(SUBSCRIPTIONS_HEADERS, value_input_option='USER_ENTERED')
         return worksheet
 
-    values = get_values_with_quota_retry(worksheet)
+    values = get_values_with_quota_retry(worksheet, SUBSCRIPTIONS_READ_RANGE)
     if not values:
         worksheet.append_row(SUBSCRIPTIONS_HEADERS, value_input_option='USER_ENTERED')
         return worksheet
@@ -355,7 +356,7 @@ def update_subscription_project_links(sheet, subscription_records, active_channe
 def deduplicate_subscription_rows(sheet):
     try:
         worksheet = get_or_create_subscriptions_worksheet(sheet)
-        values = get_values_with_quota_retry(worksheet)
+        values = get_values_with_quota_retry(worksheet, SUBSCRIPTIONS_READ_RANGE)
         if len(values) < 3:
             return 0
 
@@ -423,7 +424,7 @@ def remove_subscribed_channels(sheet, channel_ids):
     """Удаление подписок из таблицы"""
     try:
         worksheet = sheet.worksheet(SUBSCRIPTIONS_SHEET_NAME)
-        all_values = worksheet.get_all_values()
+        all_values = get_values_with_quota_retry(worksheet, SUBSCRIPTIONS_READ_RANGE)
         
         rows_to_delete = []
         for i, row in enumerate(all_values):
