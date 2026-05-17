@@ -570,9 +570,34 @@ def clean_timestamp_text_values(worksheet, force_datetime_serial=False, only_hea
             return 0
 
         updates = []
+        cleaned_count = 0
         for col_index in timestamp_cols:
             column_name = a1_column(col_index + 1)
             values = get_values_with_quota_retry(worksheet, f'{column_name}2:{column_name}')
+            if force_datetime_serial:
+                column_values = []
+                changed = 0
+                for row in values:
+                    value = str(row[0] if row else '').strip()
+                    parsed = parse_datetime_value(value)
+                    if parsed:
+                        column_values.append([sheet_datetime_value(format_timestamp(parsed))])
+                        changed += 1
+                    else:
+                        column_values.append([value])
+
+                for offset in range(0, len(column_values), 1000):
+                    chunk = column_values[offset:offset + 1000]
+                    start_row = 2 + offset
+                    end_row = start_row + len(chunk) - 1
+                    worksheet.update(
+                        range_name=f'{column_name}{start_row}:{column_name}{end_row}',
+                        values=chunk,
+                        value_input_option='USER_ENTERED',
+                    )
+                cleaned_count += changed
+                continue
+
             for row_offset, row in enumerate(values, start=2):
                 value = str(row[0] if row else '').strip()
                 normalized_value = value.lstrip("'")
@@ -589,12 +614,13 @@ def clean_timestamp_text_values(worksheet, force_datetime_serial=False, only_hea
                         'range': gspread.utils.rowcol_to_a1(row_offset, col_index + 1),
                         'values': [[sheet_datetime_value(cleaned)]],
                     })
+                    cleaned_count += 1
 
         for i in range(0, len(updates), config.BATCH_SIZE):
             worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
             time.sleep(0.2)
 
-        return len(updates)
+        return cleaned_count
     except Exception as e:
         print(f"  ⚠️  Error cleaning timestamp values in {worksheet.title}: {e}")
         return 0
