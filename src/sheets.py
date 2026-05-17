@@ -97,6 +97,19 @@ def get_values_with_quota_retry(worksheet, range_name=None, attempts=3):
             delay_seconds *= 2
 
 
+def batch_update_with_quota_retry(worksheet, updates, value_input_option='USER_ENTERED', attempts=3):
+    delay_seconds = 5
+    for attempt in range(1, attempts + 1):
+        try:
+            return worksheet.batch_update(updates, value_input_option=value_input_option)
+        except Exception as error:
+            if not is_sheets_quota_error(error) or attempt >= attempts:
+                raise
+            print(f"  ⚠️  Sheets quota busy while writing {worksheet.title}; retry {attempt}/{attempts - 1} in {delay_seconds}s")
+            time.sleep(delay_seconds)
+            delay_seconds *= 2
+
+
 def get_settings_values(worksheet, force_refresh=False):
     """Read settings once per run; lock/status/settings all use the same small range."""
     global _SETTINGS_VALUES_CACHE
@@ -132,16 +145,7 @@ def current_local_datetime():
 
 
 def parse_table_datetime(value):
-    value = str(value or '').strip()
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
-        if parsed.tzinfo:
-            return parsed.astimezone(ZoneInfo('UTC')).replace(tzinfo=None)
-        return parsed
-    except Exception:
-        return None
+    return parse_datetime_value(value)
 
 
 def video_id_from_url(url):
@@ -404,7 +408,12 @@ def parse_datetime_value(value):
             return None
 
     text = str(value).strip().lstrip("'")
-    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M'):
+    for fmt in (
+        '%Y-%m-%d %H:%M:%S',
+        '%Y-%m-%d %H:%M',
+        '%d.%m.%Y %H:%M:%S',
+        '%d.%m.%Y %H:%M',
+    ):
         try:
             return datetime.strptime(text, fmt)
         except ValueError:
@@ -1166,7 +1175,7 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
     """Обновление статуса публикации существующей строки видео"""
     try:
         worksheet = ensure_videos_worksheet(sheet)
-        values = worksheet.get_all_values()
+        values = get_values_with_quota_retry(worksheet)
         headers = [str(value).strip() for value in values[0]] if values else []
         indexes = {header: index + 1 for index, header in enumerate(headers)}
         target_row = None
@@ -1200,7 +1209,7 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
             for header, value in column_updates.items()
             if header in indexes
         ]
-        worksheet.batch_update(updates, value_input_option='USER_ENTERED')
+        batch_update_with_quota_retry(worksheet, updates, value_input_option='USER_ENTERED')
         return True
     except Exception as e:
         print(f"  ⚠️  Error updating publication status for {video_id}: {e}")
@@ -1252,7 +1261,9 @@ def reconcile_pending_published_videos(sheet):
             video_id = video_id_from_url(first_value(data, ['Ссылка на видео', 'Video ID']))
             status = str(first_value(data, ['Системный статус'])).split('.', 1)[0].lower()
             message_id = first_value(data, ['TG message_id'])
-            if status == 'published' and message_id:
+            tg_published_current = first_value(data, ['Дата публикации TG GMT+4', 'Дата публикации TG Asia/Baku', 'Дата публикации TG'])
+            delay_current = first_value(data, ['Разница в минутах'])
+            if status == 'published' and message_id and tg_published_current and delay_current:
                 continue
 
             log_entry = published_logs.get((video_id, project_name))

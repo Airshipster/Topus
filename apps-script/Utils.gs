@@ -43,6 +43,17 @@ function triggerPublisher_(videoId, channelId, options) {
     return;
   }
 
+  if (videoId || channelId) {
+    var properties = PropertiesService.getScriptProperties();
+    var now = Date.now();
+    var lastDispatch = Number(properties.getProperty('TOPUS_LAST_PUSH_DISPATCH_MS') || 0);
+    if (lastDispatch && now - lastDispatch < 60000) {
+      console.log('GitHub dispatch skipped: recent push dispatch already queued');
+      return;
+    }
+    properties.setProperty('TOPUS_LAST_PUSH_DISPATCH_MS', String(now));
+  }
+
   var url = 'https://api.github.com/repos/' + GITHUB_OWNER + '/' + GITHUB_REPO + '/dispatches';
   var payload = {
     event_type: GITHUB_DISPATCH_EVENT_TYPE,
