@@ -1741,7 +1741,7 @@ def load_settings(sheet):
     """Загрузка настроек"""
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_SETTINGS)
-        values = worksheet.get_all_values()
+        values = get_values_with_quota_retry(worksheet, SETTINGS_READ_RANGE)
         table = find_settings_table(values)
         
         settings = {}

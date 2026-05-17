@@ -331,7 +331,7 @@ def main():
                 update_run_status(master_sheet, 'complete: no target projects', run_status_details())
                 return
         elif not sync_only_mode():
-            update_video_project_links(master_sheet, projects)
+            print("  ⏭️  Video project link maintenance skipped during publish run")
 
         if not push_only_mode():
             deduplicate_subscription_rows(master_sheet)
