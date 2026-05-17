@@ -165,6 +165,14 @@ def normalize_subscriptions_columns(sheet, worksheet, headers):
         )
         return desired
 
+    if projects_index == 0 and count_index == 1:
+        worksheet.update(
+            range_name=f'A1:{column_letter(len(desired))}1',
+            values=[desired],
+            value_input_option='USER_ENTERED',
+        )
+        return desired
+
     if count_index == projects_index + 1:
         sheet.batch_update({
             'requests': [{
