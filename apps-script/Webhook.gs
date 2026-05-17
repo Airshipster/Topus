@@ -21,6 +21,12 @@ function doPost(e) {
 }
 
 function doGet(e) {
+  var maintenance = e && e.parameter ? e.parameter.maintenance : '';
+  if (maintenance === 'fastLayout') {
+    repairTopusFastLayout();
+    return textOutput_('ok: fastLayout');
+  }
+
   var challenge = e && e.parameter ? e.parameter['hub.challenge'] : '';
 
   return textOutput_(challenge || 'alive');
