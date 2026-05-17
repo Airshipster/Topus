@@ -454,7 +454,10 @@ def main():
                 force=should_force_subscription_sync(),
                 active_channels_dict=active_channels_dict,
             ) or {'ok': False, 'partial': True, 'reason': 'unknown subscription sync result'}
-            update_project_channel_counts(master_sheet, projects)
+            if any(project.get('channels_error') for project in projects):
+                print("  ⚠️  Project channel counts skipped: channel inventory is incomplete")
+            else:
+                update_project_channel_counts(master_sheet, projects)
         else:
             print("\n📡 Subscription sync skipped during publish run")
             subscription_sync_result = {'ok': True, 'partial': False, 'reason': ''}

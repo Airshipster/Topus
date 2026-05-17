@@ -393,10 +393,16 @@ def split_project_names(projects_text):
 
 
 def update_subscription_inventory_warnings(sheet, subscription_records, failed_project_names):
+    statuses = {}
     if not failed_project_names:
+        for channel_id, record in subscription_records.items():
+            if str(record.get('status', '')).startswith('⚠️ project read failed'):
+                statuses[channel_id] = '✅ project read ok'
+        if statuses:
+            update_subscription_statuses(sheet, subscription_records, statuses)
+            print(f"  ✅ Cleared subscription inventory warnings: {len(statuses)}")
         return
 
-    statuses = {}
     for channel_id, record in subscription_records.items():
         channel_projects = split_project_names(record.get('projects', ''))
         failed_for_channel = sorted(channel_projects & failed_project_names)
@@ -574,7 +580,9 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
             for project in projects
             if project.get('channels_error') and str(project.get('name', '')).strip()
         }
-        update_subscription_inventory_warnings(master_sheet, subscription_records, failed_project_names)
+    else:
+        failed_project_names = set()
+    update_subscription_inventory_warnings(master_sheet, subscription_records, failed_project_names)
     subscribed_channels = set(subscription_records.keys())
     to_subscribe = active_channels - subscribed_channels
     to_unsubscribe = set() if not inventory_complete else subscribed_channels - active_channels
