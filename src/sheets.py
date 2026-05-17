@@ -1627,6 +1627,39 @@ def update_last_run(sheet):
     except Exception as e:
         print(f"  ❌ Error updating last_run: {e}")
 
+
+def update_run_status(sheet, status, details=''):
+    """Write the current publisher status after the blue separator row."""
+    try:
+        worksheet = sheet.worksheet(config.SHEET_NAME_SETTINGS)
+        values = worksheet.get_all_values()
+        marker_row = None
+
+        for row_index, row in enumerate(values, start=1):
+            first_cell = str(row[0]).strip() if row else ''
+            if first_cell == '🔵':
+                marker_row = row_index
+                break
+
+        if marker_row is None:
+            target_row = len(values) + 1
+        else:
+            target_row = marker_row + 1
+            existing_label = ''
+            if len(values) >= target_row and values[target_row - 1]:
+                existing_label = str(values[target_row - 1][0]).strip()
+            if existing_label and existing_label != 'Статус run-ов':
+                worksheet.insert_row([''], index=target_row, value_input_option='USER_ENTERED')
+
+        worksheet.update(
+            range_name=f'A{target_row}:D{target_row}',
+            values=[['Статус run-ов', clean_sheet_value(status), clean_sheet_value(details), format_timestamp()]],
+            value_input_option='USER_ENTERED',
+        )
+        print(f"  ℹ️  Run status updated: {status}")
+    except Exception as e:
+        print(f"  ⚠️  Error updating run status: {e}")
+
 def load_projects(sheet, update_status=True):
     """Загрузка активных проектов"""
     worksheet = sheet.worksheet(config.SHEET_NAME_PROJECTS)

@@ -29,6 +29,7 @@ from sheets import (
     update_project_channel_counts,
     update_video_publication_status,
     update_last_run,
+    update_run_status,
     update_youtube_quota,
     parse_datetime_value,
 )
@@ -66,6 +67,24 @@ def sync_only_mode():
 def push_only_mode():
     value = os.environ.get('TOPUS_PUSH_ONLY', '')
     return value.lower() in ('1', 'true', 'yes')
+
+
+def run_mode_name():
+    if sync_only_mode():
+        return 'sync-only'
+    if push_only_mode():
+        return 'push-only'
+    return 'scheduled'
+
+
+def run_status_details():
+    run_id = os.environ.get('GITHUB_RUN_ID', 'local')
+    event = os.environ.get('GITHUB_EVENT_NAME', 'local')
+    sha = os.environ.get('GITHUB_SHA', '')[:7]
+    bits = [f'mode={run_mode_name()}', f'event={event}', f'run={run_id}']
+    if sha:
+        bits.append(f'sha={sha}')
+    return ', '.join(bits)
 
 
 def print_detection_latency_note():
@@ -242,8 +261,10 @@ def main():
         # ПРОВЕРКА БЛОКИРОВКИ
         if not acquire_lock_with_wait(master_sheet):
             print("\n❌ Cannot acquire lock. Another process is running. Exiting.")
+            update_run_status(master_sheet, 'busy: another run holds lock', run_status_details())
             return
         lock_acquired = True
+        update_run_status(master_sheet, f'running: {run_mode_name()}', run_status_details())
         
         print("\n⚙️  Loading settings...")
         settings = load_settings(master_sheet)
@@ -268,10 +289,12 @@ def main():
             print(f"📬 Unprocessed push events: {len(push_events)}")
             if not push_events:
                 print("\n✅ Push-only mode completed. No pending push events.")
+                update_run_status(master_sheet, 'complete: no pending push events', run_status_details())
                 return
             projects = select_push_projects(master_sheet, projects, push_events)
             if not projects:
                 print("\n✅ Push-only mode completed. No target projects for pending push events.")
+                update_run_status(master_sheet, 'complete: no target projects', run_status_details())
                 return
         else:
             update_video_project_links(master_sheet, projects)
@@ -294,6 +317,7 @@ def main():
         if sync_only_mode():
             print("\n✅ Sync-only mode completed. Skipping RSS/publish processing.")
             update_last_run(master_sheet)
+            update_run_status(master_sheet, 'complete: sync-only', run_status_details())
             return
         
         published_videos = get_published_videos(master_sheet)
@@ -562,9 +586,16 @@ def main():
         print(f"  📊 YouTube API calls: {get_youtube_api_calls()}")
         print(f"\nFinished: {format_timestamp()}")
         print(f"{'='*60}")
+        update_run_status(
+            master_sheet,
+            f'complete: found {total_found}, published {total_published}, filtered {total_filtered}, failed {total_failed}',
+            run_status_details(),
+        )
         
     except Exception as e:
         print(f"\n❌❌❌ FATAL ERROR: {e}")
+        if master_sheet:
+            update_run_status(master_sheet, f'failed: {type(e).__name__}', str(e)[:300])
         import traceback
         traceback.print_exc()
         raise
