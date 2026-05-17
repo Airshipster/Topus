@@ -600,6 +600,7 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
 
     if not should_run_subscription_sync(master_sheet, force=force):
         print("  ⏭️  Subscribe/renew skipped (last full sync < 24h)")
+        changed_subscription_rows = False
         if to_subscribe:
             print(f"  Subscribing to {len(to_subscribe)} new channels despite recent full sync...")
             subscribed = []
@@ -610,6 +611,7 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
 
             if subscribed:
                 save_subscribed_channels_batch(master_sheet, subscribed, active_channels_dict)
+                changed_subscription_rows = True
                 print(f"  ✅ Successfully subscribed: {len(subscribed)}")
 
         if to_unsubscribe:
@@ -618,11 +620,13 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
                 unsubscribe_channel(channel_id)
                 time.sleep(0.1)
             remove_subscribed_channels(master_sheet, to_unsubscribe)
-        subscription_records = get_subscription_records(master_sheet)
-        if subscription_records is None:
-            print("  ⚠️  Project link update skipped: could not re-read subscriptions")
-            result.update({'ok': False, 'partial': True, 'reason': 'could not re-read subscriptions'})
-            return result
+            changed_subscription_rows = True
+        if changed_subscription_rows:
+            subscription_records = get_subscription_records(master_sheet)
+            if subscription_records is None:
+                print("  ⚠️  Project link update skipped: could not re-read subscriptions")
+                result.update({'ok': False, 'partial': True, 'reason': 'could not re-read subscriptions'})
+                return result
         update_subscription_project_links(master_sheet, subscription_records, active_channels_dict)
         return result
 
