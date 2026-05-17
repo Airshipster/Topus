@@ -267,6 +267,15 @@ def main():
                 print(f"\n⚠️  Google Sheets read quota is busy; push-only run will retry on the next dispatch: {error}")
                 return
             raise
+
+        if maintenance_only_mode():
+            print("  🧰 Maintenance-only mode: repairing workbook layout and values")
+            maintain_workbook_layout(master_sheet)
+            clean_master_numeric_text_values(master_sheet)
+            update_last_run(master_sheet)
+            update_run_status(master_sheet, 'complete: maintenance-only', run_status_details())
+            release_lock(master_sheet)
+            return
         
         # ПРОВЕРКА БЛОКИРОВКИ
         if not acquire_lock_with_wait(master_sheet):
@@ -279,14 +288,6 @@ def main():
         print("\n⚙️  Loading settings...")
         settings = load_settings(master_sheet)
         print_detection_latency_note()
-        if maintenance_only_mode():
-            print("  🧰 Maintenance-only mode: repairing workbook layout and values")
-            maintain_workbook_layout(master_sheet)
-            clean_master_numeric_text_values(master_sheet)
-            update_last_run(master_sheet)
-            update_run_status(master_sheet, 'complete: maintenance-only', run_status_details())
-            return
-
         if push_only_mode():
             print("  ⚡ Push-only mode: skipping workbook maintenance")
         elif sync_only_mode():
