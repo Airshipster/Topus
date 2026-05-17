@@ -1102,16 +1102,16 @@ def row_as_dict(headers, row):
         for i, header in enumerate(headers)
         if str(header).strip()
     }
-    for canonical_header in ('Системный статус', 'Событие'):
-        index = find_column_index(headers, [canonical_header])
-        if index is not None:
-            data[canonical_header] = clean_sheet_value(row[index]) if index < len(row) else ''
+    for index, header in enumerate(headers):
+        canonical = canonical_header_name(header)
+        if canonical and canonical != str(header).strip():
+            data[canonical] = clean_sheet_value(row[index]) if index < len(row) else ''
     return data
 
 
 def canonical_header_name(header):
     normalized = normalize_header(header)
-    for canonical in ('Системный статус', 'Событие'):
+    for canonical in ('Системный статус', 'Событие', 'Разница в минутах'):
         if normalize_header(canonical) in normalized:
             return canonical
     return str(header).strip()
@@ -1135,14 +1135,9 @@ def header_indexes(headers):
 
 
 def row_for_headers(headers, values_by_header):
-    status_index = find_column_index(headers, ['Системный статус'])
-    event_index = find_column_index(headers, ['Событие'])
     return [
-        clean_sheet_value(values_by_header.get(
-            'Системный статус' if i == status_index else ('Событие' if i == event_index else str(header).strip()),
-            ''
-        ))
-        for i, header in enumerate(headers)
+        clean_sheet_value(values_by_header.get(canonical_header_name(header), ''))
+        for header in headers
     ]
 
 
