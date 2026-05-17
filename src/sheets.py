@@ -208,9 +208,33 @@ def tg_channel_url(project):
     return ''
 
 
-def project_link_formula(project_name, project):
+def hyperlink_formula(url, text):
+    if not url:
+        return text
+    safe_url = str(url).replace('"', '""')
+    safe_text = str(text).replace('"', '""')
+    return f'=HYPERLINK("{safe_url}";"{safe_text}")'
+
+
+def append_tg_message_id(url, tg_message_id):
+    message_id = str(clean_sheet_value(tg_message_id) or '').strip()
+    if not url or not message_id:
+        return url
+    base_url = re.sub(r'/\d+$', '', str(url).rstrip('/'))
+    return f'{base_url}/{message_id}'
+
+
+def project_link_formula(project_name, project, tg_message_id=None):
     url = tg_channel_url(project)
-    return f'=HYPERLINK("{url}";"{project_name}")' if url else project_name
+    return hyperlink_formula(append_tg_message_id(url, tg_message_id), project_name)
+
+
+def project_post_link_formula_from_cell(project_cell, project_name, tg_message_id):
+    project_cell = str(clean_sheet_value(project_cell) or '').strip()
+    match = re.match(r'=HYPERLINK\("([^"]+)"[;,]"[^"]+"\)', project_cell, flags=re.IGNORECASE)
+    if not match:
+        return project_cell or project_name
+    return hyperlink_formula(append_tg_message_id(match.group(1), tg_message_id), project_name)
 
 
 def project_name_from_cell(value):
@@ -1314,7 +1338,7 @@ def save_videos_batch(sheet, videos_data):
             source_method = str(video.get('source_method') or '').strip()
             if source_method.lower() == 'rss' and row_error.startswith('RSS: '):
                 row_error = row_error.replace('RSS: ', '', 1)
-            project_display = project_link_formula(project_name, project)
+            project_display = project_link_formula(project_name, project, tg_message_id)
             processed_at = format_timestamp()
             yt_published_at = normalize_timestamp(video_published_date)
             tg_published_at = format_timestamp() if tg_message_id else ''
@@ -1398,6 +1422,7 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
         yt_published = first_value(target_data, ['Дата публикации YT GMT+4', 'Дата публикации YT UTC'])
         method, _ = status_method_from_text(first_value(target_data, ['Системный статус']))
         column_updates = {
+            'Проект': project_post_link_formula_from_cell(first_value(target_data, ['Проект']), project_name, tg_message_id) if tg_message_id else first_value(target_data, ['Проект']),
             'TG message_id': sheet_numeric_value(tg_message_id) if tg_message_id else '',
             'Дата публикации TG GMT+4': sheet_datetime_value(timestamp) if tg_message_id else '',
             'Разница в минутах': publication_delay_minutes(yt_published, timestamp) if tg_message_id else '',

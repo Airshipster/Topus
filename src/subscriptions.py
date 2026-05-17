@@ -490,7 +490,7 @@ def deduplicate_subscription_rows(sheet):
         print(f"  ⚠️  Error deduplicating subscriptions: {type(e).__name__}: {e}")
         return 0
 
-def subscribe_channel(channel_id):
+def subscribe_channel(channel_id, return_error=False):
     """Подписка на push-уведомления"""
     hub_url = "https://pubsubhubbub.appspot.com/subscribe"
     topic_url = f"https://www.youtube.com/xml/feeds/videos.xml?channel_id={channel_id}"
@@ -504,9 +504,17 @@ def subscribe_channel(channel_id):
     
     try:
         response = requests.post(hub_url, data=data, timeout=10)
-        return response.status_code in [202, 204]
-    except:
-        return False
+        ok = response.status_code in [202, 204]
+        if ok:
+            return (True, '') if return_error else True
+        response_text = clean_sheet_value(response.text)[:120]
+        reason = f'HTTP {response.status_code}'
+        if response_text:
+            reason += f': {response_text}'
+        return (False, reason) if return_error else False
+    except Exception as e:
+        reason = f'{type(e).__name__}: {e}'
+        return (False, reason) if return_error else False
 
 def unsubscribe_channel(channel_id):
     """Отписка от push-уведомлений"""
@@ -650,6 +658,7 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
     if len(to_renew) > 0:
         print(f"  Renewing {len(to_renew)} existing subscriptions...")
         renewed = []
+        renewal_errors = {}
         to_renew_list = sorted(to_renew)
         project_renew_totals = {}
         project_renew_done = {}
@@ -676,8 +685,11 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
                     status_updates,
                     'renewing push subscriptions',
                 )
-            if subscribe_channel(channel_id):
+            ok, error_text = subscribe_channel(channel_id, return_error=True)
+            if ok:
                 renewed.append(channel_id)
+            elif error_text:
+                renewal_errors[channel_id] = error_text
             time.sleep(0.1)
 
         if renewed:
@@ -693,7 +705,10 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
             update_subscription_statuses(
                 master_sheet,
                 subscription_records,
-                {channel_id: '❌ subscribe/renew failed' for channel_id in failed_renewals},
+                {
+                    channel_id: f"❌ subscribe/renew failed: {renewal_errors.get(channel_id, 'unknown')}"
+                    for channel_id in failed_renewals
+                },
             )
             print(f"  ❌ Subscription renew failed: {len(failed_renewals)}")
     
