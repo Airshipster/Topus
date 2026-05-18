@@ -11,7 +11,9 @@ function doPost(e) {
       console.warn('Push payload ignored: missing videoId or channelId');
       return textOutput_('ignored: missing videoId or channelId');
     }
-    appendPushEvent_(timestamp, payload.videoId, payload.channelId, rawXml);
+    if (!appendPushEvent_(timestamp, payload.videoId, payload.channelId, rawXml)) {
+      return textOutput_('ignored: duplicate push event');
+    }
     triggerPublisher_(payload.videoId, payload.channelId);
   } finally {
     lock.releaseLock();
