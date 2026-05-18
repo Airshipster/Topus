@@ -1,0 +1,28 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "topus-telegram-subscriptions",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-18",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "topus-telegram-subscriptions",
+      "database_id": "76daece6-bd81-4c16-954b-dfafce9691ae",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "CACHE",
+      "id": "c8b24c7c26634b75811f9bb2afbb87a2"
+    }
+  ],
+  "vars": {
+    "ENVIRONMENT": "production"
+  }
+}

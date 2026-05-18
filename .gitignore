@@ -23,6 +23,10 @@ wheels/
 .installed.cfg
 *.egg
 
+# Node / Cloudflare Worker
+node_modules/
+.wrangler/
+
 # IDE
 .vscode/
 .idea/
@@ -33,6 +37,9 @@ wheels/
 # Secrets
 .env
 *.json
+!package.json
+!package-lock.json
+!tsconfig.json
 credentials.json
 service-account.json
 

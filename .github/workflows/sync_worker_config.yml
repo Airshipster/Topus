@@ -1,0 +1,31 @@
+name: Sync Telegram Worker Config
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sync-worker-config:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Sync projects and channels to Worker
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          TOPUS_WORKER_URL: ${{ secrets.TOPUS_WORKER_URL }}
+          TOPUS_WORKER_ADMIN_SECRET: ${{ secrets.TOPUS_WORKER_ADMIN_SECRET }}
+        run: |
+          python src/sync_worker_config.py --set-webhooks
