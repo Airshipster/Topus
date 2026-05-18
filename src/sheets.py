@@ -1284,6 +1284,7 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
     try:
         worksheet = ensure_videos_worksheet(sheet)
         values = get_values_with_quota_retry(worksheet)
+        project_formulas = get_values_with_quota_retry(worksheet, 'A:A', value_render_option='FORMULA')
         headers = [str(value).strip() for value in values[0]] if values else []
         indexes = {header: index + 1 for header, index in header_indexes(headers).items()}
         status_index = find_column_index(headers, ['Системный статус'])
@@ -1307,8 +1308,12 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
         timestamp = format_timestamp()
         yt_published = first_value(target_data, ['Дата публикации YT GMT+4', 'Дата публикации YT UTC'])
         method, _ = status_method_from_text(first_value(target_data, ['Системный статус']))
+        current_project_cell = first_value(target_data, ['Проект'])
+        project_formula = cell_value(project_formulas[target_row - 1], 0) if target_row - 1 < len(project_formulas) else ''
+        if str(project_formula).strip().startswith('='):
+            current_project_cell = project_formula
         column_updates = {
-            'Проект': project_post_link_formula_from_cell(first_value(target_data, ['Проект']), project_name, tg_message_id) if tg_message_id else first_value(target_data, ['Проект']),
+            'Проект': project_post_link_formula_from_cell(current_project_cell, project_name, tg_message_id) if tg_message_id else current_project_cell,
             'TG message_id': sheet_numeric_value(tg_message_id) if tg_message_id else '',
             'Дата публикации TG GMT+4': sheet_datetime_value(timestamp) if tg_message_id else '',
             'Разница в минутах': publication_delay_minutes(yt_published, timestamp) if tg_message_id else '',
