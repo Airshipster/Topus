@@ -71,6 +71,7 @@ type SyncProject = {
 };
 
 const jsonHeaders = { 'content-type': 'application/json; charset=utf-8' };
+const CHANNELS_PER_PAGE = 20;
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -216,7 +217,7 @@ async function handleMessage(env: Env, project: Project, message: TelegramMessag
   }
 
   await upsertUser(env, project.code, message.from);
-  const menu = await renderMenu(env, project.code, String(message.from.id), 'root');
+  const menu = await renderMenu(env, project.code, String(message.from.id), 'root', 0);
   await telegram(project.bot_token, 'sendMessage', {
     chat_id: message.chat.id,
     text: 'Выберите категории и каналы:',
@@ -236,17 +237,24 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
 
   const [action, value = 'root'] = data.split(':', 2);
   let categoryId = value || 'root';
+  let page = 0;
   let toast = '';
 
   if (action === 'cat') {
     categoryId = value;
+  } else if (action === 'page') {
+    const parts = data.split(':');
+    categoryId = parts[1] || 'root';
+    page = Math.max(0, Number.parseInt(parts[2] || '0', 10) || 0);
   } else if (action === 'back') {
     categoryId = (await parentCategory(env, project.code, value)) || 'root';
   } else if (action === 'toggle') {
+    const parts = data.split(':');
     const channel = await getChannel(env, project.code, value);
     if (channel) {
       const active = await toggleSubscription(env, project.code, String(callback.from.id), channel.channel_id);
       categoryId = await channelCategory(env, project.code, channel.channel_id);
+      page = Math.max(0, Number.parseInt(parts[2] || '0', 10) || 0);
       toast = active ? 'Подписка включена' : 'Подписка отключена';
     }
   } else if (action === 'all' || action === 'none') {
@@ -258,7 +266,7 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
 
   await answer(project.bot_token, callback.id, toast);
   if (message) {
-    const menu = await renderMenu(env, project.code, String(callback.from.id), categoryId);
+    const menu = await renderMenu(env, project.code, String(callback.from.id), categoryId, page);
     await telegram(project.bot_token, 'editMessageReplyMarkup', {
       chat_id: message.chat.id,
       message_id: message.message_id,
@@ -267,7 +275,7 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
   }
 }
 
-async function renderMenu(env: Env, projectCode: string, userId: string, categoryId: string): Promise<object> {
+async function renderMenu(env: Env, projectCode: string, userId: string, categoryId: string, page: number): Promise<object> {
   const [categories, channels, selected] = await Promise.all([
     childCategories(env, projectCode, categoryId),
     childChannels(env, projectCode, categoryId),
@@ -280,10 +288,29 @@ async function renderMenu(env: Env, projectCode: string, userId: string, categor
     rows.push([{ text: `📁 ${category.title}`, callback_data: `cat:${category.category_id}` }]);
   }
 
-  for (const channel of channels) {
+  const totalPages = Math.max(1, Math.ceil(channels.length / CHANNELS_PER_PAGE));
+  const currentPage = Math.min(Math.max(0, page), totalPages - 1);
+  const visibleChannels = channels.slice(
+    currentPage * CHANNELS_PER_PAGE,
+    currentPage * CHANNELS_PER_PAGE + CHANNELS_PER_PAGE,
+  );
+
+  for (const channel of visibleChannels) {
     const marker = selected.has(channel.channel_id) ? '✅' : '☐';
     const status = channel.status === 'red' ? ' 🔴' : '';
-    rows.push([{ text: `${marker} ${channel.title}${status}`, callback_data: `toggle:${channel.channel_id}` }]);
+    rows.push([{ text: `${marker} ${channel.title}${status}`, callback_data: `toggle:${channel.channel_id}:${currentPage}` }]);
+  }
+
+  if (totalPages > 1) {
+    const navRow: Array<{ text: string; callback_data: string }> = [];
+    if (currentPage > 0) {
+      navRow.push({ text: '←', callback_data: `page:${categoryId}:${currentPage - 1}` });
+    }
+    navRow.push({ text: `${currentPage + 1}/${totalPages}`, callback_data: 'noop' });
+    if (currentPage < totalPages - 1) {
+      navRow.push({ text: '→', callback_data: `page:${categoryId}:${currentPage + 1}` });
+    }
+    rows.push(navRow);
   }
 
   rows.push([
