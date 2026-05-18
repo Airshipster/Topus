@@ -1912,6 +1912,52 @@ def delete_rows_batch(spreadsheet, worksheet, row_indexes):
 
     return deleted_rows
 
+
+def delete_old_activity_rows(sheet, retention_days=None):
+    """Delete rows older than the shared activity retention window."""
+    retention_days = retention_days or config.ACTIVITY_RETENTION_DAYS
+    cutoff = current_local_datetime() - timedelta(days=retention_days)
+    targets = [
+        ('Логи', ['Timestamp GMT+4', 'Timestamp']),
+        (config.SHEET_NAME_PUSH_EVENTS, ['Timestamp GMT+4', 'Timestamp']),
+        (config.SHEET_NAME_VIDEOS, ['Дата обработки GMT+4', 'Дата обработки Asia/Baku', 'Дата обработки UTC']),
+    ]
+    total_deleted = 0
+
+    for worksheet_name, date_headers in targets:
+        try:
+            worksheet = sheet.worksheet(worksheet_name)
+            values = get_values_with_quota_retry(worksheet)
+            if len(values) <= 1:
+                continue
+
+            headers = [str(value).strip() for value in values[0]]
+            date_col = find_column_index(headers, date_headers)
+            if date_col is None:
+                print(f"  ⚠️  Retention skipped for {worksheet_name}: date column not found")
+                continue
+
+            rows_to_delete = []
+            for row_index, row in enumerate(values[1:], start=2):
+                if not any(str(cell).strip() for cell in row):
+                    continue
+                row_date = parse_datetime_value(cell_value(row, date_col))
+                if row_date and row_date < cutoff:
+                    rows_to_delete.append(row_index)
+
+            deleted = delete_rows_batch(sheet, worksheet, rows_to_delete)
+            if deleted:
+                total_deleted += deleted
+                print(f"  🧹 Deleted old rows from {worksheet_name}: {deleted}")
+        except gspread.exceptions.WorksheetNotFound:
+            continue
+        except Exception as e:
+            print(f"  ⚠️  Error deleting old rows from {worksheet_name}: {e}")
+
+    if total_deleted:
+        ensure_non_settings_sheet_row_counts(sheet)
+    return total_deleted
+
 def load_settings(sheet):
     """Загрузка настроек"""
     try:

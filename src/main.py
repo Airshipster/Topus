@@ -11,6 +11,7 @@ from sheets import (
     authenticate_google_sheets,
     current_local_datetime,
     deduplicate_settings_rows,
+    delete_old_activity_rows,
     format_timestamp,
     delete_stale_unpublished_video_rows,
     ensure_non_settings_sheet_row_counts,
@@ -348,10 +349,14 @@ def main():
         if maintenance_only_mode():
             print("  🧰 Maintenance-only mode: repairing workbook layout and values")
             maintain_workbook_layout(master_sheet)
+            deleted_old_rows = delete_old_activity_rows(master_sheet)
             deduplicate_settings_rows(master_sheet)
             get_or_create_subscriptions_worksheet(master_sheet)
             update_last_run(master_sheet)
-            update_run_status(master_sheet, 'complete: maintenance-only', run_status_details())
+            details = run_status_details()
+            if deleted_old_rows:
+                details = f'{details}; old rows deleted={deleted_old_rows}'
+            update_run_status(master_sheet, 'complete: maintenance-only', details)
             return
 
         if repair_pending_only_mode():
@@ -441,6 +446,7 @@ def main():
         if sync_only_mode():
             print("\n✅ Sync-only mode completed. Skipping RSS/publish processing.")
             duplicate_or_stale_pending = delete_stale_unpublished_video_rows(master_sheet)
+            deleted_old_rows = delete_old_activity_rows(master_sheet)
             update_last_run(master_sheet)
             if subscription_sync_result.get('partial'):
                 update_run_status(
@@ -452,6 +458,8 @@ def main():
                 details = run_status_details()
                 if duplicate_or_stale_pending:
                     details = f'{details}; pending cleaned={duplicate_or_stale_pending}'
+                if deleted_old_rows:
+                    details = f'{details}; old rows deleted={deleted_old_rows}'
                 update_run_status(master_sheet, 'complete: sync-only', details)
             return
         
@@ -732,6 +740,10 @@ def main():
         if log_entries:
             print(f"\n📝 Saving logs...")
             log_events_batch(master_sheet, log_entries)
+
+        if not push_only_mode():
+            print("\n🧹 Applying activity retention...")
+            delete_old_activity_rows(master_sheet)
         
         # Обновление метаданных
         print("\n📝 Updating metadata...")
