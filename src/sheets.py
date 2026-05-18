@@ -608,20 +608,12 @@ def deduplicate_settings_rows(sheet):
 
         latest_rows = {}
         duplicate_rows = []
-        legacy_status_rows = []
-        key_index = table['key_col'] - 1
-        for row_number, row in enumerate(values, start=1):
-            normalized = [str(cell).strip() for cell in row]
-            key = normalized[key_index] if len(normalized) > key_index else ''
-            if 'Статус run-ов' in normalized and key != 'Статус run-ов':
-                legacy_status_rows.append(row_number)
 
         for row_number, key, _, _ in iter_settings_rows(values, table):
             if key in latest_rows:
                 duplicate_rows.append(latest_rows[key])
             latest_rows[key] = row_number
 
-        duplicate_rows.extend(legacy_status_rows)
         duplicate_rows = sorted(set(duplicate_rows))
         if not duplicate_rows:
             return 0
@@ -683,48 +675,6 @@ def ensure_master_timestamp_formats(sheet):
 
     if requests:
         print(f"  🕒 Applied timestamp number formats: {len(requests)} columns")
-
-
-def normalize_settings_datetime_values(sheet):
-    try:
-        worksheet = sheet.worksheet(config.SHEET_NAME_SETTINGS)
-        values = get_values_with_quota_retry(worksheet, SETTINGS_READ_RANGE)
-        table = find_settings_table(values)
-        if not table:
-            return 0
-
-        timestamp_value_keys = {'last_run', 'last_cleanup', 'last_subscription_sync'}
-        timestamp_description_keys = {'lock_status'}
-        updates = []
-        for row_number, key, value, description in iter_settings_rows(values, table):
-            if key in timestamp_value_keys:
-                parsed = parse_datetime_value(value)
-                if parsed:
-                    formatted = format_timestamp(parsed)
-                    if formatted != value:
-                        updates.append({
-                            'range': gspread.utils.rowcol_to_a1(row_number, table['value_col']),
-                            'values': [[formatted]],
-                        })
-            if key in timestamp_description_keys and table.get('description_col'):
-                parsed = parse_datetime_value(description)
-                if parsed:
-                    formatted = format_timestamp(parsed)
-                    if formatted != description:
-                        updates.append({
-                            'range': gspread.utils.rowcol_to_a1(row_number, table['description_col']),
-                            'values': [[formatted]],
-                        })
-
-        for i in range(0, len(updates), config.BATCH_SIZE):
-            worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
-            time.sleep(0.2)
-        if updates:
-            print(f"  🕒 Normalized settings timestamp values: {len(updates)}")
-        return len(updates)
-    except Exception as e:
-        print(f"  ⚠️  Error normalizing settings timestamp values: {e}")
-        return 0
 
 
 def update_project_statuses(worksheet, headers, status_updates):
@@ -1649,24 +1599,6 @@ def ensure_logs_worksheet(sheet):
     return worksheet
 
 
-def strip_apostrophes_in_worksheet(worksheet):
-    values = get_values_with_quota_retry(worksheet)
-    updates = []
-    for row_index, row in enumerate(values, start=1):
-        cleaned = clean_row(row)
-        if cleaned != row:
-            updates.append({
-                'range': f'A{row_index}:{a1_column(len(cleaned))}{row_index}',
-                'values': [cleaned],
-            })
-
-    for i in range(0, len(updates), config.BATCH_SIZE):
-        worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
-        time.sleep(0.2)
-
-    return len(updates)
-
-
 def last_used_row(values):
     for row_index in range(len(values), 0, -1):
         if any(str(cell).strip() for cell in values[row_index - 1]):
@@ -1854,33 +1786,13 @@ def format_push_events_sheet(sheet, clean_rows=False):
         print(f"  ⚠️  Error formatting push events: {e}")
 
 
-def maintain_workbook_layout(sheet, clean_apostrophes=False):
+def maintain_workbook_layout(sheet):
     ensure_non_settings_sheet_row_counts(sheet)
     ensure_master_timestamp_formats(sheet)
-    normalize_settings_datetime_values(sheet)
-
-    changed_rows = 0
-    if clean_apostrophes:
-        for worksheet_name in [
-            config.SHEET_NAME_PROJECTS,
-            config.SHEET_NAME_VIDEOS,
-            'Логи',
-            config.SHEET_NAME_PUSH_EVENTS,
-            'Подписки',
-            config.SHEET_NAME_SETTINGS,
-        ]:
-            try:
-                worksheet = sheet.worksheet(worksheet_name)
-                changed_rows += strip_apostrophes_in_worksheet(worksheet)
-            except Exception:
-                pass
 
     ensure_videos_worksheet(sheet)
     ensure_logs_worksheet(sheet)
     format_push_events_sheet(sheet)
-
-    if changed_rows:
-        print(f"  🧹 Removed leading apostrophes from {changed_rows} rows")
 
 
 def update_video_project_links(sheet, projects):
