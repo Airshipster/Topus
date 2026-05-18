@@ -24,7 +24,6 @@ from sheets import (
     mark_push_events_processed_batch,
     maintain_workbook_layout,
     reconcile_pending_published_videos,
-    repair_video_publication_status,
     update_video_project_links,
     release_lock,
     save_videos_batch,
@@ -114,10 +113,6 @@ def repair_pending_only_mode():
     return value.lower() in ('1', 'true', 'yes')
 
 
-def repair_video_id():
-    return os.environ.get('TOPUS_REPAIR_VIDEO_ID', '').strip()
-
-
 def unlock_only_mode():
     value = os.environ.get('TOPUS_UNLOCK_ONLY', '')
     return value.lower() in ('1', 'true', 'yes')
@@ -126,8 +121,6 @@ def unlock_only_mode():
 def run_mode_name():
     if unlock_only_mode():
         return 'unlock-only'
-    if repair_video_id():
-        return 'repair-video'
     if repair_pending_only_mode():
         return 'repair-pending-only'
     if maintenance_only_mode():
@@ -374,23 +367,6 @@ def main():
             update_run_status(master_sheet, f'complete: repaired pending rows={fixed}, deleted stale rows={deleted}', run_status_details())
             return
 
-        if repair_video_id():
-            print("  🧩 Repair-video mode: updating one known published row")
-            if not acquire_lock_with_wait(master_sheet):
-                print("\n❌ Cannot acquire lock. Another process is running. Exiting.")
-                update_run_status(master_sheet, 'busy: another run holds lock', run_status_details())
-                return
-            lock_acquired = True
-            ok = repair_video_publication_status(
-                master_sheet,
-                repair_video_id(),
-                os.environ.get('TOPUS_REPAIR_PROJECT_NAME', '').strip(),
-                os.environ.get('TOPUS_REPAIR_TG_MESSAGE_ID', '').strip(),
-            )
-            status = 'complete: repaired one video row' if ok else 'failed: repair video row not found'
-            update_run_status(master_sheet, status, run_status_details())
-            return
-        
         # ПРОВЕРКА БЛОКИРОВКИ
         if not acquire_lock_with_wait(master_sheet):
             print("\n❌ Cannot acquire lock. Another process is running. Exiting.")

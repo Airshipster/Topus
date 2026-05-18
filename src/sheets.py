@@ -1379,20 +1379,6 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
         return False
 
 
-def repair_video_publication_status(sheet, video_id, project_name, tg_message_id):
-    """Repair one row known to be published when the normal status write failed."""
-    if not video_id or not project_name or not tg_message_id:
-        print("  ⚠️  Target repair skipped: video_id, project_name and tg_message_id are required")
-        return False
-    return update_video_publication_status(
-        sheet,
-        video_id.strip(),
-        project_name.strip(),
-        tg_message_id=str(tg_message_id).strip(),
-        status='published',
-    )
-
-
 def reconcile_pending_published_videos(sheet):
     """Repair rows left as pending when Telegram succeeded but Sheets update hit quota."""
     try:
