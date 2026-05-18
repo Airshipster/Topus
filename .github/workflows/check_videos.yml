@@ -61,6 +61,8 @@ jobs:
     - name: Run main script
       env:
         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        TOPUS_WORKER_URL: ${{ secrets.TOPUS_WORKER_URL }}
+        TOPUS_WORKER_ADMIN_SECRET: ${{ secrets.TOPUS_WORKER_ADMIN_SECRET }}
         PYTHONUNBUFFERED: '1'
         TOPUS_MAINTENANCE_ONLY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.maintenance_only == 'true' }}
         TOPUS_UNLOCK_ONLY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.unlock_only == 'true' }}

@@ -38,6 +38,7 @@ from sheets import (
 )
 from subscriptions import deduplicate_subscription_rows, get_or_create_subscriptions_worksheet, get_subscription_records, sync_subscriptions
 from telegram_client import delete_telegram_message, format_message, send_to_telegram
+from worker_notifications import notify_worker_subscribers
 from youtube_client import get_last_youtube_api_error, get_video_info_from_api, get_youtube_api_calls
 
 
@@ -716,6 +717,9 @@ def main():
             
             if tg_message_id:
                 print(f"    ✅ Published (msg: {tg_message_id})")
+                worker_result = notify_worker_subscribers(project, video, message)
+                if worker_result:
+                    print(f"    👤 Worker subscriber notifications queued: {worker_result.get('queued', 0)}")
                 timestamp = format_timestamp()
                 log_entries.append([timestamp, project['name'], 'Video published', video['video_id'], f"Telegram msg: {tg_message_id}", 'success', video.get('source_method', '')])
                 update_video_publication_status(
