@@ -1,7 +1,6 @@
 import time
 
-import config
-from sheets import authenticate_google_sheets, clean_sheet_value, get_values_with_quota_retry
+from sheets import authenticate_google_sheets, clean_sheet_value, get_values_with_quota_retry, is_sheets_quota_error
 from subscriptions import (
     SUBSCRIPTIONS_READ_RANGE,
     SUBSCRIPTIONS_SHEET_NAME,
@@ -24,22 +23,30 @@ def main():
     indexes = subscription_header_indexes(headers)
     channel_col = indexes.get('Channel ID', 2)
 
-    updates = []
+    formulas = []
     for row_index, row in enumerate(values[1:], start=2):
         raw_value = clean_sheet_value(row[channel_col]).strip() if len(row) > channel_col else ''
         channel_id = normalize_subscription_channel_id(raw_value)
-        if not channel_id:
-            continue
-        updates.append({
-            'range': f'C{row_index}',
-            'values': [[subscription_channel_formula(channel_id)]],
-        })
+        formulas.append([subscription_channel_formula(channel_id) if channel_id else ''])
 
-    for i in range(0, len(updates), config.BATCH_SIZE):
-        worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
-        time.sleep(0.2)
+    if not formulas:
+        print('No subscription channel links to update')
+        return
 
-    print(f'Updated subscription channel links: {len(updates)}')
+    delay_seconds = 10
+    target_range = f'C2:C{len(formulas) + 1}'
+    for attempt in range(1, 5):
+        try:
+            worksheet.update(range_name=target_range, values=formulas, value_input_option='USER_ENTERED')
+            break
+        except Exception as error:
+            if not is_sheets_quota_error(error) or attempt >= 4:
+                raise
+            print(f'Sheets quota busy while updating channel links; retry {attempt}/3 in {delay_seconds}s')
+            time.sleep(delay_seconds)
+            delay_seconds *= 2
+
+    print(f'Updated subscription channel links: {len(formulas)}')
 
 
 if __name__ == '__main__':
