@@ -288,12 +288,6 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
     if (!user.projectCode || !user.userId) {
       continue;
     }
-    const existingProject = await getProject(env, user.projectCode);
-    const telegramUser = (!user.username || !user.firstName) && existingProject
-      ? await getTelegramUser(existingProject, user.userId)
-      : null;
-    const username = user.username || telegramUser?.username || null;
-    const firstName = user.firstName || telegramUser?.first_name || null;
     statements.push(env.DB.prepare(
       `INSERT INTO users (project_code, user_id, username, first_name, is_paid, is_allowlisted, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -306,8 +300,8 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
     ).bind(
       user.projectCode,
       user.userId,
-      username,
-      firstName,
+      user.username || null,
+      user.firstName || null,
       user.isPaid ? 1 : 0,
       user.isAllowlisted ? 1 : 0,
       now,
@@ -969,13 +963,6 @@ async function hasRequiredChannelMembership(project: Project, userId: string, ch
   }) as { ok?: boolean; result?: { status?: string } } | null;
   const status = result?.result?.status || '';
   return ['creator', 'administrator', 'member'].includes(status);
-}
-
-async function getTelegramUser(project: Project, userId: string): Promise<TelegramUser | null> {
-  const result = await telegram(project.bot_token, 'getChat', {
-    chat_id: userId,
-  }) as { ok?: boolean; result?: TelegramUser } | null;
-  return result?.result || null;
 }
 
 async function telegram(botToken: string, method: string, payload: object): Promise<unknown> {
