@@ -1,6 +1,7 @@
 import os
 import re
 from collections import defaultdict
+from datetime import datetime, timezone
 
 import gspread
 import requests
@@ -33,6 +34,10 @@ HEADERS = [
 
 TRUE_VALUES = {'1', 'true', 'yes', 'y', 'да', 'истина', '✅', 'on', 'active', 'free', 'paid'}
 FALSE_VALUES = {'0', 'false', 'no', 'n', 'нет', 'ложь', '❌', 'off', 'inactive', 'none'}
+CLOUDFLARE_MONTHLY_REQUEST_LIMIT = 100000
+CLOUDFLARE_GRAPHQL_URL = 'https://api.cloudflare.com/client/v4/graphql'
+DEFAULT_CLOUDFLARE_ACCOUNT_ID = '8460cfa72309d5c869775d6c38ca41dd'
+DEFAULT_CLOUDFLARE_WORKER_SCRIPT = 'topus-telegram-subscriptions'
 
 
 def bool_from_sheet(value, default=False):
@@ -136,6 +141,89 @@ def fetch_worker_state(worker_url, admin_secret):
     if not state.get('ok'):
         raise RuntimeError(f'Worker state export failed: {state}')
     return state
+
+
+def month_bounds_utc(now=None):
+    now = now or datetime.now(timezone.utc)
+    start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return start.isoformat().replace('+00:00', 'Z'), now.isoformat().replace('+00:00', 'Z')
+
+
+def fetch_cloudflare_analytics_usage():
+    token = os.environ.get('CLOUDFLARE_API_TOKEN', '').strip()
+    account_id = os.environ.get('CLOUDFLARE_ACCOUNT_ID', DEFAULT_CLOUDFLARE_ACCOUNT_ID).strip()
+    script_name = os.environ.get('CLOUDFLARE_WORKER_SCRIPT_NAME', DEFAULT_CLOUDFLARE_WORKER_SCRIPT).strip()
+    if not token:
+        return None
+
+    datetime_start, datetime_end = month_bounds_utc()
+    query = """
+      query GetWorkersAnalytics(
+        $accountTag: string,
+        $datetimeStart: string,
+        $datetimeEnd: string,
+        $scriptName: string
+      ) {
+        viewer {
+          accounts(filter: {accountTag: $accountTag}) {
+            workersInvocationsAdaptive(limit: 100, filter: {
+              scriptName: $scriptName,
+              datetime_geq: $datetimeStart,
+              datetime_leq: $datetimeEnd
+            }) {
+              sum {
+                requests
+              }
+            }
+          }
+        }
+      }
+    """
+    response = requests.post(
+        CLOUDFLARE_GRAPHQL_URL,
+        headers={
+            'Authorization': f'Bearer {token}',
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+        },
+        json={
+            'query': query,
+            'variables': {
+                'accountTag': account_id,
+                'datetimeStart': datetime_start,
+                'datetimeEnd': datetime_end,
+                'scriptName': script_name,
+            },
+        },
+        timeout=45,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get('errors'):
+        raise RuntimeError(f"Cloudflare Analytics query failed: {payload.get('errors')}")
+
+    accounts = (((payload.get('data') or {}).get('viewer') or {}).get('accounts') or [])
+    rows = accounts[0].get('workersInvocationsAdaptive') if accounts else []
+    used = sum(int((row.get('sum') or {}).get('requests') or 0) for row in (rows or []))
+    limit = CLOUDFLARE_MONTHLY_REQUEST_LIMIT
+    month = datetime_start[:7]
+    return {
+        'limit': limit,
+        'used': used,
+        'remaining': max(0, limit - used),
+        'month': month,
+        'source': 'Cloudflare Analytics',
+    }
+
+
+def resolve_usage(worker_usage):
+    analytics_usage = fetch_cloudflare_analytics_usage()
+    if analytics_usage:
+        return analytics_usage
+    usage = dict(worker_usage or {})
+    usage.setdefault('limit', CLOUDFLARE_MONTHLY_REQUEST_LIMIT)
+    usage.setdefault('source', 'Worker counter since deploy')
+    return usage
 
 
 def build_state(state):
@@ -375,15 +463,17 @@ def write_rows(worksheet, rows):
 
 
 def write_cloudflare_status(worksheet, user_count, applied_count, usage):
-    limit = usage.get('limit') or 100000
+    limit = usage.get('limit') or CLOUDFLARE_MONTHLY_REQUEST_LIMIT
     used = usage.get('used') or 0
     remaining = usage.get('remaining')
     if remaining is None:
         remaining = max(0, int(limit) - int(used))
     month = usage.get('month') or ''
+    source = usage.get('source') or 'unknown'
     status = (
         f"Cloudflare sync OK: {format_timestamp()}; users={user_count}; "
-        f"applied={applied_count}; requests {month}: {used}/{limit}; remaining={remaining}"
+        f"applied={applied_count}; requests {month}: {used}/{limit}; "
+        f"remaining={remaining}; source={source}"
     )
     worksheet.update(range_name='S2', values=[[status]], value_input_option='USER_ENTERED')
 
@@ -473,7 +563,8 @@ def main():
         print('  No bot sheet changes to push')
 
     write_single_sheet(worksheet, compact_state, sheet_rows)
-    write_cloudflare_status(worksheet, len(compact_state['users']), applied_count, compact_state.get('usage') or {})
+    usage = resolve_usage(compact_state.get('usage') or {})
+    write_cloudflare_status(worksheet, len(compact_state['users']), applied_count, usage)
     print(f"  Synced one-sheet bot state: {len(compact_state['users'])} users")
 
 
