@@ -1763,7 +1763,7 @@ def ensure_workbook_row_counts(sheet):
 
 
 def ensure_non_settings_sheet_row_counts(sheet):
-    ensure_workbook_row_counts(sheet)
+    return 0
 
 
 def format_push_events_sheet(sheet, clean_rows=False):
@@ -1839,44 +1839,11 @@ def format_push_events_sheet(sheet, clean_rows=False):
                 deleted = delete_rows_batch(sheet, worksheet, rows_to_delete)
                 print(f"  🧹 Removed invalid push event rows: {deleted}")
 
-        requests = [{
-            'repeatCell': {
-                'range': {
-                    'sheetId': worksheet.id,
-                    'startRowIndex': 1,
-                    'startColumnIndex': 0,
-                    'endColumnIndex': len(headers) if values else 6,
-                },
-                'cell': {
-                    'userEnteredFormat': {
-                        'wrapStrategy': 'CLIP',
-                    }
-                },
-                'fields': 'userEnteredFormat.wrapStrategy',
-            }
-        }]
-        if worksheet.row_count > 1:
-            requests.append({
-                'updateDimensionProperties': {
-                    'range': {
-                        'sheetId': worksheet.id,
-                        'dimension': 'ROWS',
-                        'startIndex': 1,
-                        'endIndex': worksheet.row_count,
-                    },
-                    'properties': {'pixelSize': PUSH_EVENT_ROW_HEIGHT_PIXELS},
-                    'fields': 'pixelSize',
-                }
-            })
-        sheet.batch_update({'requests': requests})
     except Exception as e:
-        print(f"  ⚠️  Error formatting push events: {e}")
+        print(f"  ⚠️  Error normalizing push events: {e}")
 
 
 def maintain_workbook_layout(sheet):
-    ensure_non_settings_sheet_row_counts(sheet)
-    ensure_master_timestamp_formats(sheet)
-
     ensure_videos_worksheet(sheet)
     ensure_logs_worksheet(sheet)
     format_push_events_sheet(sheet)

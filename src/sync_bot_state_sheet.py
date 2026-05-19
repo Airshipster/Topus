@@ -93,14 +93,7 @@ def a1_column(column_index):
 
 def rename_legacy_sheet(sheet):
     try:
-        existing = sheet.worksheet(SHEET_NAME)
-        try:
-            legacy = sheet.worksheet(LEGACY_SHEET_NAME)
-            if legacy.id != existing.id:
-                sheet.del_worksheet(legacy)
-        except gspread.exceptions.WorksheetNotFound:
-            pass
-        return existing
+        return sheet.worksheet(SHEET_NAME)
     except gspread.exceptions.WorksheetNotFound:
         pass
 
@@ -113,12 +106,7 @@ def rename_legacy_sheet(sheet):
 
 
 def delete_extra_sheets(sheet):
-    for name in EXTRA_SHEET_NAMES:
-        try:
-            worksheet = sheet.worksheet(name)
-        except gspread.exceptions.WorksheetNotFound:
-            continue
-        sheet.del_worksheet(worksheet)
+    return
 
 
 def ensure_bot_worksheet(sheet):
@@ -128,8 +116,6 @@ def ensure_bot_worksheet(sheet):
     current_headers = [str(cell).strip() for cell in values[0]] if values else []
     if current_headers != HEADERS:
         worksheet.update(range_name='A1', values=[HEADERS], value_input_option='USER_ENTERED')
-    if worksheet.col_count < len(HEADERS):
-        worksheet.resize(rows=worksheet.row_count, cols=len(HEADERS))
     return worksheet
 
 
@@ -347,9 +333,6 @@ def compact_subscription_cells(all_channel_ids, current_subscriptions):
 
 
 def write_rows(worksheet, rows):
-    target_rows = max(1000, len(rows) + 20)
-    if worksheet.row_count < target_rows or worksheet.col_count < len(HEADERS):
-        worksheet.resize(rows=target_rows, cols=len(HEADERS))
     existing_values = get_values_with_quota_retry(worksheet)
     payload = [HEADERS] + rows
     last_col = a1_column(len(HEADERS))
