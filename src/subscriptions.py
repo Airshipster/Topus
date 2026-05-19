@@ -502,6 +502,48 @@ def update_subscription_statuses(sheet, subscription_records, status_by_channel)
         print(f"  ⚠️  Error updating subscription statuses: {e}")
 
 
+def normalize_subscription_status_formatting(sheet, subscription_records):
+    """Keep red Channel ID highlighting only for rows with current ❌ status."""
+    try:
+        worksheet = get_or_create_subscriptions_worksheet(sheet)
+        requests = [{
+            'repeatCell': {
+                'range': {
+                    'sheetId': worksheet.id,
+                    'startRowIndex': 1,
+                    'endRowIndex': SUBSCRIPTIONS_TARGET_ROWS,
+                    'startColumnIndex': 2,
+                    'endColumnIndex': 3,
+                },
+                'cell': {'userEnteredFormat': {}},
+                'fields': 'userEnteredFormat.backgroundColor',
+            }
+        }]
+
+        for record in subscription_records.values():
+            if not str(record.get('status', '')).startswith('❌'):
+                continue
+            row_index = record['row_index']
+            requests.append({
+                'repeatCell': {
+                    'range': {
+                        'sheetId': worksheet.id,
+                        'startRowIndex': row_index - 1,
+                        'endRowIndex': row_index,
+                        'startColumnIndex': 2,
+                        'endColumnIndex': 3,
+                    },
+                    'cell': {'userEnteredFormat': {'backgroundColor': {'red': 1.0, 'green': 0.8, 'blue': 0.8}}},
+                    'fields': 'userEnteredFormat.backgroundColor',
+                }
+            })
+
+        sheet.batch_update({'requests': requests})
+        print("  🎨 Normalized subscription status formatting")
+    except Exception as e:
+        print(f"  ⚠️  Error normalizing subscription formatting: {e}")
+
+
 def split_project_names(projects_text):
     return {
         name.strip()
@@ -774,6 +816,7 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
                 result.update({'ok': False, 'partial': True, 'reason': 'could not re-read subscriptions'})
                 return result
         update_subscription_project_links(master_sheet, subscription_records, active_channels_dict)
+        normalize_subscription_status_formatting(master_sheet, subscription_records)
         return result
 
     if force:
@@ -884,6 +927,7 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
         result.update({'ok': False, 'partial': True, 'reason': 'could not re-read subscriptions'})
         return result
     update_subscription_project_links(master_sheet, subscription_records, active_channels_dict)
+    normalize_subscription_status_formatting(master_sheet, subscription_records)
 
     if inventory_complete:
         update_subscription_sync_state(master_sheet)
