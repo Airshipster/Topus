@@ -418,6 +418,7 @@ async function handleMessage(env: Env, project: Project, message: TelegramMessag
     chat_id: message.chat.id,
     text: WELCOME_TEXT,
     parse_mode: 'HTML',
+    disable_web_page_preview: true,
     reply_markup: menu,
   });
 }
@@ -603,6 +604,7 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
     if (text) {
       payload.text = text;
       payload.parse_mode = 'HTML';
+      payload.disable_web_page_preview = true;
       await telegram(project.bot_token, 'editMessageText', payload);
     } else {
       await telegram(project.bot_token, 'editMessageReplyMarkup', payload);
