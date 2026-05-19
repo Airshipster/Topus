@@ -24,6 +24,7 @@ from sheets import (
 BOT_COLUMN_NAMES = ['Бот', 'Индивидуальный бот', 'Персональный бот']
 CATEGORY_COLUMN_NAMES = ['Категория', 'Категории', 'Category', 'Раздел']
 CHANNEL_NAME_HEADERS = ['Название', 'Название канала', 'Канал', 'YouTube канал']
+CATEGORY_MARKER = '🟡'
 
 
 def slug(value):
@@ -42,6 +43,28 @@ def split_category_path(value):
     if not text:
         return []
     return [item.strip() for item in re.split(r'\s*(?:/|>|→|\|)\s*', text) if item.strip()]
+
+
+def infer_category_title(row, headers, category_col):
+    if category_col is not None and len(row) > category_col and clean_sheet_value(row[category_col]):
+        return clean_sheet_value(row[category_col])
+
+    title = column_value(row, headers, CATEGORY_COLUMN_NAMES + CHANNEL_NAME_HEADERS)
+    if title:
+        return title
+
+    ignored = {'🟢', '🔴', '🟡', '🔵'}
+    for cell in row:
+        value = clean_sheet_value(cell)
+        if not value or value in ignored:
+            continue
+        if 'youtube.com' in str(value) or 'youtu.be' in str(value):
+            continue
+        if re.search(r'UC[0-9A-Za-z_-]{20,}', str(value)):
+            continue
+        return value
+
+    return 'Без названия'
 
 
 def read_bot_projects(master_sheet):
@@ -110,6 +133,7 @@ def read_project_channels(client, project):
         headers = [str(cell).strip() for cell in values[0]]
         header_indexes = {header: index for index, header in enumerate(headers) if header}
         category_col = find_column_index(headers, CATEGORY_COLUMN_NAMES)
+        current_category_id = 'root'
 
         for sort_order, raw_row in enumerate(values[1:], start=1):
             normalized = [str(cell).strip() for cell in raw_row]
@@ -117,6 +141,22 @@ def read_project_channels(client, project):
                 continue
             if any(cell == '🔵' for cell in normalized):
                 break
+            if CATEGORY_MARKER in normalized:
+                title = infer_category_title(normalized, headers, category_col)
+                category_parts = split_category_path(title) or [title]
+                parent_id = 'root'
+                for depth, part in enumerate(category_parts, start=1):
+                    category_id = category_id_for_path(category_parts, depth)
+                    if category_id not in categories_by_id:
+                        categories_by_id[category_id] = {
+                            'id': category_id,
+                            'parentId': parent_id,
+                            'title': part,
+                            'sortOrder': sort_order,
+                        }
+                    parent_id = category_id
+                current_category_id = parent_id
+                continue
             if '🟢' not in normalized and '🔴' not in normalized:
                 continue
 
@@ -126,7 +166,7 @@ def read_project_channels(client, project):
 
             category_parts = split_category_path(normalized[category_col] if category_col is not None and len(normalized) > category_col else '')
             parent_id = 'root'
-            category_id = 'root'
+            category_id = current_category_id
             for depth, title in enumerate(category_parts, start=1):
                 category_id = category_id_for_path(category_parts, depth)
                 if category_id not in categories_by_id:

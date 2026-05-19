@@ -72,6 +72,8 @@ type SyncProject = {
 
 const jsonHeaders = { 'content-type': 'application/json; charset=utf-8' };
 const CHANNELS_PER_PAGE = 20;
+const SELECTED_MARK = '✅';
+const UNSELECTED_MARK = '➕';
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -212,15 +214,15 @@ async function handleTelegramWebhook(request: Request, env: Env, projectCode: st
 
 async function handleMessage(env: Env, project: Project, message: TelegramMessage): Promise<void> {
   const text = (message.text || '').trim().toLowerCase();
-  if (!message.from || !['/start', '/channels', '/subscriptions', 'каналы', 'подписки'].includes(text)) {
+  if (!message.from || !['/start', '/menu', 'меню', '/channels', '/subscriptions', 'каналы', 'подписки'].includes(text)) {
     return;
   }
 
   await upsertUser(env, project.code, message.from);
-  const menu = await renderMenu(env, project.code, String(message.from.id), 'root', 0);
+  const menu = await renderMainMenu(env, project.code, String(message.from.id));
   await telegram(project.bot_token, 'sendMessage', {
     chat_id: message.chat.id,
-    text: 'Выберите категории и каналы:',
+    text: 'Главное меню подписок',
     reply_markup: menu,
   });
 }
@@ -239,13 +241,29 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
   let categoryId = value || 'root';
   let page = 0;
   let toast = '';
+  let menu: object | null = null;
+  let text: string | null = null;
 
-  if (action === 'cat') {
+  if (action === 'menu') {
+    menu = await renderMainMenu(env, project.code, String(callback.from.id));
+    text = 'Главное меню подписок';
+  } else if (action === 'cats') {
+    menu = await renderMenu(env, project.code, String(callback.from.id), 'root', 0);
+    text = 'Выберите категорию';
+  } else if (action === 'cat') {
     categoryId = value;
   } else if (action === 'page') {
     const parts = data.split(':');
     categoryId = parts[1] || 'root';
     page = Math.max(0, Number.parseInt(parts[2] || '0', 10) || 0);
+  } else if (action === 'allch') {
+    page = Math.max(0, Number.parseInt(value || '0', 10) || 0);
+    menu = await renderAllChannels(env, project.code, String(callback.from.id), page);
+    text = 'Все каналы';
+  } else if (action === 'subs') {
+    page = Math.max(0, Number.parseInt(value || '0', 10) || 0);
+    menu = await renderSubscriptions(env, project.code, String(callback.from.id), page);
+    text = 'Мои подписки';
   } else if (action === 'back') {
     categoryId = (await parentCategory(env, project.code, value)) || 'root';
   } else if (action === 'toggle') {
@@ -257,6 +275,24 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
       page = Math.max(0, Number.parseInt(parts[2] || '0', 10) || 0);
       toast = active ? 'Подписка включена' : 'Подписка отключена';
     }
+  } else if (action === 'toggleall') {
+    const parts = data.split(':');
+    const channel = await getChannel(env, project.code, value);
+    if (channel) {
+      await toggleSubscription(env, project.code, String(callback.from.id), channel.channel_id);
+      page = Math.max(0, Number.parseInt(parts[2] || '0', 10) || 0);
+      menu = await renderAllChannels(env, project.code, String(callback.from.id), page);
+      text = 'Все каналы';
+    }
+  } else if (action === 'togglesub') {
+    const parts = data.split(':');
+    const channel = await getChannel(env, project.code, value);
+    if (channel) {
+      await toggleSubscription(env, project.code, String(callback.from.id), channel.channel_id);
+      page = Math.max(0, Number.parseInt(parts[2] || '0', 10) || 0);
+      menu = await renderSubscriptions(env, project.code, String(callback.from.id), page);
+      text = 'Мои подписки';
+    }
   } else if (action === 'all' || action === 'none') {
     const channelIds = await descendantChannelIds(env, project.code, value);
     await setBulkSubscriptions(env, project.code, String(callback.from.id), channelIds, action === 'all');
@@ -266,13 +302,35 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
 
   await answer(project.bot_token, callback.id, toast);
   if (message) {
-    const menu = await renderMenu(env, project.code, String(callback.from.id), categoryId, page);
-    await telegram(project.bot_token, 'editMessageReplyMarkup', {
+    const nextMenu = menu || await renderMenu(env, project.code, String(callback.from.id), categoryId, page);
+    const payload: Record<string, unknown> = {
       chat_id: message.chat.id,
       message_id: message.message_id,
-      reply_markup: menu,
-    });
+      reply_markup: nextMenu,
+    };
+    if (text) {
+      payload.text = text;
+      await telegram(project.bot_token, 'editMessageText', payload);
+    } else {
+      await telegram(project.bot_token, 'editMessageReplyMarkup', payload);
+    }
   }
+}
+
+async function renderMainMenu(env: Env, projectCode: string, userId: string): Promise<object> {
+  const [categoryCount, channelCount, subscriptionCount] = await Promise.all([
+    countChildCategories(env, projectCode, 'root'),
+    countChannels(env, projectCode),
+    countSubscriptions(env, projectCode, userId),
+  ]);
+
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [
+    [{ text: `📚 Категории (${categoryCount})`, callback_data: 'cats:root' }],
+    [{ text: `✅ Мои подписки (${subscriptionCount})`, callback_data: 'subs:0' }],
+    [{ text: `📺 Все каналы (${channelCount})`, callback_data: 'allch:0' }],
+  ];
+
+  return { inline_keyboard: rows };
 }
 
 async function renderMenu(env: Env, projectCode: string, userId: string, categoryId: string, page: number): Promise<object> {
@@ -296,9 +354,8 @@ async function renderMenu(env: Env, projectCode: string, userId: string, categor
   );
 
   for (const channel of visibleChannels) {
-    const marker = selected.has(channel.channel_id) ? '✅' : '☐';
-    const status = channel.status === 'red' ? ' 🔴' : '';
-    rows.push([{ text: `${marker} ${channel.title}${status}`, callback_data: `toggle:${channel.channel_id}:${currentPage}` }]);
+    const marker = selected.has(channel.channel_id) ? SELECTED_MARK : UNSELECTED_MARK;
+    rows.push([{ text: `${marker} ${channel.title}`, callback_data: `toggle:${channel.channel_id}:${currentPage}` }]);
   }
 
   if (totalPages > 1) {
@@ -313,19 +370,81 @@ async function renderMenu(env: Env, projectCode: string, userId: string, categor
     rows.push(navRow);
   }
 
-  rows.push([
+    rows.push([
     { text: '✅ Все здесь', callback_data: `all:${categoryId}` },
-    { text: '☐ Никого здесь', callback_data: `none:${categoryId}` },
+    { text: '➖ Никого здесь', callback_data: `none:${categoryId}` },
   ]);
 
   if (categoryId !== 'root') {
     rows.push([{ text: '← Назад', callback_data: `back:${categoryId}` }]);
   }
+  rows.push([{ text: '🏠 Главное меню', callback_data: 'menu:root' }]);
 
   if (rows.length === 1) {
     rows.unshift([{ text: 'Пока нет каналов', callback_data: 'noop' }]);
   }
 
+  return { inline_keyboard: rows };
+}
+
+async function renderAllChannels(env: Env, projectCode: string, userId: string, page: number): Promise<object> {
+  const [channels, selected] = await Promise.all([
+    allChannels(env, projectCode),
+    selectedChannels(env, projectCode, userId),
+  ]);
+  return renderChannelList(channels, selected, page, 'toggleall', 'allch', true);
+}
+
+async function renderSubscriptions(env: Env, projectCode: string, userId: string, page: number): Promise<object> {
+  const channels = await subscribedChannels(env, projectCode, userId);
+  const selected = new Set(channels.map((channel) => channel.channel_id));
+  if (channels.length === 0) {
+    return {
+      inline_keyboard: [
+        [{ text: 'Пока нет подписок', callback_data: 'noop' }],
+        [{ text: '📚 Выбрать категории', callback_data: 'cats:root' }],
+        [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
+      ],
+    };
+  }
+  return renderChannelList(channels, selected, page, 'togglesub', 'subs', false);
+}
+
+function renderChannelList(
+  channels: Channel[],
+  selected: Set<string>,
+  page: number,
+  toggleAction: string,
+  pageAction: string,
+  showUnselected: boolean,
+): object {
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+  const totalPages = Math.max(1, Math.ceil(channels.length / CHANNELS_PER_PAGE));
+  const currentPage = Math.min(Math.max(0, page), totalPages - 1);
+  const visibleChannels = channels.slice(
+    currentPage * CHANNELS_PER_PAGE,
+    currentPage * CHANNELS_PER_PAGE + CHANNELS_PER_PAGE,
+  );
+
+  for (const channel of visibleChannels) {
+    const marker = selected.has(channel.channel_id) ? SELECTED_MARK : UNSELECTED_MARK;
+    const prefix = showUnselected ? `${marker} ` : `${SELECTED_MARK} `;
+    rows.push([{ text: `${prefix}${channel.title}`, callback_data: `${toggleAction}:${channel.channel_id}:${currentPage}` }]);
+  }
+
+  if (totalPages > 1) {
+    const navRow: Array<{ text: string; callback_data: string }> = [];
+    if (currentPage > 0) {
+      navRow.push({ text: '←', callback_data: `${pageAction}:${currentPage - 1}` });
+    }
+    navRow.push({ text: `${currentPage + 1}/${totalPages}`, callback_data: 'noop' });
+    if (currentPage < totalPages - 1) {
+      navRow.push({ text: '→', callback_data: `${pageAction}:${currentPage + 1}` });
+    }
+    rows.push(navRow);
+  }
+
+  rows.push([{ text: '🏠 Главное меню', callback_data: 'menu:root' }]);
   return { inline_keyboard: rows };
 }
 
@@ -423,6 +542,27 @@ async function childChannels(env: Env, projectCode: string, categoryId: string):
   return result.results || [];
 }
 
+async function allChannels(env: Env, projectCode: string): Promise<Channel[]> {
+  const result = await env.DB.prepare(
+    `SELECT channel_id, title, status
+     FROM channels
+     WHERE project_code = ?
+     ORDER BY sort_order, title`,
+  ).bind(projectCode).all<Channel>();
+  return result.results || [];
+}
+
+async function subscribedChannels(env: Env, projectCode: string, userId: string): Promise<Channel[]> {
+  const result = await env.DB.prepare(
+    `SELECT c.channel_id, c.title, c.status
+     FROM user_subscriptions s
+     JOIN channels c ON c.project_code = s.project_code AND c.channel_id = s.channel_id
+     WHERE s.project_code = ? AND s.user_id = ? AND s.active = 1
+     ORDER BY c.sort_order, c.title`,
+  ).bind(projectCode, userId).all<Channel>();
+  return result.results || [];
+}
+
 async function selectedChannels(env: Env, projectCode: string, userId: string): Promise<Set<string>> {
   const result = await env.DB.prepare(
     `SELECT channel_id
@@ -430,6 +570,31 @@ async function selectedChannels(env: Env, projectCode: string, userId: string): 
      WHERE project_code = ? AND user_id = ? AND active = 1`,
   ).bind(projectCode, userId).all<{ channel_id: string }>();
   return new Set((result.results || []).map((row) => row.channel_id));
+}
+
+async function countChildCategories(env: Env, projectCode: string, parentId: string): Promise<number> {
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS count
+     FROM categories
+     WHERE project_code = ? AND COALESCE(parent_id, 'root') = ?`,
+  ).bind(projectCode, parentId).first<{ count: number }>();
+  return row?.count || 0;
+}
+
+async function countChannels(env: Env, projectCode: string): Promise<number> {
+  const row = await env.DB.prepare(
+    'SELECT COUNT(*) AS count FROM channels WHERE project_code = ?',
+  ).bind(projectCode).first<{ count: number }>();
+  return row?.count || 0;
+}
+
+async function countSubscriptions(env: Env, projectCode: string, userId: string): Promise<number> {
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS count
+     FROM user_subscriptions
+     WHERE project_code = ? AND user_id = ? AND active = 1`,
+  ).bind(projectCode, userId).first<{ count: number }>();
+  return row?.count || 0;
 }
 
 async function getChannel(env: Env, projectCode: string, channelId: string): Promise<Channel | null> {
