@@ -218,37 +218,56 @@ def build_state(state):
     }
 
 
-def read_action_rows(worksheet, compact_state):
+def read_sheet_rows(worksheet):
     values = get_values_with_quota_retry(worksheet)
     if not values:
-        return []
+        return {'rows': [], 'order': [], 'by_key': {}}
     headers = {str(cell).strip(): index for index, cell in enumerate(values[0]) if str(cell).strip()}
-    users = compact_state['users']
     rows = []
+    order = []
+    by_key = {}
     for raw_row in values[1:]:
-        action = str(get_cell(raw_row, headers, 'Sync Action') or '').strip().lower()
         project_code = str(get_cell(raw_row, headers, 'Project Code') or '').strip()
         user_id = str(get_cell(raw_row, headers, 'User ID') or '').strip()
         if not project_code or not user_id:
             continue
-        access = str(get_cell(raw_row, headers, 'Access') or '').strip().lower()
+        key = row_key(project_code, user_id)
+        row = {
+            'key': key,
+            'project_code': project_code,
+            'user_id': user_id,
+            'username': str(get_cell(raw_row, headers, 'Username') or '').strip(),
+            'first_name': str(get_cell(raw_row, headers, 'First Name') or '').strip(),
+            'access': str(get_cell(raw_row, headers, 'Access') or '').strip().lower(),
+            'mode': str(get_cell(raw_row, headers, 'Subscription Mode') or '').strip().lower(),
+            'included': get_cell(raw_row, headers, 'Included Channel IDs'),
+            'excluded': get_cell(raw_row, headers, 'Excluded Channel IDs'),
+            'free_note': str(get_cell(raw_row, headers, 'Free Note') or '').strip(),
+            'action': str(get_cell(raw_row, headers, 'Sync Action') or '').strip().lower(),
+        }
+        rows.append(row)
+        if key not in by_key:
+            order.append(key)
+            by_key[key] = row
+    return {'rows': rows, 'order': order, 'by_key': by_key}
+
+
+def read_action_rows(sheet_rows, compact_state):
+    users = compact_state['users']
+    rows = []
+    for row in sheet_rows['rows']:
+        action = row['action']
+        project_code = row['project_code']
+        user_id = row['user_id']
+        access = row['access']
         is_new_free_user = row_key(project_code, user_id) not in users and access == 'free'
         if action not in {'push', 'delete'} and not is_new_free_user:
             continue
         if is_new_free_user and action not in {'push', 'delete'}:
             action = 'push'
-        rows.append({
-            'project_code': project_code,
-            'user_id': user_id,
-            'username': str(get_cell(raw_row, headers, 'Username') or '').strip(),
-            'first_name': str(get_cell(raw_row, headers, 'First Name') or '').strip(),
-            'access': access,
-            'mode': str(get_cell(raw_row, headers, 'Subscription Mode') or '').strip().lower(),
-            'included': get_cell(raw_row, headers, 'Included Channel IDs'),
-            'excluded': get_cell(raw_row, headers, 'Excluded Channel IDs'),
-            'free_note': str(get_cell(raw_row, headers, 'Free Note') or '').strip(),
-            'action': action,
-        })
+        action_row = dict(row)
+        action_row['action'] = action
+        rows.append(action_row)
     return rows
 
 
@@ -350,7 +369,7 @@ def write_rows(worksheet, rows):
         worksheet.batch_clear([f'A{len(payload) + 1}:{last_col}{len(existing_values)}'])
 
 
-def write_single_sheet(worksheet, compact_state):
+def write_single_sheet(worksheet, compact_state, sheet_rows):
     sync_time = format_timestamp()
     projects = compact_state['projects']
     users = compact_state['users']
@@ -361,8 +380,13 @@ def write_single_sheet(worksheet, compact_state):
 
     rows = []
     all_user_keys = set(users) | set(subscription_rows) | set(allowlist)
-    for key in sorted(all_user_keys):
+    ordered_keys = [key for key in sheet_rows['order'] if key in all_user_keys]
+    ordered_keys.extend(sorted(all_user_keys - set(ordered_keys)))
+    existing_by_key = sheet_rows['by_key']
+
+    for key in ordered_keys:
         project_code, user_id = key.split(':', 1)
+        existing_row = existing_by_key.get(key, {})
         user = users.get(key, {
             'username': '',
             'first_name': '',
@@ -384,15 +408,15 @@ def write_single_sheet(worksheet, compact_state):
             project_code,
             bot_display(projects.get(project_code, {'code': project_code})),
             user_id,
-            user.get('username', ''),
-            user.get('first_name', ''),
+            user.get('username') or existing_row.get('username', ''),
+            user.get('first_name') or existing_row.get('first_name', ''),
             user_access(user, allowlist_entry),
             mode,
             included,
             excluded,
             selected_count,
-            total_count,
-            allowlist_entry.get('note', '') if allowlist_entry else '',
+            total_count if selected_count else '',
+            allowlist_entry.get('note', '') if allowlist_entry else existing_row.get('free_note', ''),
             display_timestamp(updated_at),
             sync_time,
             '',
@@ -415,17 +439,19 @@ def main():
 
     state = fetch_worker_state(worker_url, admin_secret)
     compact_state = build_state(state)
-    changes = collect_changes(read_action_rows(worksheet, compact_state), compact_state)
+    sheet_rows = read_sheet_rows(worksheet)
+    changes = collect_changes(read_action_rows(sheet_rows, compact_state), compact_state)
 
     if changes:
         result = request_worker('POST', '/admin/sheet-state', worker_url, admin_secret, json=changes)
         print(f'  Applied bot sheet changes to Worker: {result}')
         state = fetch_worker_state(worker_url, admin_secret)
         compact_state = build_state(state)
+        sheet_rows = read_sheet_rows(worksheet)
     else:
         print('  No bot sheet changes to push')
 
-    write_single_sheet(worksheet, compact_state)
+    write_single_sheet(worksheet, compact_state, sheet_rows)
     print(f"  Synced one-sheet bot state: {len(compact_state['users'])} users")
 
 
