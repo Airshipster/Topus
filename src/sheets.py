@@ -285,11 +285,16 @@ def project_name_from_cell(value):
 
 def status_method_from_text(value):
     text = str(clean_sheet_value(value) or '').strip()
-    match = re.match(r'^(Push|RSS):\s*(.*)$', text, flags=re.IGNORECASE)
+    match = re.match(r'^((?:Bot:\s*)?(?:Push|RSS)):\s*(.*)$', text, flags=re.IGNORECASE)
     if not match:
         return '', text
-    method = match.group(1).strip().lower()
-    method = 'RSS' if method == 'rss' else 'Push'
+    method = re.sub(r'\s+', ' ', match.group(1).replace(':', ': ')).strip()
+    method = method.replace(':  ', ': ')
+    parts = [part.strip().lower() for part in method.split(':')]
+    if parts[0] == 'bot':
+        method = f"Bot: {'RSS' if parts[-1] == 'rss' else 'Push'}"
+    else:
+        method = 'RSS' if parts[0] == 'rss' else 'Push'
     return method, match.group(2).strip()
 
 
@@ -1217,7 +1222,7 @@ def save_videos_batch(sheet, videos_data):
             elif is_pending_hold:
                 row_error = row_error.replace('PENDING: ', '', 1)
             source_method = str(video.get('source_method') or '').strip()
-            if source_method.lower() == 'rss' and row_error.startswith('RSS: '):
+            if source_method.lower().endswith('rss') and row_error.startswith('RSS: '):
                 row_error = row_error.replace('RSS: ', '', 1)
             project_display = project_link_formula(project_name, project, tg_message_id)
             processed_at = format_timestamp()
@@ -1547,13 +1552,13 @@ def merge_log_event(event, details, status=''):
     details = str(clean_sheet_value(details) or '').strip()
     status = str(clean_sheet_value(status) or '').strip()
     method = ''
-    method_match = re.match(r'^(Push|RSS):\s*(.*)$', event, flags=re.IGNORECASE)
+    method_match = re.match(r'^((?:Bot:\s*)?(?:Push|RSS)):\s*(.*)$', event, flags=re.IGNORECASE)
     if method_match:
-        method = 'RSS' if method_match.group(1).lower() == 'rss' else 'Push'
+        method, _ = status_method_from_text(method_match.group(1) + ': ')
         event = method_match.group(2).strip()
-    details_method_match = re.match(r'^(Push|RSS):\s*(.*)$', details, flags=re.IGNORECASE)
+    details_method_match = re.match(r'^((?:Bot:\s*)?(?:Push|RSS)):\s*(.*)$', details, flags=re.IGNORECASE)
     if details_method_match:
-        method = 'RSS' if details_method_match.group(1).lower() == 'rss' else 'Push'
+        method, _ = status_method_from_text(details_method_match.group(1) + ': ')
         details = details_method_match.group(2).strip()
     if method and event:
         event = f'{method}: {event}'
@@ -2340,7 +2345,9 @@ def parse_youtube_channels_worksheet(worksheet, project, include_disabled=False)
             channels[channel_id] = {
                 'name': channel_name,
                 'template': channel_template,
-                'tg_channel': tg_channel
+                'tg_channel': tg_channel,
+                'status': 'red' if is_disabled else 'green',
+                'bot_only': bool(is_disabled),
             }
 
         project['disabled_channel_count'] = len(disabled_channel_ids)

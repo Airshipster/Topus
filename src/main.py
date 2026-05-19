@@ -71,8 +71,14 @@ def copy_video_classification(video, video_info):
     return video
 
 
+def source_method_for_channel(method, channel_info):
+    return f"{'Bot: ' if channel_info.get('bot_only') else ''}{method}"
+
+
 def publication_status_detail(video):
     labels = []
+    if video.get('bot_only'):
+        labels.append('Bot only')
     if video.get('is_short'):
         labels.append('Shorts')
     if video.get('is_live') or video.get('was_live'):
@@ -431,7 +437,7 @@ def main():
             client,
             master_sheet,
             projects,
-            include_disabled_for_bot=sync_only_mode(),
+            include_disabled_for_bot=True,
         )
         if sync_only_mode():
             update_video_project_links(master_sheet, projects)
@@ -525,6 +531,8 @@ def main():
                 for event in push_events:
                     if event['channel_id'] not in yt_channels:
                         continue
+                    channel_info = yt_channels[event['channel_id']]
+                    source_method = source_method_for_channel('Push', channel_info)
                 
                     key = publication_key(event['video_id'], project)
 
@@ -546,14 +554,12 @@ def main():
                                 event['video_id'],
                                 youtube_error,
                                 'error',
-                                'Push',
+                                source_method,
                             ])
                             total_failed += 1
                             continue
                         queue_push_event_mark(event, project['name'])
                         continue
-                
-                    channel_info = yt_channels[event['channel_id']]
                 
                     video = {
                         'video_id': event['video_id'],
@@ -561,7 +567,9 @@ def main():
                         'url': f"https://www.youtube.com/watch?v={event['video_id']}",
                         'channel': video_info_api['channel'],
                         'channel_id': event['channel_id'],
-                        'source_method': 'Push',
+                        'source_method': source_method,
+                        'bot_only': bool(channel_info.get('bot_only')),
+                        'channel_info': channel_info,
                     }
                     copy_video_classification(video, video_info_api)
                 
@@ -570,7 +578,7 @@ def main():
                     if stale_reason:
                         print(f"  🚫 Skipped stale: {video['title'][:50]} ({stale_reason})")
                         timestamp = format_timestamp()
-                        log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], stale_reason, 'filtered', 'Push'])
+                        log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], stale_reason, 'filtered', source_method])
                         queue_push_event_mark(event, project['name'])
                         published_videos.add(key)
                         total_filtered += 1
@@ -580,7 +588,7 @@ def main():
                     if hold_reason:
                         print(f"  ⏳ Pending: {video['title'][:50]} ({hold_reason})")
                         timestamp = format_timestamp()
-                        log_entries.append([timestamp, project['name'], 'Video pending', video['video_id'], hold_reason, 'pending', 'Push'])
+                        log_entries.append([timestamp, project['name'], 'Video pending', video['video_id'], hold_reason, 'pending', source_method])
                         videos_to_save.append((video, project, video_published_date, None, f"PENDING: {hold_reason}"))
                         publication_event_rows[key] = event
                         published_videos.add(key)
@@ -590,7 +598,7 @@ def main():
                     if should_filter:
                         print(f"  🚫 Filtered: {video['title'][:50]} ({filter_reason})")
                         timestamp = format_timestamp()
-                        log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], filter_reason, 'filtered', 'Push'])
+                        log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], filter_reason, 'filtered', source_method])
                         videos_to_save.append((video, project, video_published_date, None, f"FILTERED: {filter_reason}"))
                         publication_event_rows[key] = event
                         published_videos.add(key)
@@ -623,8 +631,10 @@ def main():
             delete_rss_missing_publications(master_sheet, project, rss_seen_by_channel, log_entries)
             
             for video in rss_videos:
-                video['source_method'] = 'RSS'
                 channel_info = video['channel_info']
+                source_method = source_method_for_channel('RSS', channel_info)
+                video['source_method'] = source_method
+                video['bot_only'] = bool(channel_info.get('bot_only'))
                 key = publication_key(video['video_id'], project)
                 
                 total_found += 1
@@ -638,7 +648,7 @@ def main():
                     if stale_reason:
                         print(f"    🚫 Skipped stale (RSS): {video['title'][:50]} ({stale_reason})")
                         timestamp = format_timestamp()
-                        log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], f"RSS: {stale_reason}", 'filtered'])
+                        log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], stale_reason, 'filtered', source_method])
                         published_videos.add(key)
                         total_filtered += 1
                         continue
@@ -647,7 +657,7 @@ def main():
                     if hold_reason:
                         print(f"    ⏳ Pending (RSS): {video['title'][:50]} ({hold_reason})")
                         timestamp = format_timestamp()
-                        log_entries.append([timestamp, project['name'], 'Video pending', video['video_id'], f"RSS: {hold_reason}", 'pending'])
+                        log_entries.append([timestamp, project['name'], 'Video pending', video['video_id'], hold_reason, 'pending', source_method])
                         videos_to_save.append((video, project, video_published_date, None, f"PENDING: RSS: {hold_reason}"))
                         published_videos.add(key)
                         continue
@@ -657,7 +667,7 @@ def main():
                     if should_filter:
                         print(f"    🚫 Filtered (RSS): {video['title'][:50]} ({filter_reason})")
                         timestamp = format_timestamp()
-                        log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], f"RSS: {filter_reason}", 'filtered'])
+                        log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], filter_reason, 'filtered', source_method])
                         videos_to_save.append((video, project, video_published_date, None, f"FILTERED: RSS: {filter_reason}"))
                         published_videos.add(key)
                         total_filtered += 1
@@ -668,7 +678,7 @@ def main():
                     if stale_reason:
                         print(f"    🚫 Skipped stale (RSS): {video['title'][:50]} ({stale_reason})")
                         timestamp = format_timestamp()
-                        log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], f"RSS: {stale_reason}", 'filtered'])
+                        log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], stale_reason, 'filtered', source_method])
                         published_videos.add(key)
                         total_filtered += 1
                         continue
@@ -717,6 +727,30 @@ def main():
             
             template = channel_info.get('template') or project['default_template']
             message = format_message(template, video, channel_info, project)
+            source_method = video.get('source_method', '')
+
+            if video.get('bot_only'):
+                print(f"  👤 Bot-only notification: {video['title'][:50]}...")
+                worker_result = notify_worker_subscribers(project, video, message)
+                timestamp = format_timestamp()
+                if worker_result is not None:
+                    queued = worker_result.get('queued', 0)
+                    print(f"    ✅ Bot subscriber notifications queued: {queued}")
+                    log_entries.append([timestamp, project['name'], 'Video published', video['video_id'], f"Bot subscribers queued: {queued}", 'success', source_method])
+                    update_video_publication_status(
+                        master_sheet,
+                        video['video_id'],
+                        project['name'],
+                        status='published',
+                        error=publication_status_detail(video),
+                    )
+                    total_published += 1
+                else:
+                    print("    ❌ Failed to notify bot subscribers")
+                    log_entries.append([timestamp, project['name'], 'Publish failed', video['video_id'], 'Worker notification error', 'error', source_method])
+                    update_video_publication_status(master_sheet, video['video_id'], project['name'], status='failed', error='Worker notification error')
+                    total_failed += 1
+                continue
             
             print(f"  📤 Publishing: {video['title'][:50]}...")
             
@@ -732,7 +766,7 @@ def main():
                 if worker_result:
                     print(f"    👤 Worker subscriber notifications queued: {worker_result.get('queued', 0)}")
                 timestamp = format_timestamp()
-                log_entries.append([timestamp, project['name'], 'Video published', video['video_id'], f"Telegram msg: {tg_message_id}", 'success', video.get('source_method', '')])
+                log_entries.append([timestamp, project['name'], 'Video published', video['video_id'], f"Telegram msg: {tg_message_id}", 'success', source_method])
                 update_video_publication_status(
                     master_sheet,
                     video['video_id'],
@@ -745,7 +779,7 @@ def main():
             else:
                 print(f"    ❌ Failed to publish")
                 timestamp = format_timestamp()
-                log_entries.append([timestamp, project['name'], 'Publish failed', video['video_id'], 'Telegram error', 'error', video.get('source_method', '')])
+                log_entries.append([timestamp, project['name'], 'Publish failed', video['video_id'], 'Telegram error', 'error', source_method])
                 update_video_publication_status(master_sheet, video['video_id'], project['name'], status='failed', error='Telegram error')
                 total_failed += 1
             
