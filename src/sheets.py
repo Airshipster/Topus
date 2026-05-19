@@ -2187,6 +2187,7 @@ def load_projects(sheet, update_status=True):
                 'name': row.get('Название'),
                 'sheet_id': sheet_id,
                 'channels_sheet_name': channels_sheet_name,
+                'bot_enabled': is_enabled_marker(row.get('Бот') or row.get('Индивидуальный бот') or row.get('Персональный бот'), default=False),
                 'bot_token': row.get('Telegram bot token'),
                 'channel_id': str(row.get('Telegram канал ID')),
                 'tg_channel': tg_channel,
@@ -2219,7 +2220,7 @@ def load_projects(sheet, update_status=True):
     print(f"  ✅ Loaded {len(projects)} active projects")
     return projects
 
-def load_youtube_channels(client, project):
+def load_youtube_channels(client, project, include_disabled=False):
     """Загрузка активных YouTube каналов проекта"""
     project.pop('channels_error', None)
     project['disabled_channel_count'] = 0
@@ -2249,7 +2250,7 @@ def load_youtube_channels(client, project):
                 print(f"  ⚠️  Could not load first worksheet for {project['name']}: {type(e).__name__}: {e}")
 
         for worksheet in candidate_worksheets:
-            channels = parse_youtube_channels_worksheet(worksheet, project)
+            channels = parse_youtube_channels_worksheet(worksheet, project, include_disabled=include_disabled)
             if channels:
                 return channels
             if project.get('channels_error'):
@@ -2264,7 +2265,7 @@ def load_youtube_channels(client, project):
         project['channels_error'] = error_text
         return {}
 
-def parse_youtube_channels_worksheet(worksheet, project):
+def parse_youtube_channels_worksheet(worksheet, project, include_disabled=False):
     try:
         print(f"  📄 Channels sheet: {worksheet.title}")
         values = get_values_with_quota_retry(worksheet, 'A:V', attempts=5)
@@ -2292,16 +2293,18 @@ def parse_youtube_channels_worksheet(worksheet, project):
                 break
 
             channel_id = get_row_value(normalized, header_indexes, 'ID') or extract_youtube_channel_id_from_row(normalized)
-            if '🔴' in normalized:
+            is_disabled = '🔴' in normalized
+            if is_disabled:
                 if channel_id:
                     disabled_channel_ids.add(channel_id)
-                continue
+                if not include_disabled:
+                    continue
 
-            if '🟢' not in normalized:
+            if '🟢' not in normalized and not is_disabled:
                 continue
 
             if not channel_id:
-                print(f"  ⚠️  Active row {i + 1} has no YouTube channel ID")
+                print(f"  ⚠️  Channel row {i + 1} has no YouTube channel ID")
                 continue
 
             channel_name = column_value(normalized, headers, CHANNEL_NAME_HEADERS) or get_row_value(normalized, header_indexes, 'Название') or infer_channel_name(normalized, channel_id)
@@ -2378,7 +2381,7 @@ def get_all_active_channels(client, projects):
     for index, project in enumerate(projects):
         if index:
             time.sleep(1)
-        channels = load_youtube_channels(client, project)
+        channels = load_youtube_channels(client, project, include_disabled=bool(project.get('bot_enabled')))
         for ch_id, ch_info in channels.items():
             if ch_id not in all_channels:
                 all_channels[ch_id] = {

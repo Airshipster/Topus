@@ -382,6 +382,7 @@ def update_subscription_renewals_batch(sheet, subscription_records, channel_ids)
         worksheet = get_or_create_subscriptions_worksheet(sheet)
         timestamp = format_timestamp()
         updates = []
+        clear_rows = []
 
         for channel_id in channel_ids:
             record = subscription_records.get(channel_id)
@@ -396,9 +397,27 @@ def update_subscription_renewals_batch(sheet, subscription_records, channel_ids)
                 'range': f'F{record["row_index"]}',
                 'values': [['✅ renewed']]
             })
+            clear_rows.append(record['row_index'])
 
         if updates:
             worksheet.batch_update(updates, value_input_option='USER_ENTERED')
+        if clear_rows:
+            requests = [{
+                'repeatCell': {
+                    'range': {
+                        'sheetId': worksheet.id,
+                        'startRowIndex': row_index - 1,
+                        'endRowIndex': row_index,
+                        'startColumnIndex': 2,
+                        'endColumnIndex': 3,
+                    },
+                    'cell': {'userEnteredFormat': {}},
+                    'fields': 'userEnteredFormat.backgroundColor',
+                }
+            } for row_index in clear_rows]
+            for i in range(0, len(requests), config.BATCH_SIZE):
+                sheet.batch_update({'requests': requests[i:i + config.BATCH_SIZE]})
+                time.sleep(0.2)
     except Exception as e:
         print(f"  ⚠️  Error updating subscription renewals: {e}")
 

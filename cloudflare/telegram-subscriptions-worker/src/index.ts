@@ -353,11 +353,13 @@ async function renderMenu(env: Env, projectCode: string, userId: string, categor
     if (category.category_id === 'root') {
       continue;
     }
-    rows.push([{ text: `📁 ${category.title}`, callback_data: `cat:${category.category_id}` }]);
+    const stats = await categoryStats(env, projectCode, userId, category.category_id);
+    const marker = stats.total > 0 && stats.selected === stats.total ? SELECTED_MARK : '📁';
+    rows.push([{ text: `${marker} ${category.title} (${stats.selected}/${stats.total})`, callback_data: `cat:${category.category_id}` }]);
   }
 
   if (categoryId === 'root') {
-    rows.push([{ text: '📺 Все каналы', callback_data: 'allch:0' }]);
+    rows.push([{ text: `📺 Все каналы (${selected.size}/${await countChannels(env, projectCode)})`, callback_data: 'allch:0' }]);
     if (rows.length === 1) {
       rows.unshift([{ text: 'Категории пока не настроены', callback_data: 'noop' }]);
     }
@@ -602,6 +604,21 @@ async function selectedChannels(env: Env, projectCode: string, userId: string): 
      WHERE project_code = ? AND user_id = ? AND active = 1`,
   ).bind(projectCode, userId).all<{ channel_id: string }>();
   return new Set((result.results || []).map((row) => row.channel_id));
+}
+
+async function categoryStats(env: Env, projectCode: string, userId: string, categoryId: string): Promise<{ selected: number; total: number }> {
+  const channelIds = await descendantChannelIds(env, projectCode, categoryId);
+  if (channelIds.length === 0) {
+    return { selected: 0, total: 0 };
+  }
+  const selected = await selectedChannels(env, projectCode, userId);
+  let selectedCount = 0;
+  for (const channelId of channelIds) {
+    if (selected.has(channelId)) {
+      selectedCount += 1;
+    }
+  }
+  return { selected: selectedCount, total: channelIds.length };
 }
 
 async function countChildCategories(env: Env, projectCode: string, parentId: string): Promise<number> {
