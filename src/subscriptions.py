@@ -43,6 +43,17 @@ def normalize_subscription_channel_id(value):
     return channel_id_from_link(cleaned) or cleaned
 
 
+def subscription_channel_url(channel_id):
+    return f'https://www.youtube.com/channel/{channel_id}/videos'
+
+
+def subscription_channel_formula(channel_id):
+    normalized = normalize_subscription_channel_id(channel_id)
+    if not normalized:
+        return ''
+    return f'=HYPERLINK("{subscription_channel_url(normalized)}";"{normalized}")'
+
+
 def get_subscription_sync_state(sheet):
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_SETTINGS)
@@ -146,7 +157,7 @@ def rewrite_subscriptions_values(worksheet):
         cleaned = [clean_sheet_value(cell) for cell in row[:len(SUBSCRIPTIONS_HEADERS)]]
         if len(cleaned) < len(SUBSCRIPTIONS_HEADERS):
             cleaned.extend([''] * (len(SUBSCRIPTIONS_HEADERS) - len(cleaned)))
-        cleaned[2] = normalize_subscription_channel_id(cleaned[2])
+        cleaned[2] = subscription_channel_formula(cleaned[2])
         updates.append({
             'range': f'A{row_index}:{column_letter(len(SUBSCRIPTIONS_HEADERS))}{row_index}',
             'values': [cleaned],
@@ -372,7 +383,7 @@ def save_subscribed_channels_batch(sheet, channel_ids, active_channels_dict):
         [
             format_channel_projects(active_channels_dict, channel_id),
             len(set(active_channels_dict.get(channel_id, {}).get('projects', []))),
-            channel_id,
+            subscription_channel_formula(channel_id),
             sheet_datetime_value(timestamp),
             sheet_datetime_value(timestamp),
             '✅ subscribed',
