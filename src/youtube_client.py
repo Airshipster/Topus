@@ -181,6 +181,8 @@ def get_video_info_from_api(video_id):
                 'is_upcoming': is_upcoming,
                 'duration': duration_str,
                 'duration_seconds': duration_seconds,
+                'live_actual_start': format_youtube_timestamp(live_details.get('actualStartTime')) if live_details.get('actualStartTime') else '',
+                'live_actual_end': format_youtube_timestamp(live_details.get('actualEndTime')) if live_details.get('actualEndTime') else '',
                 'width': width,
                 'height': height,
             }

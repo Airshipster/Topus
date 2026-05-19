@@ -65,7 +65,7 @@ def get_stale_reason(published_at, project=None):
 def copy_video_classification(video, video_info):
     if not video_info:
         return video
-    for field in ('is_short', 'short_reason', 'is_live', 'was_live', 'is_upcoming', 'duration', 'duration_seconds', 'width', 'height'):
+    for field in ('is_short', 'short_reason', 'is_live', 'was_live', 'is_upcoming', 'duration', 'duration_seconds', 'live_actual_start', 'live_actual_end', 'width', 'height'):
         if field in video_info:
             video[field] = video_info[field]
     return video
@@ -743,6 +743,7 @@ def main():
                         project['name'],
                         status='published',
                         error=publication_status_detail(video),
+                        video=video,
                     )
                     total_published += 1
                 else:
@@ -774,6 +775,7 @@ def main():
                     tg_message_id=tg_message_id,
                     status='published',
                     error=publication_status_detail(video),
+                    video=video,
                 )
                 total_published += 1
             else:

@@ -203,6 +203,38 @@ def publication_delay_minutes(yt_published, tg_published):
     return round((tg_dt - yt_dt).total_seconds() / 60)
 
 
+def effective_youtube_publication_timestamp(video, yt_published):
+    """Use stream archive readiness time as the YouTube publication time when available."""
+    if video and video.get('was_live') and video.get('live_actual_end'):
+        return normalize_timestamp(video.get('live_actual_end'))
+    return normalize_timestamp(yt_published)
+
+
+def stream_adjusted_publication_delay_minutes(video, yt_published, tg_published):
+    delay = publication_delay_minutes(yt_published, tg_published)
+    if delay == '':
+        return ''
+
+    if not video or not video.get('was_live'):
+        return delay
+
+    live_end = video.get('live_actual_end')
+    if live_end:
+        end_delay = publication_delay_minutes(live_end, tg_published)
+        if end_delay != '':
+            return max(0, end_delay)
+
+    duration_seconds = video.get('duration_seconds') or 0
+    try:
+        duration_minutes = round(float(duration_seconds) / 60)
+    except (TypeError, ValueError):
+        duration_minutes = 0
+    if duration_minutes > 0:
+        return max(0, delay - duration_minutes)
+
+    return delay
+
+
 def normalize_timestamp(value):
     parsed = parse_datetime_value(value)
     return format_timestamp(parsed) if parsed else clean_sheet_value(value)
@@ -1226,7 +1258,7 @@ def save_videos_batch(sheet, videos_data):
                 row_error = row_error.replace('RSS: ', '', 1)
             project_display = project_link_formula(project_name, project, tg_message_id)
             processed_at = format_timestamp()
-            yt_published_at = normalize_timestamp(video_published_date)
+            yt_published_at = effective_youtube_publication_timestamp(video, video_published_date)
             tg_published_at = format_timestamp() if tg_message_id else ''
 
             if existing:
@@ -1247,7 +1279,7 @@ def save_videos_batch(sheet, videos_data):
                 'Ссылка на видео': bare_url(video.get('url', '')),
                 'Дата публикации YT GMT+4': sheet_datetime_value(yt_published_at),
                 'Дата обработки GMT+4': sheet_datetime_value(processed_at),
-                'Разница в минутах': publication_delay_minutes(yt_published_at, tg_published_at),
+                'Разница в минутах': stream_adjusted_publication_delay_minutes(video, yt_published_at, tg_published_at),
                 'Дата публикации TG GMT+4': sheet_datetime_value(tg_published_at) if tg_published_at else '',
                 'TG message_id': sheet_numeric_value(tg_message_id) if tg_message_id else '',
                 'Системный статус': combined_status(row_status, row_error, source_method),
@@ -1287,7 +1319,7 @@ def row_status_blocks_retry(status):
     status = str(status or '').strip().lower()
     return bool(status and status != 'pending' and not status.startswith('deleted'))
 
-def update_video_publication_status(sheet, video_id, project_name, tg_message_id=None, status='published', error=''):
+def update_video_publication_status(sheet, video_id, project_name, tg_message_id=None, status='published', error='', video=None):
     """Обновление статуса публикации существующей строки видео"""
     try:
         worksheet = ensure_videos_worksheet(sheet)
@@ -1319,6 +1351,7 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
 
         timestamp = format_timestamp()
         yt_published = first_value(target_data, ['Дата публикации YT GMT+4', 'Дата публикации YT UTC'])
+        effective_yt_published = effective_youtube_publication_timestamp(video, yt_published)
         method, _ = status_method_from_text(first_value(target_data, ['Системный статус']))
         current_project_cell = first_value(target_data, ['Проект'])
         project_formula = cell_value(project_formulas[target_row - 1], 0) if target_row - 1 < len(project_formulas) else ''
@@ -1326,9 +1359,10 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
             current_project_cell = project_formula
         column_updates = {
             'Проект': project_post_link_formula_from_cell(current_project_cell, project_name, tg_message_id) if tg_message_id else current_project_cell,
+            'Дата публикации YT GMT+4': sheet_datetime_value(effective_yt_published) if effective_yt_published else '',
             'TG message_id': sheet_numeric_value(tg_message_id) if tg_message_id else '',
             'Дата публикации TG GMT+4': sheet_datetime_value(timestamp) if tg_message_id else '',
-            'Разница в минутах': publication_delay_minutes(yt_published, timestamp) if tg_message_id else '',
+            'Разница в минутах': stream_adjusted_publication_delay_minutes(video, effective_yt_published, timestamp) if tg_message_id else '',
             'Системный статус': combined_status(status, error, method),
         }
         updates = [
