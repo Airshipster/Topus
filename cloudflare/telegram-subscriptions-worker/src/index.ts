@@ -80,6 +80,15 @@ const SELECTED_MARK = '✅';
 const UNSELECTED_MARK = '➕';
 const CLOUDFLARE_MONTHLY_REQUEST_LIMIT = 100000;
 type TelegramButton = { text: string; callback_data?: string; url?: string };
+const WELCOME_TEXT = [
+  'Добро пожаловать в бот SciTopus.',
+  '',
+  'В наш Telegram-канал попадает только часть научпоп-каналов из базы SciTopus. Если вы хотите получать уведомления по большему числу каналов или собрать свою личную ленту из всего списка, настройте подписки здесь.',
+  '',
+  'Можно выбрать отдельные каналы, категории или подписаться на всё, а потом отключить лишнее.',
+  '',
+  'Для работы бота нужна подписка на основной Telegram-канал SciTopus.',
+].join('\n');
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -218,7 +227,7 @@ async function handleAdminNotify(request: Request, env: Env, ctx: ExecutionConte
        ${paymentCondition}`,
   ).bind(body.projectCode, body.channelId).all<{ user_id: string }>();
 
-  const deliveries = await sendNotifications(project, recipients.results || [], body.text, body.parseMode || 'HTML');
+  const deliveries = await sendNotifications(project, recipients.results || [], body.text, body.parseMode || 'HTML', body.channelId);
   return json({
     ok: true,
     queued: recipients.results?.length || 0,
@@ -396,7 +405,7 @@ async function handleMessage(env: Env, project: Project, message: TelegramMessag
   const menu = await renderMainMenu(env, project.code, String(message.from.id));
   await telegram(project.bot_token, 'sendMessage', {
     chat_id: message.chat.id,
-    text: 'Главное меню подписок',
+    text: WELCOME_TEXT,
     reply_markup: menu,
   });
 }
@@ -417,12 +426,30 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
   let toast = '';
   let menu: object | null = null;
   let text: string | null = null;
+
+  if (action === 'unsub') {
+    const channel = await getChannel(env, project.code, value);
+    const nextMenu = channel ? renderUnsubscribedNotificationMenu() : null;
+    if (channel) {
+      await setBulkSubscriptions(env, project.code, String(callback.from.id), [channel.channel_id], false);
+    }
+    await answer(project.bot_token, callback.id, channel ? 'Вы отписались от канала' : 'Канал не найден');
+    if (message && nextMenu) {
+      await telegram(project.bot_token, 'editMessageReplyMarkup', {
+        chat_id: message.chat.id,
+        message_id: message.message_id,
+        reply_markup: nextMenu,
+      });
+    }
+    return;
+  }
+
   const requiredChannel = await requiredChannelForProject(env, project.code);
 
   if (action === 'checkjoin') {
     if (!requiredChannel || await hasRequiredChannelMembership(project, String(callback.from.id), requiredChannel)) {
       menu = await renderMainMenu(env, project.code, String(callback.from.id));
-      text = 'Главное меню подписок';
+      text = WELCOME_TEXT;
       toast = 'Подписка на канал подтверждена';
     } else {
       menu = renderJoinChannelMenu(requiredChannel);
@@ -437,7 +464,7 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
 
   if (action === 'menu') {
     menu = await renderMainMenu(env, project.code, String(callback.from.id));
-    text = 'Главное меню подписок';
+    text = WELCOME_TEXT;
   } else if (action === 'cats') {
     menu = await renderMenu(env, project.code, String(callback.from.id), 'root', 0);
     text = 'Выберите категорию';
@@ -581,6 +608,15 @@ function renderExtraMenu(): object {
     [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
   ];
   return { inline_keyboard: rows };
+}
+
+function renderUnsubscribedNotificationMenu(): object {
+  return {
+    inline_keyboard: [
+      [{ text: 'Вы отписались от этого канала', callback_data: 'noop' }],
+      [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
+    ],
+  };
 }
 
 async function renderMenu(env: Env, projectCode: string, userId: string, categoryId: string, page: number): Promise<object> {
@@ -957,6 +993,7 @@ async function sendNotifications(
   recipients: Array<{ user_id: string }>,
   text: string,
   parseMode: string,
+  channelId: string,
 ): Promise<Array<{ userId: string; messageId: number | null }>> {
   const deliveries: Array<{ userId: string; messageId: number | null }> = [];
   for (const recipient of recipients) {
@@ -965,6 +1002,7 @@ async function sendNotifications(
       text,
       parse_mode: parseMode,
       disable_web_page_preview: false,
+      reply_markup: renderNotificationMenu(channelId),
     }) as { ok?: boolean; result?: { message_id?: number } } | null;
     deliveries.push({
       userId: recipient.user_id,
@@ -972,6 +1010,14 @@ async function sendNotifications(
     });
   }
   return deliveries;
+}
+
+function renderNotificationMenu(channelId: string): object {
+  return {
+    inline_keyboard: [
+      [{ text: 'Отписаться от канала', callback_data: `unsub:${channelId}` }],
+    ],
+  };
 }
 
 async function requiredChannelForProject(env: Env, projectCode: string): Promise<string> {

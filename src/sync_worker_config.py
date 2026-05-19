@@ -26,6 +26,12 @@ TELEGRAM_BOT_COLUMN_NAMES = ['Telegram-бот', 'Telegram бот', 'Telegram bot
 CATEGORY_COLUMN_NAMES = ['Категория', 'Категории', 'Category', 'Раздел']
 CHANNEL_NAME_HEADERS = ['Название', 'Название канала', 'Канал', 'YouTube канал']
 CATEGORY_MARKER = '🟡'
+BOT_DESCRIPTION = (
+    'Бот SciTopus помогает собрать личную ленту уведомлений по научпоп YouTube-каналам. '
+    'Выбирайте отдельные каналы, категории или весь список SciTopus. '
+    'Для использования нужна подписка на основной Telegram-канал.'
+)
+BOT_SHORT_DESCRIPTION = 'Личная лента уведомлений по научпоп YouTube-каналам SciTopus.'
 
 
 def slug(value):
@@ -260,6 +266,22 @@ def set_telegram_webhooks(worker_url, payload):
         print(f"  {'✅' if result.get('ok') else '⚠️ '} Webhook {project['code']}: {result}")
 
 
+def set_telegram_bot_descriptions(payload):
+    for project in payload['projects']:
+        for method, text in (
+            ('setMyDescription', BOT_DESCRIPTION),
+            ('setMyShortDescription', BOT_SHORT_DESCRIPTION),
+        ):
+            response = requests.post(
+                f"https://api.telegram.org/bot{project['botToken']}/{method}",
+                json={'description' if method == 'setMyDescription' else 'short_description': text},
+                timeout=15,
+            )
+            response.raise_for_status()
+            result = response.json()
+            print(f"  {'✅' if result.get('ok') else '⚠️ '} {method} {project['code']}: {result}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--set-webhooks', action='store_true')
@@ -279,6 +301,7 @@ def main():
     print(f"  ✅ Worker sync result: {result}")
     if args.set_webhooks:
         set_telegram_webhooks(worker_url, payload)
+        set_telegram_bot_descriptions(payload)
 
 
 if __name__ == '__main__':
