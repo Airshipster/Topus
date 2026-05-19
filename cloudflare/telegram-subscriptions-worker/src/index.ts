@@ -83,11 +83,11 @@ type TelegramButton = { text: string; callback_data?: string; url?: string };
 const WELCOME_TEXT = [
   'Добро пожаловать в бот SciTopus.',
   '',
-  'В наш Telegram-канал попадает только часть научпоп-каналов из базы SciTopus. Если вы хотите получать уведомления по большему числу каналов или собрать свою личную ленту из всего списка, настройте подписки здесь.',
+  'В наш <a href="https://t.me/SciTopus">Telegram-канал</a> попадает только часть научпоп-каналов из базы SciTopus. Если вы хотите получать уведомления по большему числу каналов или собрать свою личную ленту из всего списка, настройте подписки здесь.',
   '',
   'Можно выбрать отдельные каналы, категории или подписаться на всё, а потом отключить лишнее.',
   '',
-  'Для работы бота нужна подписка на основной Telegram-канал SciTopus.',
+  'Для работы бота нужна подписка на основной Telegram-канал SciTopus: @SciTopus.',
 ].join('\n');
 
 export default {
@@ -406,6 +406,7 @@ async function handleMessage(env: Env, project: Project, message: TelegramMessag
   await telegram(project.bot_token, 'sendMessage', {
     chat_id: message.chat.id,
     text: WELCOME_TEXT,
+    parse_mode: 'HTML',
     reply_markup: menu,
   });
 }
@@ -559,6 +560,7 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
     };
     if (text) {
       payload.text = text;
+      payload.parse_mode = 'HTML';
       await telegram(project.bot_token, 'editMessageText', payload);
     } else {
       await telegram(project.bot_token, 'editMessageReplyMarkup', payload);
