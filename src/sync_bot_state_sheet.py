@@ -218,26 +218,31 @@ def build_state(state):
     }
 
 
-def read_action_rows(worksheet):
+def read_action_rows(worksheet, compact_state):
     values = get_values_with_quota_retry(worksheet)
     if not values:
         return []
     headers = {str(cell).strip(): index for index, cell in enumerate(values[0]) if str(cell).strip()}
+    users = compact_state['users']
     rows = []
     for raw_row in values[1:]:
         action = str(get_cell(raw_row, headers, 'Sync Action') or '').strip().lower()
-        if action not in {'push', 'delete'}:
-            continue
         project_code = str(get_cell(raw_row, headers, 'Project Code') or '').strip()
         user_id = str(get_cell(raw_row, headers, 'User ID') or '').strip()
         if not project_code or not user_id:
             continue
+        access = str(get_cell(raw_row, headers, 'Access') or '').strip().lower()
+        is_new_free_user = row_key(project_code, user_id) not in users and access == 'free'
+        if action not in {'push', 'delete'} and not is_new_free_user:
+            continue
+        if is_new_free_user and action not in {'push', 'delete'}:
+            action = 'push'
         rows.append({
             'project_code': project_code,
             'user_id': user_id,
             'username': str(get_cell(raw_row, headers, 'Username') or '').strip(),
             'first_name': str(get_cell(raw_row, headers, 'First Name') or '').strip(),
-            'access': str(get_cell(raw_row, headers, 'Access') or '').strip().lower(),
+            'access': access,
             'mode': str(get_cell(raw_row, headers, 'Subscription Mode') or '').strip().lower(),
             'included': get_cell(raw_row, headers, 'Included Channel IDs'),
             'excluded': get_cell(raw_row, headers, 'Excluded Channel IDs'),
@@ -410,7 +415,7 @@ def main():
 
     state = fetch_worker_state(worker_url, admin_secret)
     compact_state = build_state(state)
-    changes = collect_changes(read_action_rows(worksheet), compact_state)
+    changes = collect_changes(read_action_rows(worksheet, compact_state), compact_state)
 
     if changes:
         result = request_worker('POST', '/admin/sheet-state', worker_url, admin_secret, json=changes)
