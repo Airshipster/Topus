@@ -475,6 +475,10 @@ def write_cloudflare_status(worksheet, user_count, applied_count, usage):
         f"applied={applied_count}; requests {month}: {used}/{limit}; "
         f"remaining={remaining}; source={source}"
     )
+    worksheet.update(range_name='S1', values=[[status]], value_input_option='USER_ENTERED')
+
+
+def write_operation_status(worksheet, status):
     worksheet.update(range_name='S2', values=[[status]], value_input_option='USER_ENTERED')
 
 
@@ -545,6 +549,7 @@ def main():
     client = authenticate_google_sheets()
     sheet = client.open_by_key(config.SPREADSHEET_ID)
     worksheet = ensure_bot_worksheet(sheet)
+    write_operation_status(worksheet, f"Bot Cloudflare sync running in GitHub Actions: {format_timestamp()}")
 
     state = fetch_worker_state(worker_url, admin_secret)
     compact_state = build_state(state)
@@ -565,6 +570,10 @@ def main():
     write_single_sheet(worksheet, compact_state, sheet_rows)
     usage = resolve_usage(compact_state.get('usage') or {})
     write_cloudflare_status(worksheet, len(compact_state['users']), applied_count, usage)
+    write_operation_status(
+        worksheet,
+        f"Bot Cloudflare sync finished: {format_timestamp()}; users={len(compact_state['users'])}; applied={applied_count}",
+    )
     print(f"  Synced one-sheet bot state: {len(compact_state['users'])} users")
 
 

@@ -39,8 +39,9 @@ function triggerPublisher_(videoId, channelId, options) {
   options = options || {};
 
   if (!token) {
-    console.warn('GITHUB_DISPATCH_TOKEN is not set; publisher will run on cron fallback');
-    return;
+    var missingTokenMessage = 'GITHUB_DISPATCH_TOKEN is not set; publisher will run on cron fallback';
+    console.warn(missingTokenMessage);
+    return {ok: false, status: 0, message: missingTokenMessage};
   }
 
   if (videoId || channelId) {
@@ -48,8 +49,9 @@ function triggerPublisher_(videoId, channelId, options) {
     var now = Date.now();
     var lastDispatch = Number(properties.getProperty('TOPUS_LAST_PUSH_DISPATCH_MS') || 0);
     if (lastDispatch && now - lastDispatch < 60000) {
-      console.log('GitHub dispatch skipped: recent push dispatch already queued');
-      return;
+      var skippedMessage = 'GitHub dispatch skipped: recent push dispatch already queued';
+      console.log(skippedMessage);
+      return {ok: true, status: 0, message: skippedMessage};
     }
     properties.setProperty('TOPUS_LAST_PUSH_DISPATCH_MS', String(now));
   }
@@ -79,6 +81,10 @@ function triggerPublisher_(videoId, channelId, options) {
 
   var status = response.getResponseCode();
   if (status < 200 || status >= 300) {
-    console.error('Failed to trigger GitHub dispatch: ' + status + ' ' + response.getContentText());
+    var failureMessage = 'Failed to trigger GitHub dispatch: ' + status + ' ' + response.getContentText();
+    console.error(failureMessage);
+    return {ok: false, status: status, message: failureMessage};
   }
+
+  return {ok: true, status: status, message: 'GitHub dispatch accepted'};
 }
