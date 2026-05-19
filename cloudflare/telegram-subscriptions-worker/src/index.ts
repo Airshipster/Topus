@@ -2,6 +2,7 @@ interface Env {
   DB: D1Database;
   CACHE: KVNamespace;
   ADMIN_SECRET: string;
+  PAYMENTS_REQUIRED?: string;
 }
 
 type TelegramUser = {
@@ -182,6 +183,9 @@ async function handleAdminNotify(request: Request, env: Env, ctx: ExecutionConte
     return json({ ok: false, error: 'project_not_found' }, 404);
   }
 
+  const paymentCondition = paymentsRequired(env)
+    ? 'AND (COALESCE(u.is_paid, 0) = 1 OR COALESCE(u.is_allowlisted, 0) = 1 OR a.user_id IS NOT NULL)'
+    : '';
   const recipients = await env.DB.prepare(
     `SELECT s.user_id
      FROM user_subscriptions s
@@ -190,7 +194,7 @@ async function handleAdminNotify(request: Request, env: Env, ctx: ExecutionConte
      WHERE s.project_code = ?
        AND s.channel_id = ?
        AND s.active = 1
-       AND (COALESCE(u.is_paid, 0) = 1 OR COALESCE(u.is_allowlisted, 0) = 1 OR a.user_id IS NOT NULL)`,
+       ${paymentCondition}`,
   ).bind(body.projectCode, body.channelId).all<{ user_id: string }>();
 
   ctx.waitUntil(sendNotifications(project, recipients.results || [], body.text, body.parseMode || 'HTML'));
@@ -297,6 +301,18 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
       menu = await renderSubscriptions(env, project.code, String(callback.from.id), page);
       text = 'Мои подписки';
     }
+  } else if (action === 'clearsubs') {
+    const channels = await subscribedChannels(env, project.code, String(callback.from.id));
+    await setBulkSubscriptions(
+      env,
+      project.code,
+      String(callback.from.id),
+      channels.map((channel) => channel.channel_id),
+      false,
+    );
+    menu = await renderSubscriptions(env, project.code, String(callback.from.id), 0);
+    text = 'Мои подписки';
+    toast = 'Все подписки отключены';
   } else if (action === 'all' || action === 'none') {
     const channelIds = await descendantChannelIds(env, project.code, value);
     await setBulkSubscriptions(env, project.code, String(callback.from.id), channelIds, action === 'all');
@@ -372,7 +388,9 @@ async function renderMenu(env: Env, projectCode: string, userId: string, categor
   }
 
   if (categoryId === 'root') {
-    rows.push([{ text: `📺 Все каналы (${selected.size}/${await countChannels(env, projectCode)})`, callback_data: 'allch:0' }]);
+    const totalChannels = await countChannels(env, projectCode);
+    const allPrefix = totalChannels > 0 && selected.size === totalChannels ? `${SELECTED_MARK} 📺` : '📺';
+    rows.push([{ text: `${allPrefix} Все каналы (${selected.size}/${totalChannels})`, callback_data: 'allch:0' }]);
     if (rows.length === 1) {
       rows.unshift([{ text: 'Категории пока не настроены', callback_data: 'noop' }]);
     }
@@ -436,12 +454,13 @@ async function renderSubscriptions(env: Env, projectCode: string, userId: string
     return {
       inline_keyboard: [
         [{ text: 'Пока нет подписок', callback_data: 'noop' }],
+        [{ text: '📺 Все каналы', callback_data: 'allch:0' }],
         [{ text: '📚 Выбрать категории', callback_data: 'cats:root' }],
         [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
       ],
     };
   }
-  return renderChannelList(channels, selected, page, 'togglesub', 'subs', false);
+  return renderChannelList(channels, selected, page, 'togglesub', 'subs', false, false, true);
 }
 
 async function renderPlan(env: Env, projectCode: string, userId: string): Promise<object> {
@@ -465,6 +484,7 @@ function renderChannelList(
   pageAction: string,
   showUnselected: boolean,
   showBulkActions = false,
+  showClearSubscriptions = false,
 ): object {
   const rows: Array<Array<{ text: string; callback_data: string }>> = [];
   const totalPages = Math.max(1, Math.ceil(channels.length / CHANNELS_PER_PAGE));
@@ -497,6 +517,11 @@ function renderChannelList(
       { text: '✅ Подписаться на все', callback_data: `allall:${currentPage}` },
       { text: '➖ Отписаться от всех', callback_data: `noneall:${currentPage}` },
     ]);
+  }
+  if (showClearSubscriptions) {
+    rows.push([{ text: '➖ Отписаться от всех', callback_data: 'clearsubs:0' }]);
+    rows.push([{ text: '📺 Все каналы', callback_data: 'allch:0' }]);
+    rows.push([{ text: '📚 Категории', callback_data: 'cats:root' }]);
   }
 
   rows.push([{ text: '🏠 Главное меню', callback_data: 'menu:root' }]);
@@ -772,6 +797,10 @@ function chunks<T>(items: T[], size: number): T[][] {
 
 function menuCacheKey(projectCode: string): string {
   return `menu:${projectCode}`;
+}
+
+function paymentsRequired(env: Env): boolean {
+  return ['1', 'true', 'yes', 'on'].includes(String(env.PAYMENTS_REQUIRED || '').trim().toLowerCase());
 }
 
 function json(body: object, status = 200): Response {
