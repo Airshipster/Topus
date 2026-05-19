@@ -1777,6 +1777,24 @@ def format_push_events_sheet(sheet, clean_rows=False):
 
             rows_to_delete = []
             timestamp_updates = []
+            channel_updates = []
+            if not clean_rows:
+                values = get_values_with_quota_retry(worksheet)
+                headers = [str(value).strip() for value in values[0]] if values else []
+                channel_col = find_column_index(headers, ['Ссылка на канал'])
+                if channel_col is not None:
+                    for row_index, row in enumerate(values[1:], start=2):
+                        cleaned = clean_row(row)
+                        channel_value = cell_value(cleaned, channel_col)
+                        channel_id = channel_id_from_link(channel_value)
+                        if not channel_id:
+                            continue
+                        normalized_channel = channel_link(channel_id)
+                        if normalized_channel and normalized_channel != channel_value:
+                            channel_updates.append({
+                                'range': gspread.utils.rowcol_to_a1(row_index, channel_col + 1),
+                                'values': [[normalized_channel]],
+                            })
             if clean_rows:
                 values = get_values_with_quota_retry(worksheet)
                 headers = [str(value).strip() for value in values[0]] if values else []
@@ -1795,6 +1813,12 @@ def format_push_events_sheet(sheet, clean_rows=False):
                     if not video_id or not channel_id:
                         rows_to_delete.append(row_index)
                         continue
+                    normalized_channel = channel_link(channel_id)
+                    if normalized_channel and normalized_channel != channel_value:
+                        channel_updates.append({
+                            'range': gspread.utils.rowcol_to_a1(row_index, channel_col + 1),
+                            'values': [[normalized_channel]],
+                        })
                     timestamp = cell_value(cleaned, timestamp_col)
                     normalized_timestamp = normalize_timestamp(timestamp)
                     if normalized_timestamp and normalized_timestamp != timestamp:
@@ -1806,6 +1830,10 @@ def format_push_events_sheet(sheet, clean_rows=False):
             if timestamp_updates:
                 for i in range(0, len(timestamp_updates), config.BATCH_SIZE):
                     worksheet.batch_update(timestamp_updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
+                    time.sleep(0.2)
+            if channel_updates:
+                for i in range(0, len(channel_updates), config.BATCH_SIZE):
+                    worksheet.batch_update(channel_updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
                     time.sleep(0.2)
             if rows_to_delete:
                 deleted = delete_rows_batch(sheet, worksheet, rows_to_delete)

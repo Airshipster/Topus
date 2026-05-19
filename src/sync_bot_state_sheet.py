@@ -1,4 +1,5 @@
 import os
+import re
 from collections import defaultdict
 
 import gspread
@@ -18,8 +19,6 @@ HEADERS = [
     'User ID',
     'Username',
     'First Name',
-    'Is Paid',
-    'Is Allowlisted',
     'Access',
     'Subscription Mode',
     'Included Channel IDs',
@@ -27,7 +26,6 @@ HEADERS = [
     'Subscribed Count',
     'Total Channels',
     'Free Note',
-    'Free Source',
     'Cloudflare Updated At',
     'Sheet Synced At',
     'Sync Action',
@@ -70,6 +68,10 @@ def display_timestamp(value):
     return normalize_timestamp(value) if value else ''
 
 
+def bot_display(project):
+    return str(project.get('bot_username') or project.get('name') or project.get('code') or '').strip()
+
+
 def worker_bool(record, key):
     return bool(int(record.get(key) or 0))
 
@@ -83,6 +85,10 @@ def get_cell(row, headers, name):
     if index is None or index >= len(row):
         return ''
     return clean_sheet_value(row[index])
+
+
+def a1_column(column_index):
+    return re.sub(r'\d+', '', gspread.utils.rowcol_to_a1(1, column_index))
 
 
 def rename_legacy_sheet(sheet):
@@ -157,7 +163,11 @@ def build_state(state):
     for project in state.get('projects') or []:
         code = str(project.get('code') or '').strip()
         if code:
-            projects[code] = str(project.get('name') or code).strip()
+            projects[code] = {
+                'code': code,
+                'name': str(project.get('name') or code).strip(),
+                'bot_username': str(project.get('bot_username') or '').strip(),
+            }
 
     for channel in state.get('channels') or []:
         project_code = str(channel.get('project_code') or '').strip()
@@ -241,8 +251,6 @@ def read_action_rows(worksheet):
             'user_id': user_id,
             'username': str(get_cell(raw_row, headers, 'Username') or '').strip(),
             'first_name': str(get_cell(raw_row, headers, 'First Name') or '').strip(),
-            'is_paid': get_cell(raw_row, headers, 'Is Paid'),
-            'is_allowlisted': get_cell(raw_row, headers, 'Is Allowlisted'),
             'access': str(get_cell(raw_row, headers, 'Access') or '').strip().lower(),
             'mode': str(get_cell(raw_row, headers, 'Subscription Mode') or '').strip().lower(),
             'included': get_cell(raw_row, headers, 'Included Channel IDs'),
@@ -279,13 +287,14 @@ def collect_changes(action_rows, compact_state):
         if row['action'] == 'delete':
             desired = set()
             payload['allowlist'].append({'projectCode': project_code, 'userId': user_id, 'delete': True})
+            is_paid = False
             is_allowlisted = False
         else:
             desired = desired_subscriptions(row, channels_by_project.get(project_code, []))
-            is_allowlisted = (
-                bool_from_sheet(row['is_allowlisted'], existing_user.get('is_allowlisted', False))
-                or row['access'] == 'free'
-            )
+            existing_access = user_access(existing_user, allowlist.get(key))
+            requested_access = row['access'] or existing_access
+            is_paid = requested_access == 'paid'
+            is_allowlisted = requested_access == 'free'
             if is_allowlisted:
                 payload['allowlist'].append({
                     'projectCode': project_code,
@@ -301,7 +310,7 @@ def collect_changes(action_rows, compact_state):
             'userId': user_id,
             'username': row['username'] or existing_user.get('username') or None,
             'firstName': row['first_name'] or existing_user.get('first_name') or None,
-            'isPaid': bool_from_sheet(row['is_paid'], existing_user.get('is_paid', False)),
+            'isPaid': is_paid,
             'isAllowlisted': is_allowlisted,
         })
 
@@ -341,8 +350,16 @@ def write_rows(worksheet, rows):
     target_rows = max(1000, len(rows) + 20)
     if worksheet.row_count < target_rows or worksheet.col_count < len(HEADERS):
         worksheet.resize(rows=target_rows, cols=len(HEADERS))
-    worksheet.clear()
-    worksheet.update(range_name='A1', values=[HEADERS] + rows, value_input_option='USER_ENTERED')
+    existing_values = get_values_with_quota_retry(worksheet)
+    payload = [HEADERS] + rows
+    last_col = a1_column(len(HEADERS))
+    worksheet.update(
+        range_name=f'A1:{last_col}{len(payload)}',
+        values=payload,
+        value_input_option='USER_ENTERED',
+    )
+    if len(existing_values) > len(payload):
+        worksheet.batch_clear([f'A{len(payload) + 1}:{last_col}{len(existing_values)}'])
 
 
 def write_single_sheet(worksheet, compact_state):
@@ -377,12 +394,10 @@ def write_single_sheet(worksheet, compact_state):
         )
         rows.append([
             project_code,
-            projects.get(project_code, project_code),
+            bot_display(projects.get(project_code, {'code': project_code})),
             user_id,
             user.get('username', ''),
             user.get('first_name', ''),
-            bool_to_sheet(user.get('is_paid')),
-            bool_to_sheet(user.get('is_allowlisted') or bool(allowlist_entry)),
             user_access(user, allowlist_entry),
             mode,
             included,
@@ -390,7 +405,6 @@ def write_single_sheet(worksheet, compact_state):
             selected_count,
             total_count,
             allowlist_entry.get('note', '') if allowlist_entry else '',
-            'allowlist' if allowlist_entry else ('user flag' if user.get('is_allowlisted') else ''),
             display_timestamp(updated_at),
             sync_time,
             '',

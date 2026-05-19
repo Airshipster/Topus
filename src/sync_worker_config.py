@@ -22,6 +22,7 @@ from sheets import (
 
 
 BOT_COLUMN_NAMES = ['Бот', 'Индивидуальный бот', 'Персональный бот']
+TELEGRAM_BOT_COLUMN_NAMES = ['Telegram-бот', 'Telegram бот', 'Telegram bot', 'Telegram Bot']
 CATEGORY_COLUMN_NAMES = ['Категория', 'Категории', 'Category', 'Раздел']
 CHANNEL_NAME_HEADERS = ['Название', 'Название канала', 'Канал', 'YouTube канал']
 CATEGORY_MARKER = '🟡'
@@ -91,6 +92,7 @@ def read_bot_projects(master_sheet):
         sheet_id = extract_sheet_id(row.get('Ссылка на документ проекта', ''))
         project_code = str(row.get('Код проекта') or '').strip()
         bot_token = str(row.get('Telegram bot token') or '').strip()
+        bot_username = telegram_channel_ref(column_value(raw_row, headers, TELEGRAM_BOT_COLUMN_NAMES) or row.get('Telegram-бот') or '')
         main_channel = telegram_channel_ref(
             row.get('Telegram канал @') or row.get('Telegram канал') or row.get('Telegram канал ID') or ''
         )
@@ -104,6 +106,7 @@ def read_bot_projects(master_sheet):
             'sheet_id': sheet_id,
             'channels_sheet_name': str(row.get('Название листа') or '').strip(),
             'bot_token': bot_token,
+            'bot_username': bot_username,
             'main_channel': main_channel,
         })
 
@@ -218,6 +221,7 @@ def build_payload(client, master_sheet, admin_secret):
             'code': project['code'],
             'name': project['name'],
             'botToken': project['bot_token'],
+            'botUsername': project.get('bot_username', ''),
             'webhookSecret': webhook_secret(project['code'], admin_secret),
             'mainChannel': project.get('main_channel', ''),
             'active': True,

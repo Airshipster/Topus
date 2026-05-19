@@ -55,6 +55,7 @@ type SyncProject = {
   code: string;
   name: string;
   botToken: string;
+  botUsername?: string;
   webhookSecret: string;
   mainChannel?: string;
   active?: boolean;
@@ -167,10 +168,14 @@ async function handleAdminSync(request: Request, env: Env, ctx: ExecutionContext
     }
 
     const mainChannel = normalizeTelegramChannel(project.mainChannel || '');
+    const botUsername = normalizeTelegramChannel(project.botUsername || '');
     ctx.waitUntil(Promise.all([
       mainChannel
         ? env.CACHE.put(requiredChannelKey(project.code), mainChannel)
         : env.CACHE.delete(requiredChannelKey(project.code)),
+      botUsername
+        ? env.CACHE.put(botUsernameKey(project.code), botUsername)
+        : env.CACHE.delete(botUsernameKey(project.code)),
       env.CACHE.delete(menuCacheKey(project.code)),
     ]));
   }
@@ -223,12 +228,12 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
   }
 
   if (request.method === 'GET') {
-    const [projects, users, subscriptions, allowlist, channels] = await Promise.all([
+    const [projectsResult, users, subscriptions, allowlist, channels] = await Promise.all([
       env.DB.prepare(
         `SELECT code, name, active, updated_at
          FROM projects
          ORDER BY code`,
-      ).all(),
+      ).all<{ code: string; name: string; active: number; updated_at: string }>(),
       env.DB.prepare(
         `SELECT project_code, user_id, username, first_name, is_paid, is_allowlisted, created_at, updated_at
          FROM users
@@ -251,10 +256,14 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
          ORDER BY project_code, sort_order, title`,
       ).all(),
     ]);
+    const projects = await Promise.all((projectsResult.results || []).map(async (project) => ({
+      ...project,
+      bot_username: await env.CACHE.get(botUsernameKey(String(project.code || ''))) || '',
+    })));
 
     return json({
       ok: true,
-      projects: projects.results || [],
+      projects,
       users: users.results || [],
       subscriptions: subscriptions.results || [],
       allowlist: allowlist.results || [],
@@ -279,6 +288,12 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
     if (!user.projectCode || !user.userId) {
       continue;
     }
+    const existingProject = await getProject(env, user.projectCode);
+    const telegramUser = (!user.username || !user.firstName) && existingProject
+      ? await getTelegramUser(existingProject, user.userId)
+      : null;
+    const username = user.username || telegramUser?.username || null;
+    const firstName = user.firstName || telegramUser?.first_name || null;
     statements.push(env.DB.prepare(
       `INSERT INTO users (project_code, user_id, username, first_name, is_paid, is_allowlisted, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -291,8 +306,8 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
     ).bind(
       user.projectCode,
       user.userId,
-      user.username || null,
-      user.firstName || null,
+      username,
+      firstName,
       user.isPaid ? 1 : 0,
       user.isAllowlisted ? 1 : 0,
       now,
@@ -956,6 +971,13 @@ async function hasRequiredChannelMembership(project: Project, userId: string, ch
   return ['creator', 'administrator', 'member'].includes(status);
 }
 
+async function getTelegramUser(project: Project, userId: string): Promise<TelegramUser | null> {
+  const result = await telegram(project.bot_token, 'getChat', {
+    chat_id: userId,
+  }) as { ok?: boolean; result?: TelegramUser } | null;
+  return result?.result || null;
+}
+
 async function telegram(botToken: string, method: string, payload: object): Promise<unknown> {
   const response = await fetch(`https://api.telegram.org/bot${botToken}/${method}`, {
     method: 'POST',
@@ -1008,6 +1030,10 @@ function menuCacheKey(projectCode: string): string {
 
 function requiredChannelKey(projectCode: string): string {
   return `required-channel:${projectCode}`;
+}
+
+function botUsernameKey(projectCode: string): string {
+  return `bot-username:${projectCode}`;
 }
 
 function normalizeTelegramChannel(value: string): string {
