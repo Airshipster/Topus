@@ -1,4 +1,4 @@
-name: Sync Bot State Sheet
+name: Sync Bot Cloudflare
 
 on:
   schedule:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  sync-bot-state-sheet:
+  sync-bot-cloudflare:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -24,7 +24,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Sync bot state sheet
+      - name: Sync bot state with Cloudflare
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           TOPUS_WORKER_URL: ${{ secrets.TOPUS_WORKER_URL }}

@@ -215,6 +215,7 @@ def build_state(state):
         'channels_by_project': dict(channels_by_project),
         'subscription_rows': dict(subscription_rows),
         'subscription_updated_at': dict(subscription_updated_at),
+        'usage': state.get('usage') or {},
     }
 
 
@@ -373,10 +374,16 @@ def write_rows(worksheet, rows):
         worksheet.batch_clear([f'A{len(payload) + 1}:{last_col}{len(existing_values)}'])
 
 
-def write_cloudflare_status(worksheet, user_count, applied_count):
+def write_cloudflare_status(worksheet, user_count, applied_count, usage):
+    limit = usage.get('limit') or 100000
+    used = usage.get('used') or 0
+    remaining = usage.get('remaining')
+    if remaining is None:
+        remaining = max(0, int(limit) - int(used))
+    month = usage.get('month') or ''
     status = (
         f"Cloudflare sync OK: {format_timestamp()}; users={user_count}; "
-        f"applied={applied_count}; exact remaining limit unavailable"
+        f"applied={applied_count}; requests {month}: {used}/{limit}; remaining={remaining}"
     )
     worksheet.update(range_name='S2', values=[[status]], value_input_option='USER_ENTERED')
 
@@ -466,7 +473,7 @@ def main():
         print('  No bot sheet changes to push')
 
     write_single_sheet(worksheet, compact_state, sheet_rows)
-    write_cloudflare_status(worksheet, len(compact_state['users']), applied_count)
+    write_cloudflare_status(worksheet, len(compact_state['users']), applied_count, compact_state.get('usage') or {})
     print(f"  Synced one-sheet bot state: {len(compact_state['users'])} users")
 
 

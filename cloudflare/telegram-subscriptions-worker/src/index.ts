@@ -78,11 +78,15 @@ const jsonHeaders = { 'content-type': 'application/json; charset=utf-8' };
 const CHANNELS_PER_PAGE = 20;
 const SELECTED_MARK = '✅';
 const UNSELECTED_MARK = '➕';
+const CLOUDFLARE_MONTHLY_REQUEST_LIMIT = 100000;
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname.split('/').filter(Boolean);
+    ctx.waitUntil(recordCloudflareRequest(env).catch((error) => {
+      console.error(JSON.stringify({ level: 'warn', error: String(error), source: 'usage-counter' }));
+    }));
 
     try {
       if (request.method === 'GET' && path.length === 0) {
@@ -228,7 +232,7 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
   }
 
   if (request.method === 'GET') {
-    const [projectsResult, users, subscriptions, allowlist, channels] = await Promise.all([
+    const [projectsResult, users, subscriptions, allowlist, channels, usage] = await Promise.all([
       env.DB.prepare(
         `SELECT code, name, active, updated_at
          FROM projects
@@ -255,6 +259,7 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
          FROM channels
          ORDER BY project_code, sort_order, title`,
       ).all(),
+      getCloudflareUsage(env),
     ]);
     const projects = await Promise.all((projectsResult.results || []).map(async (project) => ({
       ...project,
@@ -268,6 +273,7 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
       subscriptions: subscriptions.results || [],
       allowlist: allowlist.results || [],
       channels: channels.results || [],
+      usage,
       exportedAt: new Date().toISOString(),
     });
   }
@@ -1054,6 +1060,54 @@ function telegramChannelUrl(channelRef: string): string {
 
 function paymentsRequired(env: Env): boolean {
   return ['1', 'true', 'yes', 'on'].includes(String(env.PAYMENTS_REQUIRED || '').trim().toLowerCase());
+}
+
+function usageMonth(date = new Date()): string {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+}
+
+function usageTableStatement(env: Env): D1PreparedStatement {
+  return env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS cloudflare_request_usage (
+       month TEXT PRIMARY KEY,
+       request_count INTEGER NOT NULL DEFAULT 0,
+       updated_at TEXT NOT NULL
+     )`,
+  );
+}
+
+async function recordCloudflareRequest(env: Env): Promise<void> {
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    usageTableStatement(env),
+    env.DB.prepare(
+      `INSERT INTO cloudflare_request_usage (month, request_count, updated_at)
+       VALUES (?, 1, ?)
+       ON CONFLICT(month) DO UPDATE SET
+         request_count = cloudflare_request_usage.request_count + 1,
+         updated_at = excluded.updated_at`,
+    ).bind(usageMonth(), now),
+  ]);
+}
+
+async function getCloudflareUsage(env: Env): Promise<{ month: string; limit: number; used: number; remaining: number; updated_at: string }> {
+  await usageTableStatement(env).run();
+  const month = usageMonth();
+  const row = await env.DB.prepare(
+    `SELECT request_count, updated_at
+     FROM cloudflare_request_usage
+     WHERE month = ?`,
+  ).bind(month).first<{ request_count: number; updated_at: string }>();
+  const used = row?.request_count || 0;
+  return {
+    month,
+    limit: CLOUDFLARE_MONTHLY_REQUEST_LIMIT,
+    used,
+    remaining: Math.max(0, CLOUDFLARE_MONTHLY_REQUEST_LIMIT - used),
+    updated_at: row?.updated_at || '',
+  };
 }
 
 function json(body: object, status = 200): Response {
