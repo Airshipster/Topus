@@ -264,7 +264,7 @@ def read_action_rows(sheet_rows, compact_state):
         key = row_key(project_code, user_id)
         existing_access = user_access(users.get(key, {}), allowlist.get(key))
         is_new_free_user = key not in users and access == 'free'
-        access_changed = access in {'free', 'paid', 'none'} and access != existing_access
+        access_changed = access == 'free' and existing_access != 'free'
         if action not in {'push', 'delete'} and not is_new_free_user and not access_changed:
             continue
         if (is_new_free_user or access_changed) and action not in {'push', 'delete'}:
@@ -373,6 +373,14 @@ def write_rows(worksheet, rows):
         worksheet.batch_clear([f'A{len(payload) + 1}:{last_col}{len(existing_values)}'])
 
 
+def write_cloudflare_status(worksheet, user_count, applied_count):
+    status = (
+        f"Cloudflare sync OK: {format_timestamp()}; users={user_count}; "
+        f"applied={applied_count}; exact remaining limit unavailable"
+    )
+    worksheet.update(range_name='S2', values=[[status]], value_input_option='USER_ENTERED')
+
+
 def write_single_sheet(worksheet, compact_state, sheet_rows):
     sync_time = format_timestamp()
     projects = compact_state['projects']
@@ -446,8 +454,10 @@ def main():
     sheet_rows = read_sheet_rows(worksheet)
     changes = collect_changes(read_action_rows(sheet_rows, compact_state), compact_state)
 
+    applied_count = 0
     if changes:
         result = request_worker('POST', '/admin/sheet-state', worker_url, admin_secret, json=changes)
+        applied_count = int(result.get('applied') or 0)
         print(f'  Applied bot sheet changes to Worker: {result}')
         state = fetch_worker_state(worker_url, admin_secret)
         compact_state = build_state(state)
@@ -456,6 +466,7 @@ def main():
         print('  No bot sheet changes to push')
 
     write_single_sheet(worksheet, compact_state, sheet_rows)
+    write_cloudflare_status(worksheet, len(compact_state['users']), applied_count)
     print(f"  Synced one-sheet bot state: {len(compact_state['users'])} users")
 
 
