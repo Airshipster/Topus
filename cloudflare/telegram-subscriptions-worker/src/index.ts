@@ -223,7 +223,12 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
   }
 
   if (request.method === 'GET') {
-    const [users, subscriptions, allowlist] = await Promise.all([
+    const [projects, users, subscriptions, allowlist, channels] = await Promise.all([
+      env.DB.prepare(
+        `SELECT code, name, active, updated_at
+         FROM projects
+         ORDER BY code`,
+      ).all(),
       env.DB.prepare(
         `SELECT project_code, user_id, username, first_name, is_paid, is_allowlisted, created_at, updated_at
          FROM users
@@ -240,13 +245,20 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
          FROM allowlist
          ORDER BY project_code, user_id`,
       ).all(),
+      env.DB.prepare(
+        `SELECT project_code, channel_id, title, status, sort_order, updated_at
+         FROM channels
+         ORDER BY project_code, sort_order, title`,
+      ).all(),
     ]);
 
     return json({
       ok: true,
+      projects: projects.results || [],
       users: users.results || [],
       subscriptions: subscriptions.results || [],
       allowlist: allowlist.results || [],
+      channels: channels.results || [],
       exportedAt: new Date().toISOString(),
     });
   }
@@ -256,7 +268,7 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
   }
 
   const body = await request.json<{
-    users?: Array<{ projectCode: string; userId: string; isPaid?: boolean; isAllowlisted?: boolean }>;
+    users?: Array<{ projectCode: string; userId: string; username?: string; firstName?: string; isPaid?: boolean; isAllowlisted?: boolean }>;
     subscriptions?: Array<{ projectCode: string; userId: string; channelId: string; active?: boolean; delete?: boolean }>;
     allowlist?: Array<{ projectCode: string; userId: string; note?: string; active?: boolean; delete?: boolean }>;
   }>();
@@ -268,13 +280,24 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
       continue;
     }
     statements.push(env.DB.prepare(
-      `INSERT INTO users (project_code, user_id, is_paid, is_allowlisted, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO users (project_code, user_id, username, first_name, is_paid, is_allowlisted, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(project_code, user_id) DO UPDATE SET
+         username = COALESCE(excluded.username, users.username),
+         first_name = COALESCE(excluded.first_name, users.first_name),
          is_paid = excluded.is_paid,
          is_allowlisted = excluded.is_allowlisted,
          updated_at = excluded.updated_at`,
-    ).bind(user.projectCode, user.userId, user.isPaid ? 1 : 0, user.isAllowlisted ? 1 : 0, now, now));
+    ).bind(
+      user.projectCode,
+      user.userId,
+      user.username || null,
+      user.firstName || null,
+      user.isPaid ? 1 : 0,
+      user.isAllowlisted ? 1 : 0,
+      now,
+      now,
+    ));
   }
 
   for (const subscription of body.subscriptions || []) {
