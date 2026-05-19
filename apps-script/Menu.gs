@@ -7,6 +7,7 @@ function addTopusMenu_() {
     .createMenu('Topus')
     .addItem('Забрать обновления сейчас', 'runTopusManualRefresh')
     .addItem('Проверить push-подписки', 'runTopusSubscriptionRenew')
+    .addItem('Синхронизировать ботов с Cloudflare', 'runTopusBotCloudflareSync')
     .addToUi();
 }
 
@@ -18,6 +19,11 @@ function runTopusManualRefresh() {
 function runTopusSubscriptionRenew() {
   triggerPublisher_('', '', {syncOnly: true, forceSubscriptionSync: true});
   SpreadsheetApp.getActiveSpreadsheet().toast('Проверка push-подписок отправлена в GitHub Actions', 'Topus', 5);
+}
+
+function runTopusBotCloudflareSync() {
+  triggerPublisher_('', '', {syncBotState: true});
+  SpreadsheetApp.getActiveSpreadsheet().toast('Синхронизация ботов с Cloudflare отправлена в GitHub Actions', 'Topus', 5);
 }
 
 function installTopusMasterMenuTrigger() {
