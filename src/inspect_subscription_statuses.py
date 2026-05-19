@@ -113,8 +113,12 @@ def inspect_project_statuses(sheet):
             or row_value(row, indexes, 'Проект')
             or row_value(row, indexes, 'Name')
         )
-        code = row_value(row, indexes, 'Код') or row_value(row, indexes, 'Code')
-        sheet_url = row_value(row, indexes, 'Ссылка на таблицу') or row_value(row, indexes, 'Google Sheet')
+        code = row_value(row, indexes, 'Код проекта') or row_value(row, indexes, 'Код') or row_value(row, indexes, 'Code')
+        sheet_url = (
+            row_value(row, indexes, 'Ссылка на документ проекта')
+            or row_value(row, indexes, 'Ссылка на таблицу')
+            or row_value(row, indexes, 'Google Sheet')
+        )
         sheet_id = extract_sheet_id(sheet_url) if sheet_url else ''
 
         item = {
