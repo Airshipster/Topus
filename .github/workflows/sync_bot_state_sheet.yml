@@ -2,7 +2,7 @@ name: Sync Bot State Sheet
 
 on:
   schedule:
-    - cron: '17 * * * *'
+    - cron: '0 6 * * *'
   workflow_dispatch:
 
 jobs:

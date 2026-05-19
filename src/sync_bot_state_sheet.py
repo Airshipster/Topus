@@ -254,16 +254,20 @@ def read_sheet_rows(worksheet):
 
 def read_action_rows(sheet_rows, compact_state):
     users = compact_state['users']
+    allowlist = compact_state['allowlist']
     rows = []
     for row in sheet_rows['rows']:
         action = row['action']
         project_code = row['project_code']
         user_id = row['user_id']
         access = row['access']
-        is_new_free_user = row_key(project_code, user_id) not in users and access == 'free'
-        if action not in {'push', 'delete'} and not is_new_free_user:
+        key = row_key(project_code, user_id)
+        existing_access = user_access(users.get(key, {}), allowlist.get(key))
+        is_new_free_user = key not in users and access == 'free'
+        access_changed = access in {'free', 'paid', 'none'} and access != existing_access
+        if action not in {'push', 'delete'} and not is_new_free_user and not access_changed:
             continue
-        if is_new_free_user and action not in {'push', 'delete'}:
+        if (is_new_free_user or access_changed) and action not in {'push', 'delete'}:
             action = 'push'
         action_row = dict(row)
         action_row['action'] = action

@@ -30,6 +30,10 @@ on:
         description: 'Force subscription sync during this run'
         required: false
         default: 'false'
+      sync_bot_state:
+        description: 'Only sync bot users/subscriptions with Cloudflare'
+        required: false
+        default: 'false'
 
 concurrency:
   group: topus-publisher
@@ -55,10 +59,21 @@ jobs:
         pip install -r requirements.txt
 
     - name: Wake Apps Script callback
+      if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.sync_bot_state == 'true') }}
       run: |
         curl -fsSL "https://script.google.com/macros/s/AKfycbwqySnqlEYAMTTQNkcUy9RU-B6UkikW9o-v5lzLxtthnpOE_52XRZThoe2b1xjIj1Zm/exec" -o /dev/null || true
+
+    - name: Sync bot state with Cloudflare
+      if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sync_bot_state == 'true' }}
+      env:
+        GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        TOPUS_WORKER_URL: ${{ secrets.TOPUS_WORKER_URL }}
+        TOPUS_WORKER_ADMIN_SECRET: ${{ secrets.TOPUS_WORKER_ADMIN_SECRET }}
+      run: |
+        python src/sync_bot_state_sheet.py
     
     - name: Run main script
+      if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.sync_bot_state == 'true') }}
       env:
         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         TOPUS_WORKER_URL: ${{ secrets.TOPUS_WORKER_URL }}
