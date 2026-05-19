@@ -462,7 +462,7 @@ def update_subscription_inventory_warnings(sheet, subscription_records, failed_p
     if not failed_project_names:
         for channel_id, record in subscription_records.items():
             status = str(record.get('status', ''))
-            if status.startswith('⚠️ project read failed') or status == '✅ project read ok':
+            if not status or status.startswith('⚠️ project read failed') or status == '✅ project read ok':
                 statuses[channel_id] = '✅ renewed' if record.get('last_renewed') else '✅ subscribed'
         if statuses:
             update_subscription_statuses(sheet, subscription_records, statuses)
