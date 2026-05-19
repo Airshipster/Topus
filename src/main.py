@@ -743,9 +743,11 @@ def main():
                         master_sheet,
                         video['video_id'],
                         project['name'],
+                        tg_message_id=f'bot:{queued}',
                         status='published',
                         error=publication_status_detail(video),
                         video=video,
+                        mark_tg_published=True,
                     )
                     total_published += 1
                 else:

@@ -1319,7 +1319,7 @@ def row_status_blocks_retry(status):
     status = str(status or '').strip().lower()
     return bool(status and status != 'pending' and not status.startswith('deleted'))
 
-def update_video_publication_status(sheet, video_id, project_name, tg_message_id=None, status='published', error='', video=None):
+def update_video_publication_status(sheet, video_id, project_name, tg_message_id=None, status='published', error='', video=None, mark_tg_published=False):
     """Обновление статуса публикации существующей строки видео"""
     try:
         worksheet = ensure_videos_worksheet(sheet)
@@ -1361,8 +1361,8 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
             'Проект': project_post_link_formula_from_cell(current_project_cell, project_name, tg_message_id) if tg_message_id else current_project_cell,
             'Дата публикации YT GMT+4': sheet_datetime_value(effective_yt_published) if effective_yt_published else '',
             'TG message_id': sheet_numeric_value(tg_message_id) if tg_message_id else '',
-            'Дата публикации TG GMT+4': sheet_datetime_value(timestamp) if tg_message_id else '',
-            'Разница в минутах': stream_adjusted_publication_delay_minutes(video, effective_yt_published, timestamp) if tg_message_id else '',
+            'Дата публикации TG GMT+4': sheet_datetime_value(timestamp) if tg_message_id or mark_tg_published else '',
+            'Разница в минутах': stream_adjusted_publication_delay_minutes(video, effective_yt_published, timestamp) if tg_message_id or mark_tg_published else '',
             'Системный статус': combined_status(status, error, method),
         }
         updates = [
