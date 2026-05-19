@@ -96,6 +96,10 @@ export default {
         return handleAdminNotify(request, env, ctx);
       }
 
+      if (path[0] === 'admin' && (path[1] === 'sheet-state' || path[1] === 'state')) {
+        return handleAdminSheetState(request, env);
+      }
+
       if (request.method === 'POST' && path[0] === 'telegram' && path.length === 3) {
         return handleTelegramWebhook(request, env, path[1], path[2]);
       }
@@ -211,6 +215,110 @@ async function handleAdminNotify(request: Request, env: Env, ctx: ExecutionConte
     sent: deliveries.filter((delivery) => delivery.messageId !== null).length,
     deliveries,
   });
+}
+
+async function handleAdminSheetState(request: Request, env: Env): Promise<Response> {
+  if (!isAuthorizedAdmin(request, env)) {
+    return json({ ok: false, error: 'unauthorized' }, 401);
+  }
+
+  if (request.method === 'GET') {
+    const [users, subscriptions, allowlist] = await Promise.all([
+      env.DB.prepare(
+        `SELECT project_code, user_id, username, first_name, is_paid, is_allowlisted, created_at, updated_at
+         FROM users
+         ORDER BY project_code, user_id`,
+      ).all(),
+      env.DB.prepare(
+        `SELECT s.project_code, s.user_id, s.channel_id, c.title AS channel_title, s.active, s.created_at, s.updated_at
+         FROM user_subscriptions s
+         LEFT JOIN channels c ON c.project_code = s.project_code AND c.channel_id = s.channel_id
+         ORDER BY s.project_code, s.user_id, c.sort_order, c.title`,
+      ).all(),
+      env.DB.prepare(
+        `SELECT project_code, user_id, note, 1 AS active, created_at, created_at AS updated_at
+         FROM allowlist
+         ORDER BY project_code, user_id`,
+      ).all(),
+    ]);
+
+    return json({
+      ok: true,
+      users: users.results || [],
+      subscriptions: subscriptions.results || [],
+      allowlist: allowlist.results || [],
+      exportedAt: new Date().toISOString(),
+    });
+  }
+
+  if (request.method !== 'POST') {
+    return json({ ok: false, error: 'method_not_allowed' }, 405);
+  }
+
+  const body = await request.json<{
+    users?: Array<{ projectCode: string; userId: string; isPaid?: boolean; isAllowlisted?: boolean }>;
+    subscriptions?: Array<{ projectCode: string; userId: string; channelId: string; active?: boolean; delete?: boolean }>;
+    allowlist?: Array<{ projectCode: string; userId: string; note?: string; active?: boolean; delete?: boolean }>;
+  }>();
+  const now = new Date().toISOString();
+  const statements: D1PreparedStatement[] = [];
+
+  for (const user of body.users || []) {
+    if (!user.projectCode || !user.userId) {
+      continue;
+    }
+    statements.push(env.DB.prepare(
+      `INSERT INTO users (project_code, user_id, is_paid, is_allowlisted, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(project_code, user_id) DO UPDATE SET
+         is_paid = excluded.is_paid,
+         is_allowlisted = excluded.is_allowlisted,
+         updated_at = excluded.updated_at`,
+    ).bind(user.projectCode, user.userId, user.isPaid ? 1 : 0, user.isAllowlisted ? 1 : 0, now, now));
+  }
+
+  for (const subscription of body.subscriptions || []) {
+    if (!subscription.projectCode || !subscription.userId || !subscription.channelId) {
+      continue;
+    }
+    if (subscription.delete) {
+      statements.push(env.DB.prepare(
+        'DELETE FROM user_subscriptions WHERE project_code = ? AND user_id = ? AND channel_id = ?',
+      ).bind(subscription.projectCode, subscription.userId, subscription.channelId));
+    } else {
+      statements.push(env.DB.prepare(
+        `INSERT INTO user_subscriptions (project_code, user_id, channel_id, active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(project_code, user_id, channel_id) DO UPDATE SET
+           active = excluded.active,
+           updated_at = excluded.updated_at`,
+      ).bind(subscription.projectCode, subscription.userId, subscription.channelId, subscription.active === false ? 0 : 1, now, now));
+    }
+  }
+
+  for (const entry of body.allowlist || []) {
+    if (!entry.projectCode || !entry.userId) {
+      continue;
+    }
+    if (entry.delete || entry.active === false) {
+      statements.push(env.DB.prepare(
+        'DELETE FROM allowlist WHERE project_code = ? AND user_id = ?',
+      ).bind(entry.projectCode, entry.userId));
+    } else {
+      statements.push(env.DB.prepare(
+        `INSERT INTO allowlist (project_code, user_id, note, created_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(project_code, user_id) DO UPDATE SET
+           note = excluded.note,
+           created_at = excluded.created_at`,
+      ).bind(entry.projectCode, entry.userId, entry.note || '', now));
+    }
+  }
+
+  for (const chunk of chunks(statements, 50)) {
+    await env.DB.batch(chunk);
+  }
+  return json({ ok: true, applied: statements.length });
 }
 
 async function handleTelegramWebhook(request: Request, env: Env, projectCode: string, secret: string): Promise<Response> {
