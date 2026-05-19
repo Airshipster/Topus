@@ -74,7 +74,7 @@ TARGET_WORKSHEET_ROWS = 10000
 TARGET_SETTINGS_ROWS = 300
 ROW_INSERT_INHERIT_BUFFER = 2
 PUSH_EVENT_ROW_HEIGHT_PIXELS = 21
-SETTINGS_READ_RANGE = 'A1:D300'
+SETTINGS_READ_RANGE = 'A1:ZZ300'
 PROJECTS_READ_RANGE = 'A1:ZZ500'
 PENDING_RETRY_WINDOW_HOURS = 24
 
@@ -1287,12 +1287,16 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
     try:
         worksheet = ensure_videos_worksheet(sheet)
         values = get_values_with_quota_retry(worksheet)
-        project_formulas = get_values_with_quota_retry(worksheet, 'A:A', value_render_option='FORMULA')
         headers = [str(value).strip() for value in values[0]] if values else []
         indexes = {header: index + 1 for header, index in header_indexes(headers).items()}
         status_index = find_column_index(headers, ['Системный статус'])
         if status_index is not None:
             indexes['Системный статус'] = status_index + 1
+        project_col_index = find_column_index(headers, ['Проект'])
+        project_formulas = []
+        if project_col_index is not None:
+            project_col_letter = a1_column(project_col_index + 1)
+            project_formulas = get_values_with_quota_retry(worksheet, f'{project_col_letter}:{project_col_letter}', value_render_option='FORMULA')
         target_row = None
         target_data = {}
 
@@ -1736,19 +1740,27 @@ def format_push_events_sheet(sheet, clean_rows=False):
             timestamp_updates = []
             if clean_rows:
                 values = get_values_with_quota_retry(worksheet)
+                headers = [str(value).strip() for value in values[0]] if values else []
+                timestamp_col = find_column_index(headers, ['Timestamp GMT+4', 'Timestamp'])
+                video_col = find_column_index(headers, ['Video ID'])
+                channel_col = find_column_index(headers, ['Ссылка на канал'])
+                if timestamp_col is None or video_col is None or channel_col is None:
+                    clean_rows = False
                 for row_index, row in enumerate(values[1:], start=2):
+                    if not clean_rows:
+                        break
                     cleaned = clean_row(row)
-                    video_id = cleaned[1] if len(cleaned) > 1 else ''
-                    channel_value = cleaned[2] if len(cleaned) > 2 else ''
+                    video_id = cell_value(cleaned, video_col)
+                    channel_value = cell_value(cleaned, channel_col)
                     channel_id = channel_id_from_link(channel_value) or channel_value
                     if not video_id or not channel_id:
                         rows_to_delete.append(row_index)
                         continue
-                    timestamp = cleaned[0] if cleaned else ''
+                    timestamp = cell_value(cleaned, timestamp_col)
                     normalized_timestamp = normalize_timestamp(timestamp)
                     if normalized_timestamp and normalized_timestamp != timestamp:
                         timestamp_updates.append({
-                            'range': gspread.utils.rowcol_to_a1(row_index, 1),
+                            'range': gspread.utils.rowcol_to_a1(row_index, timestamp_col + 1),
                             'values': [[sheet_datetime_value(normalized_timestamp)]],
                         })
 
@@ -1766,7 +1778,7 @@ def format_push_events_sheet(sheet, clean_rows=False):
                     'sheetId': worksheet.id,
                     'startRowIndex': 1,
                     'startColumnIndex': 0,
-                    'endColumnIndex': 6,
+                    'endColumnIndex': len(headers) if values else 6,
                 },
                 'cell': {
                     'userEnteredFormat': {
@@ -1809,8 +1821,13 @@ def update_video_project_links(sheet, projects):
         values = get_values_with_quota_retry(worksheet)
         if not values:
             return
-        project_formulas = get_values_with_quota_retry(worksheet, 'A:A', value_render_option='FORMULA')
         headers = [str(value).strip() for value in values[0]]
+        project_col_index = find_column_index(headers, ['Проект'])
+        if project_col_index is None:
+            return
+        project_col = project_col_index + 1
+        project_col_letter = a1_column(project_col)
+        project_formulas = get_values_with_quota_retry(worksheet, f'{project_col_letter}:{project_col_letter}', value_render_option='FORMULA')
         project_map = {str(project.get('name', '')).strip(): project for project in projects}
         updates = []
         for row_index, row in enumerate(values[1:], start=2):
@@ -1823,7 +1840,7 @@ def update_video_project_links(sheet, projects):
                 continue
             linked = project_link_formula(project_name, project, first_value(data, ['TG message_id']))
             if linked != current:
-                updates.append({'range': f'A{row_index}', 'values': [[linked]]})
+                updates.append({'range': gspread.utils.rowcol_to_a1(row_index, project_col), 'values': [[linked]]})
         for i in range(0, len(updates), config.BATCH_SIZE):
             worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
             time.sleep(0.2)
@@ -1854,7 +1871,12 @@ def log_events_batch(sheet, log_entries):
     
     try:
         worksheet = ensure_logs_worksheet(sheet)
-        log_entries = [normalize_log_entry(entry) for entry in log_entries]
+        header_values = get_values_with_quota_retry(worksheet, '1:1')
+        headers = [str(value).strip() for value in header_values[0]] if header_values else LOG_HEADERS
+        log_entries = [
+            row_for_headers(headers, row_as_dict(LOG_HEADERS, normalize_log_entry(entry)))
+            for entry in log_entries
+        ]
         
         # Дробим на батчи
         for i in range(0, len(log_entries), config.BATCH_SIZE):
@@ -2268,7 +2290,7 @@ def load_youtube_channels(client, project, include_disabled=False):
 def parse_youtube_channels_worksheet(worksheet, project, include_disabled=False):
     try:
         print(f"  📄 Channels sheet: {worksheet.title}")
-        values = get_values_with_quota_retry(worksheet, 'A:V', attempts=5)
+        values = get_values_with_quota_retry(worksheet, 'A:ZZ', attempts=5)
         if not values:
             return {}
 

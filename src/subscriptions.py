@@ -26,7 +26,7 @@ SUBSCRIPTION_SYNC_SETTING = 'last_subscription_sync'
 SUBSCRIPTION_SYNC_INTERVAL_SECONDS = 86400
 SUBSCRIPTIONS_SHEET_NAME = 'Подписки'
 SUBSCRIPTIONS_HEADERS = ['Projects', 'Project Count', 'Channel ID', 'Subscribed At', 'Last Renewed', 'Status']
-SUBSCRIPTIONS_READ_RANGE = 'A1:F'
+SUBSCRIPTIONS_READ_RANGE = 'A1:ZZ'
 SUBSCRIPTIONS_TARGET_ROWS = 10000
 
 
@@ -36,6 +36,41 @@ def base_subscription_header(value):
 
 def subscription_header_indexes(headers):
     return {base_subscription_header(header): index for index, header in enumerate(headers)}
+
+
+def subscription_col(indexes, header):
+    index = indexes.get(header)
+    return index + 1 if index is not None else None
+
+
+def subscription_row_for_headers(headers, values_by_header):
+    return [
+        clean_sheet_value(values_by_header.get(base_subscription_header(header), ''))
+        for header in headers
+    ]
+
+
+def subscription_column_range(header, row_index, indexes):
+    col = subscription_col(indexes, header)
+    if not col:
+        return None
+    return gspread.utils.rowcol_to_a1(row_index, col)
+
+
+def ensure_subscription_headers(worksheet, headers):
+    stripped = [base_subscription_header(cell) for cell in headers]
+    missing = [header for header in SUBSCRIPTIONS_HEADERS if header not in stripped]
+    if not missing:
+        return stripped
+
+    start_col = len(stripped) + 1
+    worksheet.update(
+        range_name=f'{column_letter(start_col)}1:{column_letter(start_col + len(missing) - 1)}1',
+        values=[missing],
+        value_input_option='USER_ENTERED',
+    )
+    print(f"  ➕ Added missing subscription columns: {', '.join(missing)}")
+    return stripped + missing
 
 
 def normalize_subscription_channel_id(value):
@@ -152,15 +187,20 @@ def rewrite_subscriptions_values(worksheet):
     if len(values) < 2:
         return 0
 
+    headers = ensure_subscription_headers(worksheet, [str(cell).strip() for cell in values[0]])
+    indexes = subscription_header_indexes(headers)
+    channel_col = subscription_col(indexes, 'Channel ID')
+    if not channel_col:
+        return 0
+
     updates = []
     for row_index, row in enumerate(values[1:], start=2):
-        cleaned = [clean_sheet_value(cell) for cell in row[:len(SUBSCRIPTIONS_HEADERS)]]
-        if len(cleaned) < len(SUBSCRIPTIONS_HEADERS):
-            cleaned.extend([''] * (len(SUBSCRIPTIONS_HEADERS) - len(cleaned)))
-        cleaned[2] = subscription_channel_formula(cleaned[2])
+        channel_value = clean_sheet_value(row[channel_col - 1]).strip() if len(row) >= channel_col else ''
+        if not channel_value:
+            continue
         updates.append({
-            'range': f'A{row_index}:{column_letter(len(SUBSCRIPTIONS_HEADERS))}{row_index}',
-            'values': [cleaned],
+            'range': gspread.utils.rowcol_to_a1(row_index, channel_col),
+            'values': [[subscription_channel_formula(channel_value)]],
         })
 
     for i in range(0, len(updates), config.BATCH_SIZE):
@@ -190,11 +230,18 @@ def update_subscription_status_header(worksheet, values=None):
     try:
         if values is None:
             values = get_values_with_quota_retry(worksheet, SUBSCRIPTIONS_READ_RANGE)
+        if not values:
+            return
+        headers = ensure_subscription_headers(worksheet, [str(cell).strip() for cell in values[0]])
+        indexes = subscription_header_indexes(headers)
+        status_col = subscription_col(indexes, 'Status')
+        if not status_col:
+            return
         header = subscription_status_header(values)
-        current = str(values[0][5]).strip() if values and values[0] and len(values[0]) > 5 else ''
+        current = str(values[0][status_col - 1]).strip() if len(values[0]) >= status_col else ''
         if current == header:
             return
-        worksheet.update(range_name='F1', values=[[header]], value_input_option='USER_ENTERED')
+        worksheet.update(range_name=gspread.utils.rowcol_to_a1(1, status_col), values=[[header]], value_input_option='USER_ENTERED')
     except Exception as e:
         print(f"  ⚠️  Error updating subscription status header: {e}")
 
@@ -217,84 +264,10 @@ def ensure_subscription_row_count(sheet, worksheet):
 
 
 def normalize_subscriptions_columns(sheet, worksheet, headers, values=None):
-    """Move Projects/Project Count to the front with column moves so formatting follows."""
-    stripped = [base_subscription_header(cell) for cell in headers]
-    desired = SUBSCRIPTIONS_HEADERS
-    if stripped[:len(desired)] == desired:
-        update_subscription_status_header(worksheet, values)
-        return stripped
-
-    try:
-        projects_index = stripped.index('Projects')
-        count_index = stripped.index('Project Count')
-    except ValueError:
-        worksheet.update(
-            range_name=f'A1:{column_letter(len(desired))}1',
-            values=[desired],
-            value_input_option='USER_ENTERED',
-        )
-        update_subscription_status_header(worksheet)
-        return desired
-
-    if projects_index == 0 and count_index == 1:
-        worksheet.update(
-            range_name=f'A1:{column_letter(len(desired))}1',
-            values=[desired],
-            value_input_option='USER_ENTERED',
-        )
-        update_subscription_status_header(worksheet)
-        return desired
-
-    if count_index == projects_index + 1:
-        sheet.batch_update({
-            'requests': [{
-                'moveDimension': {
-                    'source': {
-                        'sheetId': worksheet.id,
-                        'dimension': 'COLUMNS',
-                        'startIndex': projects_index,
-                        'endIndex': count_index + 1,
-                    },
-                    'destinationIndex': 0,
-                }
-            }]
-        })
-    else:
-        sheet.batch_update({
-            'requests': [
-                {
-                    'moveDimension': {
-                        'source': {
-                            'sheetId': worksheet.id,
-                            'dimension': 'COLUMNS',
-                            'startIndex': count_index,
-                            'endIndex': count_index + 1,
-                        },
-                        'destinationIndex': 0,
-                    }
-                },
-                {
-                    'moveDimension': {
-                        'source': {
-                            'sheetId': worksheet.id,
-                            'dimension': 'COLUMNS',
-                            'startIndex': projects_index + 1 if projects_index < count_index else projects_index,
-                            'endIndex': projects_index + 2 if projects_index < count_index else projects_index + 1,
-                        },
-                        'destinationIndex': 0,
-                    }
-                },
-            ]
-        })
-
-    worksheet.update(
-        range_name=f'A1:{column_letter(len(desired))}1',
-        values=[desired],
-        value_input_option='USER_ENTERED',
-    )
-    print("  ↔️  Moved subscription Projects columns to the front")
-    update_subscription_status_header(worksheet)
-    return desired
+    """Keep required subscription columns present without forcing their order."""
+    stripped = ensure_subscription_headers(worksheet, headers)
+    update_subscription_status_header(worksheet, values)
+    return stripped
 
 def get_or_create_subscriptions_worksheet(sheet):
     delay_seconds = 5
@@ -379,17 +352,19 @@ def save_subscribed_channels_batch(sheet, channel_ids, active_channels_dict):
     worksheet = get_or_create_subscriptions_worksheet(sheet)
     
     timestamp = format_timestamp()
-    rows = [
-        [
-            format_channel_projects(active_channels_dict, channel_id),
-            len(set(active_channels_dict.get(channel_id, {}).get('projects', []))),
-            subscription_channel_formula(channel_id),
-            sheet_datetime_value(timestamp),
-            sheet_datetime_value(timestamp),
-            '✅ subscribed',
-        ]
-        for channel_id in channel_ids
-    ]
+    values = get_values_with_quota_retry(worksheet, SUBSCRIPTIONS_READ_RANGE)
+    headers = ensure_subscription_headers(worksheet, [str(cell).strip() for cell in values[0]]) if values else SUBSCRIPTIONS_HEADERS
+    rows = []
+    for channel_id in channel_ids:
+        row_values = {
+            'Projects': format_channel_projects(active_channels_dict, channel_id),
+            'Project Count': len(set(active_channels_dict.get(channel_id, {}).get('projects', []))),
+            'Channel ID': subscription_channel_formula(channel_id),
+            'Subscribed At': sheet_datetime_value(timestamp),
+            'Last Renewed': sheet_datetime_value(timestamp),
+            'Status': '✅ subscribed',
+        }
+        rows.append(subscription_row_for_headers(headers, row_values))
     
     if rows:
         delay_seconds = 5
@@ -411,6 +386,12 @@ def update_subscription_renewals_batch(sheet, subscription_records, channel_ids)
 
     try:
         worksheet = get_or_create_subscriptions_worksheet(sheet)
+        values = get_values_with_quota_retry(worksheet, SUBSCRIPTIONS_READ_RANGE)
+        headers = ensure_subscription_headers(worksheet, [str(cell).strip() for cell in values[0]]) if values else SUBSCRIPTIONS_HEADERS
+        indexes = subscription_header_indexes(headers)
+        renewed_col = subscription_col(indexes, 'Last Renewed')
+        status_col = subscription_col(indexes, 'Status')
+        channel_col = subscription_col(indexes, 'Channel ID')
         timestamp = format_timestamp()
         updates = []
         clear_rows = []
@@ -420,27 +401,29 @@ def update_subscription_renewals_batch(sheet, subscription_records, channel_ids)
             if not record:
                 continue
 
-            updates.append({
-                'range': f'E{record["row_index"]}',
-                'values': [[sheet_datetime_value(timestamp)]]
-            })
-            updates.append({
-                'range': f'F{record["row_index"]}',
-                'values': [['✅ renewed']]
-            })
+            if renewed_col:
+                updates.append({
+                    'range': gspread.utils.rowcol_to_a1(record["row_index"], renewed_col),
+                    'values': [[sheet_datetime_value(timestamp)]]
+                })
+            if status_col:
+                updates.append({
+                    'range': gspread.utils.rowcol_to_a1(record["row_index"], status_col),
+                    'values': [['✅ renewed']]
+                })
             clear_rows.append(record['row_index'])
 
         if updates:
             worksheet.batch_update(updates, value_input_option='USER_ENTERED')
-        if clear_rows:
+        if clear_rows and channel_col:
             requests = [{
                 'repeatCell': {
                     'range': {
                         'sheetId': worksheet.id,
                         'startRowIndex': row_index - 1,
                         'endRowIndex': row_index,
-                        'startColumnIndex': 2,
-                        'endColumnIndex': 3,
+                        'startColumnIndex': channel_col - 1,
+                        'endColumnIndex': channel_col,
                     },
                     'cell': {'userEnteredFormat': {}},
                     'fields': 'userEnteredFormat.backgroundColor',
@@ -458,6 +441,13 @@ def update_subscription_statuses(sheet, subscription_records, status_by_channel)
         return
     try:
         worksheet = get_or_create_subscriptions_worksheet(sheet)
+        values = get_values_with_quota_retry(worksheet, SUBSCRIPTIONS_READ_RANGE)
+        headers = ensure_subscription_headers(worksheet, [str(cell).strip() for cell in values[0]]) if values else SUBSCRIPTIONS_HEADERS
+        indexes = subscription_header_indexes(headers)
+        status_col = subscription_col(indexes, 'Status')
+        channel_col = subscription_col(indexes, 'Channel ID')
+        if not status_col:
+            return
         updates = []
         red_rows = []
         clear_rows = []
@@ -466,7 +456,7 @@ def update_subscription_statuses(sheet, subscription_records, status_by_channel)
             if not record:
                 continue
             row_index = record['row_index']
-            updates.append({'range': f'F{row_index}', 'values': [[status]]})
+            updates.append({'range': gspread.utils.rowcol_to_a1(row_index, status_col), 'values': [[status]]})
             if str(status).startswith('❌'):
                 red_rows.append(row_index)
             else:
@@ -478,28 +468,32 @@ def update_subscription_statuses(sheet, subscription_records, status_by_channel)
 
         requests = []
         for row_index in red_rows:
+            if not channel_col:
+                continue
             requests.append({
                 'repeatCell': {
                     'range': {
                         'sheetId': worksheet.id,
                         'startRowIndex': row_index - 1,
                         'endRowIndex': row_index,
-                        'startColumnIndex': 2,
-                        'endColumnIndex': 3,
+                        'startColumnIndex': channel_col - 1,
+                        'endColumnIndex': channel_col,
                     },
                     'cell': {'userEnteredFormat': {'backgroundColor': {'red': 1.0, 'green': 0.8, 'blue': 0.8}}},
                     'fields': 'userEnteredFormat.backgroundColor',
                 }
             })
         for row_index in clear_rows:
+            if not channel_col:
+                continue
             requests.append({
                 'repeatCell': {
                     'range': {
                         'sheetId': worksheet.id,
                         'startRowIndex': row_index - 1,
                         'endRowIndex': row_index,
-                        'startColumnIndex': 2,
-                        'endColumnIndex': 3,
+                        'startColumnIndex': channel_col - 1,
+                        'endColumnIndex': channel_col,
                     },
                     'cell': {'userEnteredFormat': {}},
                     'fields': 'userEnteredFormat.backgroundColor',
@@ -517,14 +511,20 @@ def normalize_subscription_status_formatting(sheet, subscription_records):
     """Keep red Channel ID highlighting only for rows with current ❌ status."""
     try:
         worksheet = get_or_create_subscriptions_worksheet(sheet)
+        values = get_values_with_quota_retry(worksheet, SUBSCRIPTIONS_READ_RANGE)
+        headers = ensure_subscription_headers(worksheet, [str(cell).strip() for cell in values[0]]) if values else SUBSCRIPTIONS_HEADERS
+        indexes = subscription_header_indexes(headers)
+        channel_col = subscription_col(indexes, 'Channel ID')
+        if not channel_col:
+            return
         requests = [{
             'repeatCell': {
                 'range': {
                     'sheetId': worksheet.id,
                     'startRowIndex': 1,
                     'endRowIndex': SUBSCRIPTIONS_TARGET_ROWS,
-                    'startColumnIndex': 2,
-                    'endColumnIndex': 3,
+                    'startColumnIndex': channel_col - 1,
+                    'endColumnIndex': channel_col,
                 },
                 'cell': {'userEnteredFormat': {}},
                 'fields': 'userEnteredFormat.backgroundColor',
@@ -541,8 +541,8 @@ def normalize_subscription_status_formatting(sheet, subscription_records):
                         'sheetId': worksheet.id,
                         'startRowIndex': row_index - 1,
                         'endRowIndex': row_index,
-                        'startColumnIndex': 2,
-                        'endColumnIndex': 3,
+                        'startColumnIndex': channel_col - 1,
+                        'endColumnIndex': channel_col,
                     },
                     'cell': {'userEnteredFormat': {'backgroundColor': {'red': 1.0, 'green': 0.8, 'blue': 0.8}}},
                     'fields': 'userEnteredFormat.backgroundColor',
@@ -593,6 +593,12 @@ def update_subscription_inventory_warnings(sheet, subscription_records, failed_p
 def update_subscription_project_links(sheet, subscription_records, active_channels_dict):
     try:
         worksheet = get_or_create_subscriptions_worksheet(sheet)
+        values = get_values_with_quota_retry(worksheet, SUBSCRIPTIONS_READ_RANGE)
+        headers = ensure_subscription_headers(worksheet, [str(cell).strip() for cell in values[0]]) if values else SUBSCRIPTIONS_HEADERS
+        indexes = subscription_header_indexes(headers)
+        projects_range = lambda row_index: subscription_column_range('Projects', row_index, indexes)
+        count_range = lambda row_index: subscription_column_range('Project Count', row_index, indexes)
+        channel_range = lambda row_index: subscription_column_range('Channel ID', row_index, indexes)
         updates = []
         updated_rows = set()
 
@@ -606,13 +612,17 @@ def update_subscription_project_links(sheet, subscription_records, active_channe
 
             row_updates = []
             if record.get('raw_channel_id') != channel_id:
-                row_updates.append({'range': f'C{record["row_index"]}', 'values': [[channel_id]]})
+                target_range = channel_range(record["row_index"])
+                if target_range:
+                    row_updates.append({'range': target_range, 'values': [[subscription_channel_formula(channel_id)]]})
 
             if record.get('projects') != projects_text or str(record.get('project_count')) != str(project_count):
-                row_updates.extend([
-                    {'range': f'A{record["row_index"]}', 'values': [[projects_text]]},
-                    {'range': f'B{record["row_index"]}', 'values': [[project_count]]},
-                ])
+                target_range = projects_range(record["row_index"])
+                if target_range:
+                    row_updates.append({'range': target_range, 'values': [[projects_text]]})
+                target_range = count_range(record["row_index"])
+                if target_range:
+                    row_updates.append({'range': target_range, 'values': [[project_count]]})
 
             if row_updates:
                 updates.extend(row_updates)
