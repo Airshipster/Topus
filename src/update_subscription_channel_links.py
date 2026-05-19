@@ -1,5 +1,6 @@
 import time
 
+import config
 from sheets import authenticate_google_sheets, clean_sheet_value, get_values_with_quota_retry, is_sheets_quota_error
 from subscriptions import (
     SUBSCRIPTIONS_READ_RANGE,
