@@ -9,11 +9,10 @@ from sheets import authenticate_google_sheets, clean_sheet_value, format_timesta
 
 
 LEGACY_SHEET_NAME = 'Бот данные'
-USERS_SHEET_NAME = 'Боты'
-SUBSCRIPTIONS_SHEET_NAME = 'Бот подписки'
-FREE_SHEET_NAME = 'Бот free'
+SHEET_NAME = 'Боты'
+EXTRA_SHEET_NAMES = ['Бот подписки', 'Бот free']
 
-USER_HEADERS = [
+HEADERS = [
     'Project Code',
     'Bot',
     'User ID',
@@ -22,45 +21,20 @@ USER_HEADERS = [
     'Is Paid',
     'Is Allowlisted',
     'Access',
-    'Cloudflare Updated At',
-    'Sheet Synced At',
-    'Sync Action',
-]
-
-SUBSCRIPTION_HEADERS = [
-    'Project Code',
-    'Bot',
-    'User ID',
-    'Username',
-    'First Name',
-    'Mode',
+    'Subscription Mode',
     'Included Channel IDs',
     'Excluded Channel IDs',
     'Subscribed Count',
     'Total Channels',
+    'Free Note',
+    'Free Source',
     'Cloudflare Updated At',
     'Sheet Synced At',
     'Sync Action',
 ]
 
-FREE_HEADERS = [
-    'Project Code',
-    'Bot',
-    'User ID',
-    'Username',
-    'First Name',
-    'Active',
-    'Note',
-    'Source',
-    'Is Paid',
-    'Is Allowlisted',
-    'Cloudflare Updated At',
-    'Sheet Synced At',
-    'Sync Action',
-]
-
-TRUE_VALUES = {'1', 'true', 'yes', 'y', 'да', 'истина', '✅', 'on', 'active'}
-FALSE_VALUES = {'0', 'false', 'no', 'n', 'нет', 'ложь', '❌', 'off', 'inactive'}
+TRUE_VALUES = {'1', 'true', 'yes', 'y', 'да', 'истина', '✅', 'on', 'active', 'free', 'paid'}
+FALSE_VALUES = {'0', 'false', 'no', 'n', 'нет', 'ложь', '❌', 'off', 'inactive', 'none'}
 
 
 def bool_from_sheet(value, default=False):
@@ -78,13 +52,13 @@ def bool_to_sheet(value):
 
 def split_ids(value):
     text = str(clean_sheet_value(value) or '').strip()
-    if not text:
+    if not text or text.lower() in {'all', 'все', 'всё'}:
         return set()
     return {item.strip() for item in text.replace('\n', ',').split(',') if item.strip()}
 
 
 def join_ids(values):
-    return ','.join(sorted(values))
+    return ', '.join(sorted(values))
 
 
 def max_timestamp(*values):
@@ -111,36 +85,46 @@ def get_cell(row, headers, name):
     return clean_sheet_value(row[index])
 
 
-def ensure_worksheet(sheet, name, headers, rows=1000):
+def rename_legacy_sheet(sheet):
     try:
-        worksheet = sheet.worksheet(name)
+        existing = sheet.worksheet(SHEET_NAME)
+        try:
+            legacy = sheet.worksheet(LEGACY_SHEET_NAME)
+            if legacy.id != existing.id:
+                sheet.del_worksheet(legacy)
+        except gspread.exceptions.WorksheetNotFound:
+            pass
+        return existing
     except gspread.exceptions.WorksheetNotFound:
-        worksheet = sheet.add_worksheet(name, rows=rows, cols=len(headers))
-        worksheet.update(range_name='A1', values=[headers], value_input_option='USER_ENTERED')
-        return worksheet
+        pass
 
-    values = get_values_with_quota_retry(worksheet, '1:1')
-    current_headers = [str(cell).strip() for cell in values[0]] if values else []
-    if current_headers != headers:
-        worksheet.update(range_name='A1', values=[headers], value_input_option='USER_ENTERED')
-    if worksheet.col_count < len(headers):
-        worksheet.resize(rows=worksheet.row_count, cols=len(headers))
-    return worksheet
-
-
-def compact_legacy_sheet(sheet):
     try:
         worksheet = sheet.worksheet(LEGACY_SHEET_NAME)
+        worksheet.update_title(SHEET_NAME)
+        return worksheet
     except gspread.exceptions.WorksheetNotFound:
-        return
-    worksheet.clear()
-    worksheet.update(
-        range_name='A1',
-        values=[['Статус'], ['Подробное зеркало заменено компактными листами: Боты, Бот подписки, Бот free.']],
-        value_input_option='USER_ENTERED',
-    )
-    if worksheet.row_count > 20:
-        worksheet.resize(rows=20, cols=2)
+        return sheet.add_worksheet(SHEET_NAME, rows=1000, cols=len(HEADERS))
+
+
+def delete_extra_sheets(sheet):
+    for name in EXTRA_SHEET_NAMES:
+        try:
+            worksheet = sheet.worksheet(name)
+        except gspread.exceptions.WorksheetNotFound:
+            continue
+        sheet.del_worksheet(worksheet)
+
+
+def ensure_bot_worksheet(sheet):
+    worksheet = rename_legacy_sheet(sheet)
+    delete_extra_sheets(sheet)
+    values = get_values_with_quota_retry(worksheet, '1:1')
+    current_headers = [str(cell).strip() for cell in values[0]] if values else []
+    if current_headers != HEADERS:
+        worksheet.update(range_name='A1', values=[HEADERS], value_input_option='USER_ENTERED')
+    if worksheet.col_count < len(HEADERS):
+        worksheet.resize(rows=worksheet.row_count, cols=len(HEADERS))
+    return worksheet
 
 
 def request_worker(method, path, worker_url, admin_secret, **kwargs):
@@ -201,12 +185,8 @@ def build_state(state):
         user_id = str(entry.get('user_id') or '').strip()
         if not project_code or not user_id:
             continue
-        key = row_key(project_code, user_id)
-        allowlist[key] = {
-            'project_code': project_code,
-            'user_id': user_id,
+        allowlist[row_key(project_code, user_id)] = {
             'note': entry.get('note') or '',
-            'active': True,
             'updated_at': entry.get('updated_at') or entry.get('created_at') or '',
         }
 
@@ -263,11 +243,11 @@ def read_action_rows(worksheet):
             'first_name': str(get_cell(raw_row, headers, 'First Name') or '').strip(),
             'is_paid': get_cell(raw_row, headers, 'Is Paid'),
             'is_allowlisted': get_cell(raw_row, headers, 'Is Allowlisted'),
-            'mode': str(get_cell(raw_row, headers, 'Mode') or '').strip().lower(),
+            'access': str(get_cell(raw_row, headers, 'Access') or '').strip().lower(),
+            'mode': str(get_cell(raw_row, headers, 'Subscription Mode') or '').strip().lower(),
             'included': get_cell(raw_row, headers, 'Included Channel IDs'),
             'excluded': get_cell(raw_row, headers, 'Excluded Channel IDs'),
-            'active': get_cell(raw_row, headers, 'Active'),
-            'note': str(get_cell(raw_row, headers, 'Note') or '').strip(),
+            'free_note': str(get_cell(raw_row, headers, 'Free Note') or '').strip(),
             'action': action,
         })
     return rows
@@ -278,38 +258,54 @@ def desired_subscriptions(row, all_channel_ids):
     included = split_ids(row['included'])
     excluded = split_ids(row['excluded'])
     all_channels = set(all_channel_ids)
-    if mode == 'all':
+    if mode in {'all', 'все', 'всё'}:
         return all_channels - excluded
     return included & all_channels
 
 
-def collect_changes(user_rows, subscription_rows, free_rows, compact_state):
+def collect_changes(action_rows, compact_state):
     payload = {'users': [], 'subscriptions': [], 'allowlist': []}
     users = compact_state['users']
     allowlist = compact_state['allowlist']
     channels_by_project = compact_state['channels_by_project']
     current_sub_rows = compact_state['subscription_rows']
 
-    for row in user_rows:
-        if row['action'] == 'delete':
-            continue
-        existing = users.get(row_key(row['project_code'], row['user_id']), {})
-        payload['users'].append({
-            'projectCode': row['project_code'],
-            'userId': row['user_id'],
-            'username': row['username'] or existing.get('username') or None,
-            'firstName': row['first_name'] or existing.get('first_name') or None,
-            'isPaid': bool_from_sheet(row['is_paid'], existing.get('is_paid', False)),
-            'isAllowlisted': bool_from_sheet(row['is_allowlisted'], existing.get('is_allowlisted', False)),
-        })
-
-    for row in subscription_rows:
+    for row in action_rows:
         project_code = row['project_code']
         user_id = row['user_id']
         key = row_key(project_code, user_id)
-        all_channel_ids = channels_by_project.get(project_code, [])
+        existing_user = users.get(key, {})
+
+        if row['action'] == 'delete':
+            desired = set()
+            payload['allowlist'].append({'projectCode': project_code, 'userId': user_id, 'delete': True})
+            is_allowlisted = False
+        else:
+            desired = desired_subscriptions(row, channels_by_project.get(project_code, []))
+            is_allowlisted = (
+                bool_from_sheet(row['is_allowlisted'], existing_user.get('is_allowlisted', False))
+                or row['access'] == 'free'
+            )
+            if is_allowlisted:
+                payload['allowlist'].append({
+                    'projectCode': project_code,
+                    'userId': user_id,
+                    'note': row['free_note'],
+                    'active': True,
+                })
+            elif key in allowlist:
+                payload['allowlist'].append({'projectCode': project_code, 'userId': user_id, 'delete': True})
+
+        payload['users'].append({
+            'projectCode': project_code,
+            'userId': user_id,
+            'username': row['username'] or existing_user.get('username') or None,
+            'firstName': row['first_name'] or existing_user.get('first_name') or None,
+            'isPaid': bool_from_sheet(row['is_paid'], existing_user.get('is_paid', False)),
+            'isAllowlisted': is_allowlisted,
+        })
+
         current = {channel_id for channel_id, active in current_sub_rows.get(key, {}).items() if active}
-        desired = set() if row['action'] == 'delete' else desired_subscriptions(row, all_channel_ids)
         for channel_id in sorted(current | desired):
             if (channel_id in current) == (channel_id in desired):
                 continue
@@ -319,39 +315,6 @@ def collect_changes(user_rows, subscription_rows, free_rows, compact_state):
                 'channelId': channel_id,
                 'active': channel_id in desired,
             })
-
-    for row in free_rows:
-        key = row_key(row['project_code'], row['user_id'])
-        existing_user = users.get(key, {})
-        if row['action'] == 'delete':
-            payload['allowlist'].append({
-                'projectCode': row['project_code'],
-                'userId': row['user_id'],
-                'delete': True,
-            })
-            payload['users'].append({
-                'projectCode': row['project_code'],
-                'userId': row['user_id'],
-                'username': row['username'] or existing_user.get('username') or None,
-                'firstName': row['first_name'] or existing_user.get('first_name') or None,
-                'isPaid': bool_from_sheet(row['is_paid'], existing_user.get('is_paid', False)),
-                'isAllowlisted': False,
-            })
-            continue
-        payload['allowlist'].append({
-            'projectCode': row['project_code'],
-            'userId': row['user_id'],
-            'note': row['note'],
-            'active': bool_from_sheet(row['active'], True),
-        })
-        payload['users'].append({
-            'projectCode': row['project_code'],
-            'userId': row['user_id'],
-            'username': row['username'] or existing_user.get('username') or None,
-            'firstName': row['first_name'] or existing_user.get('first_name') or None,
-            'isPaid': bool_from_sheet(row['is_paid'], existing_user.get('is_paid', False)),
-            'isAllowlisted': True,
-        })
 
     return {key: value for key, value in payload.items() if value}
 
@@ -364,45 +327,25 @@ def user_access(user, allowlist_entry):
     return 'none'
 
 
-def compact_subscription_row(project_code, bot_name, user_id, user, all_channel_ids, current_subscriptions, updated_at):
+def compact_subscription_cells(all_channel_ids, current_subscriptions):
     all_channels = set(all_channel_ids)
     selected = {channel_id for channel_id, active in current_subscriptions.items() if active and channel_id in all_channels}
     if all_channels and selected == all_channels:
-        mode = 'all'
-        included = ''
-        excluded = ''
-    elif all_channels and len(selected) > len(all_channels) / 2:
-        mode = 'all'
-        included = ''
-        excluded = join_ids(all_channels - selected)
-    else:
-        mode = 'custom'
-        included = join_ids(selected)
-        excluded = ''
-    return [
-        project_code,
-        bot_name,
-        user_id,
-        user.get('username', ''),
-        user.get('first_name', ''),
-        mode,
-        included,
-        excluded,
-        len(selected),
-        len(all_channels),
-        display_timestamp(updated_at),
-    ]
+        return 'all', 'all', '', len(selected), len(all_channels)
+    if all_channels and len(selected) > len(all_channels) / 2:
+        return 'all', 'all', join_ids(all_channels - selected), len(selected), len(all_channels)
+    return 'custom', join_ids(selected), '', len(selected), len(all_channels)
 
 
-def write_rows(worksheet, headers, rows):
+def write_rows(worksheet, rows):
     target_rows = max(1000, len(rows) + 20)
-    if worksheet.row_count < target_rows or worksheet.col_count < len(headers):
-        worksheet.resize(rows=target_rows, cols=len(headers))
+    if worksheet.row_count < target_rows or worksheet.col_count < len(HEADERS):
+        worksheet.resize(rows=target_rows, cols=len(HEADERS))
     worksheet.clear()
-    worksheet.update(range_name='A1', values=[headers] + rows, value_input_option='USER_ENTERED')
+    worksheet.update(range_name='A1', values=[HEADERS] + rows, value_input_option='USER_ENTERED')
 
 
-def write_compact_sheets(worksheets, compact_state):
+def write_single_sheet(worksheet, compact_state):
     sync_time = format_timestamp()
     projects = compact_state['projects']
     users = compact_state['users']
@@ -411,18 +354,11 @@ def write_compact_sheets(worksheets, compact_state):
     subscription_rows = compact_state['subscription_rows']
     subscription_updated_at = compact_state['subscription_updated_at']
 
+    rows = []
     all_user_keys = set(users) | set(subscription_rows) | set(allowlist)
-
-    user_sheet_rows = []
-    subscription_sheet_rows = []
-    free_sheet_rows = []
-
     for key in sorted(all_user_keys):
         project_code, user_id = key.split(':', 1)
-        bot_name = projects.get(project_code, project_code)
         user = users.get(key, {
-            'project_code': project_code,
-            'user_id': user_id,
             'username': '',
             'first_name': '',
             'is_paid': False,
@@ -430,53 +366,37 @@ def write_compact_sheets(worksheets, compact_state):
             'updated_at': '',
         })
         allowlist_entry = allowlist.get(key)
-        access = user_access(user, allowlist_entry)
-        user_sheet_rows.append([
+        mode, included, excluded, selected_count, total_count = compact_subscription_cells(
+            channels_by_project.get(project_code, []),
+            subscription_rows.get(key, {}),
+        )
+        updated_at = max_timestamp(
+            user.get('updated_at'),
+            allowlist_entry.get('updated_at') if allowlist_entry else '',
+            subscription_updated_at.get(key, ''),
+        )
+        rows.append([
             project_code,
-            bot_name,
+            projects.get(project_code, project_code),
             user_id,
             user.get('username', ''),
             user.get('first_name', ''),
             bool_to_sheet(user.get('is_paid')),
             bool_to_sheet(user.get('is_allowlisted') or bool(allowlist_entry)),
-            access,
-            display_timestamp(max_timestamp(user.get('updated_at'), allowlist_entry.get('updated_at') if allowlist_entry else '')),
+            user_access(user, allowlist_entry),
+            mode,
+            included,
+            excluded,
+            selected_count,
+            total_count,
+            allowlist_entry.get('note', '') if allowlist_entry else '',
+            'allowlist' if allowlist_entry else ('user flag' if user.get('is_allowlisted') else ''),
+            display_timestamp(updated_at),
             sync_time,
             '',
         ])
 
-        subscription_sheet_rows.append(
-            compact_subscription_row(
-                project_code,
-                bot_name,
-                user_id,
-                user,
-                channels_by_project.get(project_code, []),
-                subscription_rows.get(key, {}),
-                subscription_updated_at.get(key, ''),
-            ) + [sync_time, '']
-        )
-
-        if access == 'free':
-            free_sheet_rows.append([
-                project_code,
-                bot_name,
-                user_id,
-                user.get('username', ''),
-                user.get('first_name', ''),
-                bool_to_sheet(True),
-                allowlist_entry.get('note', '') if allowlist_entry else 'user.is_allowlisted',
-                'allowlist' if allowlist_entry else 'user flag',
-                bool_to_sheet(user.get('is_paid')),
-                bool_to_sheet(user.get('is_allowlisted') or bool(allowlist_entry)),
-                display_timestamp(max_timestamp(user.get('updated_at'), allowlist_entry.get('updated_at') if allowlist_entry else '')),
-                sync_time,
-                '',
-            ])
-
-    write_rows(worksheets['users'], USER_HEADERS, user_sheet_rows)
-    write_rows(worksheets['subscriptions'], SUBSCRIPTION_HEADERS, subscription_sheet_rows)
-    write_rows(worksheets['free'], FREE_HEADERS, free_sheet_rows)
+    write_rows(worksheet, rows)
 
 
 def main():
@@ -489,37 +409,22 @@ def main():
 
     client = authenticate_google_sheets()
     sheet = client.open_by_key(config.SPREADSHEET_ID)
-    compact_legacy_sheet(sheet)
-    worksheets = {
-        'users': ensure_worksheet(sheet, USERS_SHEET_NAME, USER_HEADERS),
-        'subscriptions': ensure_worksheet(sheet, SUBSCRIPTIONS_SHEET_NAME, SUBSCRIPTION_HEADERS),
-        'free': ensure_worksheet(sheet, FREE_SHEET_NAME, FREE_HEADERS),
-    }
+    worksheet = ensure_bot_worksheet(sheet)
 
     state = fetch_worker_state(worker_url, admin_secret)
     compact_state = build_state(state)
-    changes = collect_changes(
-        read_action_rows(worksheets['users']),
-        read_action_rows(worksheets['subscriptions']),
-        read_action_rows(worksheets['free']),
-        compact_state,
-    )
+    changes = collect_changes(read_action_rows(worksheet), compact_state)
 
     if changes:
         result = request_worker('POST', '/admin/sheet-state', worker_url, admin_secret, json=changes)
-        print(f'  Applied compact sheet changes to Worker: {result}')
+        print(f'  Applied bot sheet changes to Worker: {result}')
         state = fetch_worker_state(worker_url, admin_secret)
         compact_state = build_state(state)
     else:
-        print('  No compact sheet changes to push')
+        print('  No bot sheet changes to push')
 
-    write_compact_sheets(worksheets, compact_state)
-    print(
-        f"  Synced compact bot state: "
-        f"{len(compact_state['users'])} users, "
-        f"{len(compact_state['subscription_rows'])} subscription rows, "
-        f"{len(compact_state['allowlist'])} free rows"
-    )
+    write_single_sheet(worksheet, compact_state)
+    print(f"  Synced one-sheet bot state: {len(compact_state['users'])} users")
 
 
 if __name__ == '__main__':
