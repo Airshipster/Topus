@@ -249,7 +249,7 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
          ORDER BY code`,
       ).all<{ code: string; name: string; active: number; updated_at: string }>(),
       env.DB.prepare(
-        `SELECT project_code, user_id, username, first_name, is_paid, is_allowlisted, created_at, updated_at
+        `SELECT project_code, user_id, username, first_name, is_paid, is_allowlisted, COALESCE(is_admin, 0) AS is_admin, created_at, updated_at
          FROM users
          ORDER BY project_code, user_id`,
       ).all(),
@@ -293,7 +293,7 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
   }
 
   const body = await request.json<{
-    users?: Array<{ projectCode: string; userId: string; username?: string; firstName?: string; isPaid?: boolean; isAllowlisted?: boolean }>;
+    users?: Array<{ projectCode: string; userId: string; username?: string; firstName?: string; isPaid?: boolean; isAllowlisted?: boolean; isAdmin?: boolean }>;
     subscriptions?: Array<{ projectCode: string; userId: string; channelId: string; active?: boolean; delete?: boolean }>;
     allowlist?: Array<{ projectCode: string; userId: string; note?: string; active?: boolean; delete?: boolean }>;
   }>();
@@ -305,13 +305,14 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
       continue;
     }
     statements.push(env.DB.prepare(
-      `INSERT INTO users (project_code, user_id, username, first_name, is_paid, is_allowlisted, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO users (project_code, user_id, username, first_name, is_paid, is_allowlisted, is_admin, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(project_code, user_id) DO UPDATE SET
          username = COALESCE(excluded.username, users.username),
          first_name = COALESCE(excluded.first_name, users.first_name),
          is_paid = excluded.is_paid,
          is_allowlisted = excluded.is_allowlisted,
+         is_admin = excluded.is_admin,
          updated_at = excluded.updated_at`,
     ).bind(
       user.projectCode,
@@ -320,6 +321,7 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
       user.firstName || null,
       user.isPaid ? 1 : 0,
       user.isAllowlisted ? 1 : 0,
+      user.isAdmin ? 1 : 0,
       now,
       now,
     ));
@@ -387,11 +389,20 @@ async function handleTelegramWebhook(request: Request, env: Env, projectCode: st
 
 async function handleMessage(env: Env, project: Project, message: TelegramMessage): Promise<void> {
   const text = (message.text || '').trim().toLowerCase();
-  if (!message.from || !['/start', '/menu', 'меню', '/channels', '/subscriptions', 'каналы', 'подписки'].includes(text)) {
+  if (!message.from) {
     return;
   }
 
   await upsertUser(env, project.code, message.from);
+
+  if (await handlePendingAdminMessage(env, project, message)) {
+    return;
+  }
+
+  if (!['/start', '/menu', 'меню', '/channels', '/subscriptions', 'каналы', 'подписки'].includes(text)) {
+    return;
+  }
+
   const requiredChannel = await requiredChannelForProject(env, project.code);
   if (requiredChannel && !await hasRequiredChannelMembership(project, String(message.from.id), requiredChannel)) {
     await telegram(project.bot_token, 'sendMessage', {
@@ -440,6 +451,37 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
         chat_id: message.chat.id,
         message_id: message.message_id,
         reply_markup: nextMenu,
+      });
+    }
+    return;
+  }
+
+  if (action === 'adminstats' || action === 'grantfree') {
+    const admin = await isAdmin(env, project.code, String(callback.from.id));
+    if (!admin) {
+      await answer(project.bot_token, callback.id, 'Недостаточно прав');
+      return;
+    }
+    if (action === 'adminstats') {
+      await answer(project.bot_token, callback.id);
+      if (message) {
+        await telegram(project.bot_token, 'editMessageText', {
+          chat_id: message.chat.id,
+          message_id: message.message_id,
+          text: await renderAdminStatsText(env, project.code),
+          reply_markup: renderAdminStatsMenu(),
+        });
+      }
+      return;
+    }
+    await env.CACHE.put(pendingAdminActionKey(project.code, String(callback.from.id)), 'grantfree', { expirationTtl: 600 });
+    await answer(project.bot_token, callback.id, 'Отправьте ID пользователя');
+    if (message) {
+      await telegram(project.bot_token, 'editMessageText', {
+        chat_id: message.chat.id,
+        message_id: message.message_id,
+        text: 'Отправьте ID пользователя, которому нужно выдать free-доступ.',
+        reply_markup: renderAdminCancelMenu(),
       });
     }
     return;
@@ -579,11 +621,12 @@ function renderJoinChannelMenu(channelRef: string): object {
 }
 
 async function renderMainMenu(env: Env, projectCode: string, userId: string): Promise<object> {
-  const [categoryCount, channelCount, subscriptionCount, status] = await Promise.all([
+  const [categoryCount, channelCount, subscriptionCount, status, admin] = await Promise.all([
     countChildCategories(env, projectCode, 'root'),
     countChannels(env, projectCode),
     countSubscriptions(env, projectCode, userId),
     subscriptionStatus(env, projectCode, userId),
+    isAdmin(env, projectCode, userId),
   ]);
 
   const statusLabel = status === 'free' ? 'Подписка (free)' : 'Подписка';
@@ -594,8 +637,29 @@ async function renderMainMenu(env: Env, projectCode: string, userId: string): Pr
     [{ text: statusLabel, callback_data: 'plan:root' }],
     [{ text: 'Дополнительно', callback_data: 'extra:root' }],
   ];
+  if (admin) {
+    rows.push([{ text: 'Статистика', callback_data: 'adminstats:root' }]);
+    rows.push([{ text: 'Дать free-доступ', callback_data: 'grantfree:root' }]);
+  }
 
   return { inline_keyboard: rows };
+}
+
+function renderAdminStatsMenu(): object {
+  return {
+    inline_keyboard: [
+      [{ text: 'Дать free-доступ', callback_data: 'grantfree:root' }],
+      [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
+    ],
+  };
+}
+
+function renderAdminCancelMenu(): object {
+  return {
+    inline_keyboard: [
+      [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
+    ],
+  };
 }
 
 function renderExtraMenu(): object {
@@ -787,12 +851,13 @@ async function upsertUser(env: Env, projectCode: string, user: TelegramUser): Pr
   ).bind(projectCode, String(user.id)).first<{ found: number }>();
 
   await env.DB.prepare(
-    `INSERT INTO users (project_code, user_id, username, first_name, is_allowlisted, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO users (project_code, user_id, username, first_name, is_allowlisted, is_admin, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(project_code, user_id) DO UPDATE SET
        username = excluded.username,
        first_name = excluded.first_name,
        is_allowlisted = CASE WHEN users.is_allowlisted = 1 THEN 1 ELSE excluded.is_allowlisted END,
+       is_admin = users.is_admin,
        updated_at = excluded.updated_at`,
   ).bind(
     projectCode,
@@ -800,9 +865,61 @@ async function upsertUser(env: Env, projectCode: string, user: TelegramUser): Pr
     user.username || null,
     user.first_name || null,
     allowlisted ? 1 : 0,
+    0,
     now,
     now,
   ).run();
+}
+
+async function handlePendingAdminMessage(env: Env, project: Project, message: TelegramMessage): Promise<boolean> {
+  const userId = String(message.from?.id || '');
+  if (!userId || !await isAdmin(env, project.code, userId)) {
+    return false;
+  }
+  const key = pendingAdminActionKey(project.code, userId);
+  const action = await env.CACHE.get(key);
+  if (action !== 'grantfree') {
+    return false;
+  }
+  await env.CACHE.delete(key);
+
+  const targetUserId = (message.text || '').trim().match(/-?\d+/)?.[0] || '';
+  if (!targetUserId) {
+    await telegram(project.bot_token, 'sendMessage', {
+      chat_id: message.chat.id,
+      text: 'Не вижу ID пользователя. Нажмите «Дать free-доступ» ещё раз и отправьте только числовой Telegram ID.',
+      reply_markup: renderAdminCancelMenu(),
+    });
+    return true;
+  }
+
+  await grantFreeAccess(env, project.code, targetUserId, userId);
+  await telegram(project.bot_token, 'sendMessage', {
+    chat_id: message.chat.id,
+    text: `Free-доступ выдан пользователю ${targetUserId}. При следующей синхронизации это попадёт в лист «Боты».`,
+    reply_markup: renderAdminStatsMenu(),
+  });
+  return true;
+}
+
+async function grantFreeAccess(env: Env, projectCode: string, targetUserId: string, adminUserId: string): Promise<void> {
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO users (project_code, user_id, is_paid, is_allowlisted, is_admin, created_at, updated_at)
+       VALUES (?, ?, 0, 1, 0, ?, ?)
+       ON CONFLICT(project_code, user_id) DO UPDATE SET
+         is_allowlisted = 1,
+         updated_at = excluded.updated_at`,
+    ).bind(projectCode, targetUserId, now, now),
+    env.DB.prepare(
+      `INSERT INTO allowlist (project_code, user_id, note, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(project_code, user_id) DO UPDATE SET
+         note = excluded.note,
+         created_at = excluded.created_at`,
+    ).bind(projectCode, targetUserId, `granted by admin ${adminUserId}`, now),
+  ]);
 }
 
 async function toggleSubscription(env: Env, projectCode: string, userId: string, channelId: string): Promise<boolean> {
@@ -963,6 +1080,45 @@ async function subscriptionStatus(env: Env, projectCode: string, userId: string)
   return 'none';
 }
 
+async function isAdmin(env: Env, projectCode: string, userId: string): Promise<boolean> {
+  const row = await env.DB.prepare(
+    'SELECT COALESCE(is_admin, 0) AS is_admin FROM users WHERE project_code = ? AND user_id = ? LIMIT 1',
+  ).bind(projectCode, userId).first<{ is_admin: number }>();
+  return row?.is_admin === 1;
+}
+
+async function renderAdminStatsText(env: Env, projectCode: string): Promise<string> {
+  const [users, access, admins, subscriptions, channels] = await Promise.all([
+    env.DB.prepare('SELECT COUNT(*) AS count FROM users WHERE project_code = ?').bind(projectCode).first<{ count: number }>(),
+    env.DB.prepare(
+      `SELECT
+         SUM(CASE WHEN COALESCE(u.is_paid, 0) = 1 THEN 1 ELSE 0 END) AS paid,
+         SUM(CASE WHEN COALESCE(u.is_allowlisted, 0) = 1 OR a.user_id IS NOT NULL THEN 1 ELSE 0 END) AS free
+       FROM users u
+       LEFT JOIN allowlist a ON a.project_code = u.project_code AND a.user_id = u.user_id
+       WHERE u.project_code = ?`,
+    ).bind(projectCode).first<{ paid: number; free: number }>(),
+    env.DB.prepare('SELECT COUNT(*) AS count FROM users WHERE project_code = ? AND COALESCE(is_admin, 0) = 1').bind(projectCode).first<{ count: number }>(),
+    env.DB.prepare('SELECT COUNT(*) AS count FROM user_subscriptions WHERE project_code = ? AND active = 1').bind(projectCode).first<{ count: number }>(),
+    env.DB.prepare('SELECT COUNT(*) AS count FROM channels WHERE project_code = ?').bind(projectCode).first<{ count: number }>(),
+  ]);
+  const userCount = users?.count || 0;
+  const freeCount = access?.free || 0;
+  const paidCount = access?.paid || 0;
+  const noneCount = Math.max(0, userCount - freeCount - paidCount);
+  return [
+    'Статистика бота',
+    '',
+    `Пользователей: ${userCount}`,
+    `Админов: ${admins?.count || 0}`,
+    `Free: ${freeCount}`,
+    `Paid: ${paidCount}`,
+    `Без доступа: ${noneCount}`,
+    `Активных подписок: ${subscriptions?.count || 0}`,
+    `Каналов в базе: ${channels?.count || 0}`,
+  ].join('\n');
+}
+
 async function getChannel(env: Env, projectCode: string, channelId: string): Promise<Channel | null> {
   return env.DB.prepare(
     'SELECT channel_id, title, status FROM channels WHERE project_code = ? AND channel_id = ?',
@@ -1094,6 +1250,10 @@ function requiredChannelKey(projectCode: string): string {
 
 function botUsernameKey(projectCode: string): string {
   return `bot-username:${projectCode}`;
+}
+
+function pendingAdminActionKey(projectCode: string, userId: string): string {
+  return `pending-admin:${projectCode}:${userId}`;
 }
 
 function normalizeTelegramChannel(value: string): string {

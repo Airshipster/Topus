@@ -21,6 +21,7 @@ HEADERS = [
     'Username',
     'First Name',
     'Access',
+    'Status',
     'Subscription Mode',
     'Included Channel IDs',
     'Excluded Channel IDs',
@@ -119,6 +120,10 @@ def ensure_bot_worksheet(sheet):
     delete_extra_sheets(sheet)
     values = get_values_with_quota_retry(worksheet, '1:1')
     current_headers = [str(cell).strip() for cell in values[0]] if values else []
+    if 'Status' not in current_headers and 'Access' in current_headers:
+        worksheet.insert_cols([['Status']], col=current_headers.index('Access') + 2, value_input_option='USER_ENTERED')
+        values = get_values_with_quota_retry(worksheet, '1:1')
+        current_headers = [str(cell).strip() for cell in values[0]] if values else []
     if current_headers != HEADERS:
         worksheet.update(range_name='A1', values=[HEADERS], value_input_option='USER_ENTERED')
     return worksheet
@@ -261,6 +266,7 @@ def build_state(state):
             'first_name': user.get('first_name') or '',
             'is_paid': worker_bool(user, 'is_paid'),
             'is_allowlisted': worker_bool(user, 'is_allowlisted'),
+            'is_admin': worker_bool(user, 'is_admin'),
             'updated_at': user.get('updated_at') or user.get('created_at') or '',
         }
 
@@ -293,6 +299,7 @@ def build_state(state):
             'first_name': '',
             'is_paid': False,
             'is_allowlisted': False,
+            'is_admin': False,
             'updated_at': '',
         })
 
@@ -328,6 +335,7 @@ def read_sheet_rows(worksheet):
             'username': str(get_cell(raw_row, headers, 'Username') or '').strip(),
             'first_name': str(get_cell(raw_row, headers, 'First Name') or '').strip(),
             'access': str(get_cell(raw_row, headers, 'Access') or '').strip().lower(),
+            'role': str(get_cell(raw_row, headers, 'Status') or '').strip().lower(),
             'mode': str(get_cell(raw_row, headers, 'Subscription Mode') or '').strip().lower(),
             'included': get_cell(raw_row, headers, 'Included Channel IDs'),
             'excluded': get_cell(raw_row, headers, 'Excluded Channel IDs'),
@@ -352,11 +360,14 @@ def read_action_rows(sheet_rows, compact_state):
         access = row['access']
         key = row_key(project_code, user_id)
         existing_access = user_access(users.get(key, {}), allowlist.get(key))
+        existing_role = user_role(users.get(key, {}))
+        requested_role = normalize_role(row.get('role'))
         is_new_free_user = key not in users and access == 'free'
         access_changed = access == 'free' and existing_access != 'free'
-        if action not in {'push', 'delete'} and not is_new_free_user and not access_changed:
+        role_changed = requested_role != existing_role
+        if action not in {'push', 'delete'} and not is_new_free_user and not access_changed and not role_changed:
             continue
-        if (is_new_free_user or access_changed) and action not in {'push', 'delete'}:
+        if (is_new_free_user or access_changed or role_changed) and action not in {'push', 'delete'}:
             action = 'push'
         action_row = dict(row)
         action_row['action'] = action
@@ -392,12 +403,15 @@ def collect_changes(action_rows, compact_state):
             payload['allowlist'].append({'projectCode': project_code, 'userId': user_id, 'delete': True})
             is_paid = False
             is_allowlisted = False
+            is_admin = False
         else:
             desired = desired_subscriptions(row, channels_by_project.get(project_code, []))
             existing_access = user_access(existing_user, allowlist.get(key))
             requested_access = row['access'] or existing_access
+            requested_role = normalize_role(row.get('role'))
             is_paid = requested_access == 'paid'
             is_allowlisted = requested_access == 'free'
+            is_admin = requested_role == 'admin'
             if is_allowlisted:
                 payload['allowlist'].append({
                     'projectCode': project_code,
@@ -415,6 +429,7 @@ def collect_changes(action_rows, compact_state):
             'firstName': row['first_name'] or existing_user.get('first_name') or None,
             'isPaid': is_paid,
             'isAllowlisted': is_allowlisted,
+            'isAdmin': is_admin,
         })
 
         current = {channel_id for channel_id, active in current_sub_rows.get(key, {}).items() if active}
@@ -437,6 +452,15 @@ def user_access(user, allowlist_entry):
     if user.get('is_paid'):
         return 'paid'
     return 'none'
+
+
+def normalize_role(value):
+    text = str(value or '').strip().lower()
+    return 'admin' if text == 'admin' else 'user'
+
+
+def user_role(user):
+    return 'admin' if user.get('is_admin') else 'user'
 
 
 def compact_subscription_cells(all_channel_ids, current_subscriptions):
@@ -505,6 +529,7 @@ def write_single_sheet(worksheet, compact_state, sheet_rows):
             'first_name': '',
             'is_paid': False,
             'is_allowlisted': False,
+            'is_admin': False,
             'updated_at': '',
         })
         allowlist_entry = allowlist.get(key)
@@ -524,6 +549,7 @@ def write_single_sheet(worksheet, compact_state, sheet_rows):
             user.get('username') or existing_row.get('username', ''),
             user.get('first_name') or existing_row.get('first_name', ''),
             user_access(user, allowlist_entry),
+            user_role(user),
             mode,
             included,
             excluded,
