@@ -28,10 +28,8 @@ CATEGORY_MARKER = '🟡'
 
 
 def slug(value):
-    text = str(value or '').strip().lower()
-    text = re.sub(r'[^0-9a-zа-яё]+', '-', text, flags=re.IGNORECASE).strip('-')
-    digest = hashlib.sha1(str(value or '').encode('utf-8')).hexdigest()[:8]
-    return f'{text[:40] or "category"}-{digest}'
+    digest = hashlib.sha1(str(value or '').encode('utf-8')).hexdigest()[:16]
+    return f'cat_{digest}'
 
 
 def webhook_secret(project_code, admin_secret):
