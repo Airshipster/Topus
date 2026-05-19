@@ -301,7 +301,20 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
     const channelIds = await descendantChannelIds(env, project.code, value);
     await setBulkSubscriptions(env, project.code, String(callback.from.id), channelIds, action === 'all');
     categoryId = value;
-    toast = action === 'all' ? 'Включено на этом уровне' : 'Отключено на этом уровне';
+    toast = action === 'all' ? 'Подписка на все здесь включена' : 'Подписка на все здесь отключена';
+  } else if (action === 'allall' || action === 'noneall') {
+    const channels = await allChannels(env, project.code);
+    await setBulkSubscriptions(
+      env,
+      project.code,
+      String(callback.from.id),
+      channels.map((channel) => channel.channel_id),
+      action === 'allall',
+    );
+    page = Math.max(0, Number.parseInt(value || '0', 10) || 0);
+    menu = await renderAllChannels(env, project.code, String(callback.from.id), page);
+    text = 'Все каналы';
+    toast = action === 'allall' ? 'Подписка на все каналы включена' : 'Подписка на все каналы отключена';
   }
 
   await answer(project.bot_token, callback.id, toast);
@@ -392,8 +405,8 @@ async function renderMenu(env: Env, projectCode: string, userId: string, categor
   }
 
     rows.push([
-    { text: '✅ Все здесь', callback_data: `all:${categoryId}` },
-    { text: '➖ Никого здесь', callback_data: `none:${categoryId}` },
+    { text: '✅ Подписаться на все', callback_data: `all:${categoryId}` },
+    { text: '➖ Отписаться от всех', callback_data: `none:${categoryId}` },
   ]);
 
   if (categoryId !== 'root') {
@@ -413,7 +426,7 @@ async function renderAllChannels(env: Env, projectCode: string, userId: string, 
     allChannels(env, projectCode),
     selectedChannels(env, projectCode, userId),
   ]);
-  return renderChannelList(channels, selected, page, 'toggleall', 'allch', true);
+  return renderChannelList(channels, selected, page, 'toggleall', 'allch', true, true);
 }
 
 async function renderSubscriptions(env: Env, projectCode: string, userId: string, page: number): Promise<object> {
@@ -451,6 +464,7 @@ function renderChannelList(
   toggleAction: string,
   pageAction: string,
   showUnselected: boolean,
+  showBulkActions = false,
 ): object {
   const rows: Array<Array<{ text: string; callback_data: string }>> = [];
   const totalPages = Math.max(1, Math.ceil(channels.length / CHANNELS_PER_PAGE));
@@ -476,6 +490,13 @@ function renderChannelList(
       navRow.push({ text: '→', callback_data: `${pageAction}:${currentPage + 1}` });
     }
     rows.push(navRow);
+  }
+
+  if (showBulkActions) {
+    rows.push([
+      { text: '✅ Подписаться на все', callback_data: `allall:${currentPage}` },
+      { text: '➖ Отписаться от всех', callback_data: `noneall:${currentPage}` },
+    ]);
   }
 
   rows.push([{ text: '🏠 Главное меню', callback_data: 'menu:root' }]);
