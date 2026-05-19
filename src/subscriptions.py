@@ -13,6 +13,7 @@ from sheets import (
     format_timestamp,
     get_all_active_channels,
     get_values_with_quota_retry,
+    is_sheets_quota_error,
     parse_datetime_value,
     sheet_datetime_value,
     update_setting_value,
@@ -285,12 +286,21 @@ def normalize_subscriptions_columns(sheet, worksheet, headers, values=None):
     return desired
 
 def get_or_create_subscriptions_worksheet(sheet):
-    try:
-        worksheet = sheet.worksheet(SUBSCRIPTIONS_SHEET_NAME)
-    except gspread.exceptions.WorksheetNotFound:
-        worksheet = sheet.add_worksheet(SUBSCRIPTIONS_SHEET_NAME, rows=SUBSCRIPTIONS_TARGET_ROWS, cols=len(SUBSCRIPTIONS_HEADERS))
-        worksheet.append_row(SUBSCRIPTIONS_HEADERS, value_input_option='USER_ENTERED')
-        return worksheet
+    delay_seconds = 5
+    for attempt in range(1, 4):
+        try:
+            worksheet = sheet.worksheet(SUBSCRIPTIONS_SHEET_NAME)
+            break
+        except gspread.exceptions.WorksheetNotFound:
+            worksheet = sheet.add_worksheet(SUBSCRIPTIONS_SHEET_NAME, rows=SUBSCRIPTIONS_TARGET_ROWS, cols=len(SUBSCRIPTIONS_HEADERS))
+            worksheet.append_row(SUBSCRIPTIONS_HEADERS, value_input_option='USER_ENTERED')
+            return worksheet
+        except Exception as error:
+            if not is_sheets_quota_error(error) or attempt >= 3:
+                raise
+            print(f"  ⚠️  Sheets quota busy while opening {SUBSCRIPTIONS_SHEET_NAME}; retry {attempt}/2 in {delay_seconds}s")
+            time.sleep(delay_seconds)
+            delay_seconds *= 2
 
     ensure_subscription_row_count(sheet, worksheet)
 
@@ -371,7 +381,17 @@ def save_subscribed_channels_batch(sheet, channel_ids, active_channels_dict):
     ]
     
     if rows:
-        worksheet.append_rows(rows, value_input_option='USER_ENTERED')
+        delay_seconds = 5
+        for attempt in range(1, 4):
+            try:
+                worksheet.append_rows(rows, value_input_option='USER_ENTERED')
+                break
+            except Exception as error:
+                if not is_sheets_quota_error(error) or attempt >= 3:
+                    raise
+                print(f"  ⚠️  Sheets quota busy while saving subscriptions; retry {attempt}/2 in {delay_seconds}s")
+                time.sleep(delay_seconds)
+                delay_seconds *= 2
 
 def update_subscription_renewals_batch(sheet, subscription_records, channel_ids):
     """Обновление времени продления существующих подписок"""
