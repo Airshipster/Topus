@@ -79,6 +79,7 @@ const CHANNELS_PER_PAGE = 20;
 const SELECTED_MARK = '✅';
 const UNSELECTED_MARK = '➕';
 const CLOUDFLARE_MONTHLY_REQUEST_LIMIT = 100000;
+type TelegramButton = { text: string; callback_data?: string; url?: string };
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -457,6 +458,9 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
   } else if (action === 'plan') {
     menu = await renderPlan(env, project.code, String(callback.from.id));
     text = 'Статус подписки';
+  } else if (action === 'extra') {
+    menu = renderExtraMenu();
+    text = 'Дополнительно';
   } else if (action === 'back') {
     categoryId = (await parentCategory(env, project.code, value)) || 'root';
   } else if (action === 'toggle') {
@@ -554,13 +558,28 @@ async function renderMainMenu(env: Env, projectCode: string, userId: string): Pr
   ]);
 
   const statusLabel = status === 'free' ? 'Подписка (free)' : 'Подписка';
-  const rows: Array<Array<{ text: string; callback_data: string }>> = [
+  const rows: Array<Array<TelegramButton>> = [
     [{ text: `📚 Категории (${categoryCount})`, callback_data: 'cats:root' }],
     [{ text: `✅ Мои подписки (${subscriptionCount}/${channelCount})`, callback_data: 'subs:0' }],
     [{ text: `📺 Все каналы (${channelCount})`, callback_data: 'allch:0' }],
     [{ text: statusLabel, callback_data: 'plan:root' }],
+    [{ text: 'Дополнительно', callback_data: 'extra:root' }],
   ];
 
+  return { inline_keyboard: rows };
+}
+
+function renderExtraMenu(): object {
+  const rows: Array<Array<TelegramButton>> = [
+    [{ text: 'Telegram SciTopus', url: 'https://t.me/SciTopus' }],
+    [{ text: 'YouTube SciTopus', url: 'https://www.youtube.com/' }],
+    [{ text: 'VK SciTopus', url: 'https://vk.com/scitopus' }],
+    [{ text: 'Список каналов', url: 'https://scitopus.com/youtube-list' }],
+    [{ text: 'Стикеры Octavius', url: 'https://t.me/addstickers/SciTopus_Octavius' }],
+    [{ text: 'Подписаться на партнёров', url: 'https://t.me/addlist/J9zysqZsgN0wNGYy' }],
+    [{ text: 'Другие проекты SciTopus', url: 'https://t.me/addlist/R-OEMFwg18A2ODhi' }],
+    [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
+  ];
   return { inline_keyboard: rows };
 }
 
