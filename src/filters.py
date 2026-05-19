@@ -1,6 +1,10 @@
 import config
 
 
+def normalize_stop_text(value):
+    return str(value or '').casefold().replace('ё', 'е')
+
+
 def should_filter_video(video_info, project):
     """Проверка нужно ли фильтровать видео"""
     if not video_info:
@@ -17,9 +21,10 @@ def should_filter_video(video_info, project):
         return True, "Upcoming/Premiere"
     
     if project.get('stop_words'):
-        title_lower = video_info['title'].lower()
+        title_text = normalize_stop_text(video_info['title'])
         for stop_word in project['stop_words']:
-            if stop_word and stop_word in title_lower:
+            normalized_stop_word = normalize_stop_text(stop_word).strip()
+            if normalized_stop_word and normalized_stop_word in title_text:
                 return True, f"Stop word: {stop_word}"
     
     return False, ""
