@@ -11,11 +11,17 @@ type TelegramUser = {
   first_name?: string;
 };
 
+type TelegramChat = {
+  id: number;
+  type?: string;
+};
+
 type TelegramMessage = {
   message_id: number;
   text?: string;
-  chat: { id: number };
+  chat: TelegramChat;
   from?: TelegramUser;
+  new_chat_members?: TelegramUser[];
 };
 
 type TelegramCallbackQuery = {
@@ -79,6 +85,9 @@ const CHANNELS_PER_PAGE = 20;
 const SELECTED_MARK = '✅';
 const UNSELECTED_MARK = '➕';
 const CLOUDFLARE_MONTHLY_REQUEST_LIMIT = 100000;
+const MAX_GROUP_HUMANS = 3;
+const MAX_GROUP_TOTAL_MEMBERS = MAX_GROUP_HUMANS + 1;
+const GROUP_LIMIT_TEXT = 'Бот работает только в личных чатах или небольших чатах до 3 человек. Сам бот не считается: максимум 3 участника плюс бот.';
 type TelegramButton = { text: string; callback_data?: string; url?: string };
 const WELCOME_TEXT = [
   'Добро пожаловать в бот SciTopus.',
@@ -388,6 +397,10 @@ async function handleTelegramWebhook(request: Request, env: Env, projectCode: st
 }
 
 async function handleMessage(env: Env, project: Project, message: TelegramMessage): Promise<void> {
+  if (!await enforceSmallChatLimit(project, message.chat)) {
+    return;
+  }
+
   const text = (message.text || '').trim().toLowerCase();
   if (!message.from) {
     return;
@@ -426,6 +439,11 @@ async function handleMessage(env: Env, project: Project, message: TelegramMessag
 async function handleCallback(env: Env, project: Project, callback: TelegramCallbackQuery): Promise<void> {
   const data = callback.data || '';
   const message = callback.message;
+  if (message && !await enforceSmallChatLimit(project, message.chat)) {
+    await answer(project.bot_token, callback.id, 'Бот работает только в чатах до 3 человек');
+    return;
+  }
+
   await upsertUser(env, project.code, callback.from);
 
   if (data === 'noop') {
@@ -1194,6 +1212,30 @@ async function hasRequiredChannelMembership(project: Project, userId: string, ch
   }) as { ok?: boolean; result?: { status?: string } } | null;
   const status = result?.result?.status || '';
   return ['creator', 'administrator', 'member'].includes(status);
+}
+
+async function enforceSmallChatLimit(project: Project, chat: TelegramChat): Promise<boolean> {
+  if (!chat.type || chat.type === 'private') {
+    return true;
+  }
+
+  const result = await telegram(project.bot_token, 'getChatMemberCount', {
+    chat_id: chat.id,
+  }) as { ok?: boolean; result?: number } | null;
+  const memberCount = Number(result?.result || 0);
+  if (memberCount > 0 && memberCount <= MAX_GROUP_TOTAL_MEMBERS) {
+    return true;
+  }
+
+  await telegram(project.bot_token, 'sendMessage', {
+    chat_id: chat.id,
+    text: GROUP_LIMIT_TEXT,
+    disable_notification: true,
+  });
+  await telegram(project.bot_token, 'leaveChat', {
+    chat_id: chat.id,
+  });
+  return false;
 }
 
 async function telegram(botToken: string, method: string, payload: object): Promise<unknown> {
