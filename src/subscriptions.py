@@ -335,6 +335,20 @@ def get_stale_subscriptions(subscription_records, active_channels):
 
     return stale
 
+def get_failed_subscriptions(subscription_records, active_channels):
+    """Каналы с последней ошибкой subscribe/renew, которые стоит повторить точечно."""
+    failed = set()
+
+    for channel_id in active_channels:
+        record = subscription_records.get(channel_id)
+        if not record:
+            continue
+        status = str(record.get('status', '')).strip()
+        if status.startswith('❌'):
+            failed.add(channel_id)
+
+    return failed
+
 def format_channel_projects(active_channels_dict, channel_id):
     projects = sorted(set(active_channels_dict.get(channel_id, {}).get('projects', [])))
     return ', '.join(projects)
@@ -668,6 +682,7 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
     if not should_run_subscription_sync(master_sheet, force=force):
         print("  ⏭️  Subscribe/renew skipped (last full sync < 24h)")
         changed_subscription_rows = False
+        failed_channels = get_failed_subscriptions(subscription_records, active_channels)
         if to_subscribe:
             print(f"  Subscribing to {len(to_subscribe)} new channels despite recent full sync...")
             subscribed = []
@@ -680,6 +695,27 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
                 save_subscribed_channels_batch(master_sheet, subscribed, active_channels_dict)
                 changed_subscription_rows = True
                 print(f"  ✅ Successfully subscribed: {len(subscribed)}")
+
+        if failed_channels:
+            print(f"  Retrying {len(failed_channels)} failed push subscriptions despite recent full sync...")
+            renewed = []
+            renewal_errors = {}
+            for channel_id in sorted(failed_channels):
+                ok, error_text = subscribe_channel(channel_id, return_error=True)
+                if ok:
+                    renewed.append(channel_id)
+                else:
+                    renewal_errors[channel_id] = error_text
+                time.sleep(0.1)
+
+            if renewed:
+                update_renewed_channels(master_sheet, subscription_records, renewed, active_channels_dict)
+                changed_subscription_rows = True
+                print(f"  ✅ Successfully retried: {len(renewed)}")
+            if renewal_errors:
+                update_failed_subscription_statuses(master_sheet, subscription_records, renewal_errors)
+                changed_subscription_rows = True
+                print(f"  ❌ Subscription retry failed: {len(renewal_errors)}")
 
         if to_unsubscribe:
             print(f"  Unsubscribing/removing {len(to_unsubscribe)} inactive subscriptions...")
