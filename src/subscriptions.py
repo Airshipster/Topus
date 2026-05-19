@@ -709,11 +709,15 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
                 time.sleep(0.1)
 
             if renewed:
-                update_renewed_channels(master_sheet, subscription_records, renewed, active_channels_dict)
+                update_subscription_renewals_batch(master_sheet, subscription_records, renewed)
                 changed_subscription_rows = True
                 print(f"  ✅ Successfully retried: {len(renewed)}")
             if renewal_errors:
-                update_failed_subscription_statuses(master_sheet, subscription_records, renewal_errors)
+                update_subscription_statuses(
+                    master_sheet,
+                    subscription_records,
+                    {channel_id: f'❌ subscribe/renew failed: {error_text}' for channel_id, error_text in renewal_errors.items()},
+                )
                 changed_subscription_rows = True
                 print(f"  ❌ Subscription retry failed: {len(renewal_errors)}")
 
