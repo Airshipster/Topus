@@ -571,12 +571,12 @@ async function renderMainMenu(env: Env, projectCode: string, userId: string): Pr
 
 function renderExtraMenu(): object {
   const rows: Array<Array<TelegramButton>> = [
-    [{ text: 'Список каналов', url: 'https://scitopus.com/youtube-list' }],
+    [{ text: 'Список научпоп каналов', url: 'https://scitopus.com/youtube-list' }],
     [{ text: 'Наш Telegram-канал', url: 'https://t.me/SciTopus' }],
-    [{ text: 'YouTube SciTopus', url: 'https://www.youtube.com/@SciTopus' }],
-    [{ text: 'VK SciTopus', url: 'https://vk.com/scitopus' }],
-    [{ text: 'Стикеры Octavius', url: 'https://t.me/addstickers/SciTopus_Octavius' }],
-    [{ text: 'Подписаться на партнёров', url: 'https://t.me/addlist/J9zysqZsgN0wNGYy' }],
+    [{ text: 'SciTopus в YouTube', url: 'https://www.youtube.com/@SciTopus' }],
+    [{ text: 'SciTopus в VK', url: 'https://vk.com/scitopus' }],
+    [{ text: 'Наши стикеры', url: 'https://t.me/addstickers/SciTopus_Octavius' }],
+    [{ text: 'Подписаться на TG партнёров', url: 'https://t.me/addlist/J9zysqZsgN0wNGYy' }],
     [{ text: 'Наши другие каналы', url: 'https://t.me/addlist/R-OEMFwg18A2ODhi' }],
     [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
   ];
