@@ -204,8 +204,13 @@ async function handleAdminNotify(request: Request, env: Env, ctx: ExecutionConte
        ${paymentCondition}`,
   ).bind(body.projectCode, body.channelId).all<{ user_id: string }>();
 
-  ctx.waitUntil(sendNotifications(project, recipients.results || [], body.text, body.parseMode || 'HTML'));
-  return json({ ok: true, queued: recipients.results?.length || 0 });
+  const deliveries = await sendNotifications(project, recipients.results || [], body.text, body.parseMode || 'HTML');
+  return json({
+    ok: true,
+    queued: recipients.results?.length || 0,
+    sent: deliveries.filter((delivery) => delivery.messageId !== null).length,
+    deliveries,
+  });
 }
 
 async function handleTelegramWebhook(request: Request, env: Env, projectCode: string, secret: string): Promise<Response> {
@@ -782,15 +787,26 @@ async function descendantChannelIds(env: Env, projectCode: string, categoryId: s
   return [...channels.map((channel) => channel.channel_id), ...nested.flat()];
 }
 
-async function sendNotifications(project: Project, recipients: Array<{ user_id: string }>, text: string, parseMode: string): Promise<void> {
+async function sendNotifications(
+  project: Project,
+  recipients: Array<{ user_id: string }>,
+  text: string,
+  parseMode: string,
+): Promise<Array<{ userId: string; messageId: number | null }>> {
+  const deliveries: Array<{ userId: string; messageId: number | null }> = [];
   for (const recipient of recipients) {
-    await telegram(project.bot_token, 'sendMessage', {
+    const result = await telegram(project.bot_token, 'sendMessage', {
       chat_id: recipient.user_id,
       text,
       parse_mode: parseMode,
       disable_web_page_preview: false,
+    }) as { ok?: boolean; result?: { message_id?: number } } | null;
+    deliveries.push({
+      userId: recipient.user_id,
+      messageId: result?.result?.message_id ?? null,
     });
   }
+  return deliveries;
 }
 
 async function requiredChannelForProject(env: Env, projectCode: string): Promise<string> {

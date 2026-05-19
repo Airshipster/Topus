@@ -39,7 +39,7 @@ from sheets import (
 )
 from subscriptions import deduplicate_subscription_rows, get_or_create_subscriptions_worksheet, get_subscription_records, sync_subscriptions
 from telegram_client import delete_telegram_message, format_message, send_to_telegram
-from worker_notifications import notify_worker_subscribers
+from worker_notifications import notify_worker_subscribers, worker_message_id
 from youtube_client import get_last_youtube_api_error, get_video_info_from_api, get_youtube_api_calls
 
 
@@ -737,13 +737,15 @@ def main():
                 timestamp = format_timestamp()
                 if worker_result is not None:
                     queued = worker_result.get('queued', 0)
-                    print(f"    ✅ Bot subscriber notifications queued: {queued}")
-                    log_entries.append([timestamp, project['name'], 'Video published', video['video_id'], f"Bot subscribers queued: {queued}", 'success', source_method])
+                    sent = worker_result.get('sent', queued)
+                    bot_message_id = worker_message_id(worker_result)
+                    print(f"    ✅ Bot subscriber notifications sent: {sent}/{queued}")
+                    log_entries.append([timestamp, project['name'], 'Video published', video['video_id'], f"Bot subscribers sent: {sent}/{queued}; message_id: {bot_message_id}", 'success', source_method])
                     update_video_publication_status(
                         master_sheet,
                         video['video_id'],
                         project['name'],
-                        tg_message_id=f'bot:{queued}',
+                        tg_message_id=bot_message_id,
                         status='published',
                         error=publication_status_detail(video),
                         video=video,
