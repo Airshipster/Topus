@@ -2280,6 +2280,7 @@ def parse_youtube_channels_worksheet(worksheet, project, include_disabled=False)
         tg_col_text = tg_col + 1 if tg_col is not None else 'not found'
         print(f"  📌 Channel columns: template={template_col_text}, tg_partner={tg_col_text}")
         channels = {}
+        enabled_channel_ids = set()
         disabled_channel_ids = set()
         for i, row in enumerate(values):
             if i == 0:
@@ -2294,18 +2295,21 @@ def parse_youtube_channels_worksheet(worksheet, project, include_disabled=False)
 
             channel_id = get_row_value(normalized, header_indexes, 'ID') or extract_youtube_channel_id_from_row(normalized)
             is_disabled = '🔴' in normalized
+            is_enabled = '🟢' in normalized
             if is_disabled:
                 if channel_id:
                     disabled_channel_ids.add(channel_id)
                 if not include_disabled:
                     continue
 
-            if '🟢' not in normalized and not is_disabled:
+            if not is_enabled and not is_disabled:
                 continue
 
             if not channel_id:
                 print(f"  ⚠️  Channel row {i + 1} has no YouTube channel ID")
                 continue
+            if is_enabled:
+                enabled_channel_ids.add(channel_id)
 
             channel_name = column_value(normalized, headers, CHANNEL_NAME_HEADERS) or get_row_value(normalized, header_indexes, 'Название') or infer_channel_name(normalized, channel_id)
             channel_template = column_value(normalized, headers, CHANNEL_TEMPLATE_HEADERS, fallback_index=20)
@@ -2318,6 +2322,7 @@ def parse_youtube_channels_worksheet(worksheet, project, include_disabled=False)
             }
 
         project['disabled_channel_count'] = len(disabled_channel_ids)
+        project['enabled_channel_count'] = len(enabled_channel_ids)
         return channels
     except Exception as e:
         error_text = f"{type(e).__name__}: {e}"

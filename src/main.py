@@ -261,17 +261,21 @@ def delete_rss_missing_publications(master_sheet, project, rss_seen_by_channel, 
         print(f"  🗑️  Deleted unavailable Telegram posts after API check: {deleted}")
 
 
-def load_project_channels(client, master_sheet, projects):
+def load_project_channels(client, master_sheet, projects, include_disabled_for_bot=False):
     project_channels = {}
     active_channels_dict = {}
 
     for index, project in enumerate(projects):
         if index:
             time.sleep(1)
-        channels = load_youtube_channels(client, project)
+        channels = load_youtube_channels(
+            client,
+            project,
+            include_disabled=include_disabled_for_bot and bool(project.get('bot_enabled')),
+        )
         project_channels[project['name']] = channels
 
-        project['channel_count'] = len(channels)
+        project['channel_count'] = project.get('enabled_channel_count', len(channels))
         for channel_id, channel_info in channels.items():
             if channel_id not in active_channels_dict:
                 active_channels_dict[channel_id] = {
@@ -423,7 +427,12 @@ def main():
         print("\n📺 Loading project channels...")
         if should_sync_subscriptions_now:
             update_project_provisioning_statuses(master_sheet, projects, 'checking', 'reading project document')
-        project_channels, active_channels_dict = load_project_channels(client, master_sheet, projects)
+        project_channels, active_channels_dict = load_project_channels(
+            client,
+            master_sheet,
+            projects,
+            include_disabled_for_bot=sync_only_mode(),
+        )
         if sync_only_mode():
             update_video_project_links(master_sheet, projects)
         if push_only_mode():
