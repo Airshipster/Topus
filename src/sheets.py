@@ -2227,6 +2227,7 @@ def load_projects(sheet, update_status=True):
                 row.get('Возраст видео, ч'),
                 config.MAX_PUBLISH_AGE_HOURS,
             )
+            max_publish_age_hours = min(max_publish_age_hours, config.MAX_PUBLISH_AGE_HOURS)
             if str(row.get('Push API', '')).strip() == '':
                 default_updates.append((row_index, 'Push API', '🟢'))
             if str(row.get('RSS feed', '')).strip() == '':
