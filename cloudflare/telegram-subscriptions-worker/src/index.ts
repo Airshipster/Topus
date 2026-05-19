@@ -47,6 +47,7 @@ type Category = {
   category_id: string;
   parent_id: string | null;
   title: string;
+  sort_order?: number;
 };
 
 type SyncProject = {
@@ -264,6 +265,9 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
     page = Math.max(0, Number.parseInt(value || '0', 10) || 0);
     menu = await renderSubscriptions(env, project.code, String(callback.from.id), page);
     text = 'Мои подписки';
+  } else if (action === 'plan') {
+    menu = await renderPlan(env, project.code, String(callback.from.id));
+    text = 'Статус подписки';
   } else if (action === 'back') {
     categoryId = (await parentCategory(env, project.code, value)) || 'root';
   } else if (action === 'toggle') {
@@ -318,16 +322,19 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
 }
 
 async function renderMainMenu(env: Env, projectCode: string, userId: string): Promise<object> {
-  const [categoryCount, channelCount, subscriptionCount] = await Promise.all([
+  const [categoryCount, channelCount, subscriptionCount, status] = await Promise.all([
     countChildCategories(env, projectCode, 'root'),
     countChannels(env, projectCode),
     countSubscriptions(env, projectCode, userId),
+    subscriptionStatus(env, projectCode, userId),
   ]);
 
+  const statusLabel = status === 'free' ? 'Подписка (free)' : 'Подписка';
   const rows: Array<Array<{ text: string; callback_data: string }>> = [
     [{ text: `📚 Категории (${categoryCount})`, callback_data: 'cats:root' }],
-    [{ text: `✅ Мои подписки (${subscriptionCount})`, callback_data: 'subs:0' }],
+    [{ text: `✅ Мои подписки (${subscriptionCount}/${channelCount})`, callback_data: 'subs:0' }],
     [{ text: `📺 Все каналы (${channelCount})`, callback_data: 'allch:0' }],
+    [{ text: statusLabel, callback_data: 'plan:root' }],
   ];
 
   return { inline_keyboard: rows };
@@ -343,7 +350,19 @@ async function renderMenu(env: Env, projectCode: string, userId: string, categor
   const rows: Array<Array<{ text: string; callback_data: string }>> = [];
 
   for (const category of categories) {
+    if (category.category_id === 'root') {
+      continue;
+    }
     rows.push([{ text: `📁 ${category.title}`, callback_data: `cat:${category.category_id}` }]);
+  }
+
+  if (categoryId === 'root') {
+    rows.push([{ text: '📺 Все каналы', callback_data: 'allch:0' }]);
+    if (rows.length === 1) {
+      rows.unshift([{ text: 'Категории пока не настроены', callback_data: 'noop' }]);
+    }
+    rows.push([{ text: '🏠 Главное меню', callback_data: 'menu:root' }]);
+    return { inline_keyboard: rows };
   }
 
   const totalPages = Math.max(1, Math.ceil(channels.length / CHANNELS_PER_PAGE));
@@ -408,6 +427,19 @@ async function renderSubscriptions(env: Env, projectCode: string, userId: string
     };
   }
   return renderChannelList(channels, selected, page, 'togglesub', 'subs', false);
+}
+
+async function renderPlan(env: Env, projectCode: string, userId: string): Promise<object> {
+  const status = await subscriptionStatus(env, projectCode, userId);
+  const label = status === 'free'
+    ? 'У вас свободный доступ.'
+    : 'Платная подписка будет подключена позже.';
+  return {
+    inline_keyboard: [
+      [{ text: label, callback_data: 'noop' }],
+      [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
+    ],
+  };
 }
 
 function renderChannelList(
@@ -595,6 +627,25 @@ async function countSubscriptions(env: Env, projectCode: string, userId: string)
      WHERE project_code = ? AND user_id = ? AND active = 1`,
   ).bind(projectCode, userId).first<{ count: number }>();
   return row?.count || 0;
+}
+
+async function subscriptionStatus(env: Env, projectCode: string, userId: string): Promise<'free' | 'paid' | 'none'> {
+  const row = await env.DB.prepare(
+    `SELECT
+       COALESCE(u.is_paid, 0) AS is_paid,
+       CASE WHEN COALESCE(u.is_allowlisted, 0) = 1 OR a.user_id IS NOT NULL THEN 1 ELSE 0 END AS is_free
+     FROM users u
+     LEFT JOIN allowlist a ON a.project_code = u.project_code AND a.user_id = u.user_id
+     WHERE u.project_code = ? AND u.user_id = ?
+     LIMIT 1`,
+  ).bind(projectCode, userId).first<{ is_paid: number; is_free: number }>();
+  if (row?.is_free === 1) {
+    return 'free';
+  }
+  if (row?.is_paid === 1) {
+    return 'paid';
+  }
+  return 'none';
 }
 
 async function getChannel(env: Env, projectCode: string, channelId: string): Promise<Channel | null> {
