@@ -265,7 +265,9 @@ def load_project_channels(client, master_sheet, projects):
     project_channels = {}
     active_channels_dict = {}
 
-    for project in projects:
+    for index, project in enumerate(projects):
+        if index:
+            time.sleep(1)
         channels = load_youtube_channels(client, project)
         project_channels[project['name']] = channels
 

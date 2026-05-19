@@ -96,7 +96,10 @@ def clean_row(row):
 
 
 def is_sheets_quota_error(error):
-    return isinstance(error, gspread.exceptions.APIError) and '[429]' in str(error)
+    error_text = str(error)
+    return isinstance(error, gspread.exceptions.APIError) and (
+        '[429]' in error_text or 'Quota exceeded' in error_text
+    )
 
 
 def get_values_with_quota_retry(worksheet, range_name=None, attempts=3, value_render_option=None):
@@ -2264,7 +2267,7 @@ def load_youtube_channels(client, project):
 def parse_youtube_channels_worksheet(worksheet, project):
     try:
         print(f"  📄 Channels sheet: {worksheet.title}")
-        values = get_values_with_quota_retry(worksheet, 'A:V')
+        values = get_values_with_quota_retry(worksheet, 'A:V', attempts=5)
         if not values:
             return {}
 
@@ -2372,7 +2375,9 @@ def get_all_active_channels(client, projects):
     """Получение всех уникальных активных каналов"""
     all_channels = {}
     
-    for project in projects:
+    for index, project in enumerate(projects):
+        if index:
+            time.sleep(1)
         channels = load_youtube_channels(client, project)
         for ch_id, ch_info in channels.items():
             if ch_id not in all_channels:
