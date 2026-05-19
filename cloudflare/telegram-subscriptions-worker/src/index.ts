@@ -56,6 +56,7 @@ type SyncProject = {
   name: string;
   botToken: string;
   webhookSecret: string;
+  mainChannel?: string;
   active?: boolean;
   categories: Array<{
     id: string;
@@ -161,7 +162,13 @@ async function handleAdminSync(request: Request, env: Env, ctx: ExecutionContext
       await env.DB.batch(chunk);
     }
 
-    ctx.waitUntil(env.CACHE.delete(menuCacheKey(project.code)));
+    const mainChannel = normalizeTelegramChannel(project.mainChannel || '');
+    ctx.waitUntil(Promise.all([
+      mainChannel
+        ? env.CACHE.put(requiredChannelKey(project.code), mainChannel)
+        : env.CACHE.delete(requiredChannelKey(project.code)),
+      env.CACHE.delete(menuCacheKey(project.code)),
+    ]));
   }
 
   return json({ ok: true, projects: projects.length });
@@ -224,6 +231,16 @@ async function handleMessage(env: Env, project: Project, message: TelegramMessag
   }
 
   await upsertUser(env, project.code, message.from);
+  const requiredChannel = await requiredChannelForProject(env, project.code);
+  if (requiredChannel && !await hasRequiredChannelMembership(project, String(message.from.id), requiredChannel)) {
+    await telegram(project.bot_token, 'sendMessage', {
+      chat_id: message.chat.id,
+      text: 'Чтобы пользоваться подписками, подпишитесь на основной канал проекта.',
+      reply_markup: renderJoinChannelMenu(requiredChannel),
+    });
+    return;
+  }
+
   const menu = await renderMainMenu(env, project.code, String(message.from.id));
   await telegram(project.bot_token, 'sendMessage', {
     chat_id: message.chat.id,
@@ -248,6 +265,23 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
   let toast = '';
   let menu: object | null = null;
   let text: string | null = null;
+  const requiredChannel = await requiredChannelForProject(env, project.code);
+
+  if (action === 'checkjoin') {
+    if (!requiredChannel || await hasRequiredChannelMembership(project, String(callback.from.id), requiredChannel)) {
+      menu = await renderMainMenu(env, project.code, String(callback.from.id));
+      text = 'Главное меню подписок';
+      toast = 'Подписка на канал подтверждена';
+    } else {
+      menu = renderJoinChannelMenu(requiredChannel);
+      text = 'Сначала подпишитесь на основной канал проекта.';
+      toast = 'Подписка на канал не найдена';
+    }
+  } else if (requiredChannel && !await hasRequiredChannelMembership(project, String(callback.from.id), requiredChannel)) {
+    menu = renderJoinChannelMenu(requiredChannel);
+    text = 'Чтобы пользоваться подписками, подпишитесь на основной канал проекта.';
+    toast = 'Сначала подпишитесь на канал';
+  } else
 
   if (action === 'menu') {
     menu = await renderMainMenu(env, project.code, String(callback.from.id));
@@ -348,6 +382,16 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
       await telegram(project.bot_token, 'editMessageReplyMarkup', payload);
     }
   }
+}
+
+function renderJoinChannelMenu(channelRef: string): object {
+  const rows: Array<Array<{ text: string; callback_data?: string; url?: string }>> = [];
+  const url = telegramChannelUrl(channelRef);
+  if (url) {
+    rows.push([{ text: 'Открыть основной канал', url }]);
+  }
+  rows.push([{ text: 'Проверить подписку на канал', callback_data: 'checkjoin:root' }]);
+  return { inline_keyboard: rows };
 }
 
 async function renderMainMenu(env: Env, projectCode: string, userId: string): Promise<object> {
@@ -749,6 +793,22 @@ async function sendNotifications(project: Project, recipients: Array<{ user_id: 
   }
 }
 
+async function requiredChannelForProject(env: Env, projectCode: string): Promise<string> {
+  return await env.CACHE.get(requiredChannelKey(projectCode)) || '';
+}
+
+async function hasRequiredChannelMembership(project: Project, userId: string, channelRef: string): Promise<boolean> {
+  if (!channelRef) {
+    return true;
+  }
+  const result = await telegram(project.bot_token, 'getChatMember', {
+    chat_id: channelRef,
+    user_id: userId,
+  }) as { ok?: boolean; result?: { status?: string } } | null;
+  const status = result?.result?.status || '';
+  return ['creator', 'administrator', 'member'].includes(status);
+}
+
 async function telegram(botToken: string, method: string, payload: object): Promise<unknown> {
   const response = await fetch(`https://api.telegram.org/bot${botToken}/${method}`, {
     method: 'POST',
@@ -797,6 +857,39 @@ function chunks<T>(items: T[], size: number): T[][] {
 
 function menuCacheKey(projectCode: string): string {
   return `menu:${projectCode}`;
+}
+
+function requiredChannelKey(projectCode: string): string {
+  return `required-channel:${projectCode}`;
+}
+
+function normalizeTelegramChannel(value: string): string {
+  const text = String(value || '').trim();
+  if (!text) {
+    return '';
+  }
+  const match = text.match(/(?:https?:\/\/)?t\.me\/([A-Za-z0-9_]+)/i);
+  if (match) {
+    return `@${match[1]}`;
+  }
+  if (text.startsWith('@') || /^-?\d+$/.test(text)) {
+    return text;
+  }
+  if (/^[A-Za-z0-9_]{5,}$/.test(text)) {
+    return `@${text}`;
+  }
+  return text;
+}
+
+function telegramChannelUrl(channelRef: string): string {
+  const normalized = normalizeTelegramChannel(channelRef);
+  if (normalized.startsWith('@')) {
+    return `https://t.me/${normalized.slice(1)}`;
+  }
+  if (/^https?:\/\//i.test(normalized)) {
+    return normalized;
+  }
+  return '';
 }
 
 function paymentsRequired(env: Env): boolean {

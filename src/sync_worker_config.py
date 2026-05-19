@@ -91,6 +91,9 @@ def read_bot_projects(master_sheet):
         sheet_id = extract_sheet_id(row.get('Ссылка на документ проекта', ''))
         project_code = str(row.get('Код проекта') or '').strip()
         bot_token = str(row.get('Telegram bot token') or '').strip()
+        main_channel = telegram_channel_ref(
+            row.get('Telegram канал @') or row.get('Telegram канал') or row.get('Telegram канал ID') or ''
+        )
         if not sheet_id or not project_code or not bot_token:
             print(f"  ⚠️  Bot project skipped: missing sheet/code/token ({row.get('Название', project_code)})")
             continue
@@ -101,9 +104,24 @@ def read_bot_projects(master_sheet):
             'sheet_id': sheet_id,
             'channels_sheet_name': str(row.get('Название листа') or '').strip(),
             'bot_token': bot_token,
+            'main_channel': main_channel,
         })
 
     return projects
+
+
+def telegram_channel_ref(value):
+    text = str(clean_sheet_value(value) or '').strip()
+    if not text:
+        return ''
+    match = re.search(r'(?:https?://)?t\.me/([A-Za-z0-9_]+)', text)
+    if match:
+        return '@' + match.group(1)
+    if text.startswith('@') or re.fullmatch(r'-?\d+', text):
+        return text
+    if re.fullmatch(r'[A-Za-z0-9_]{5,}', text):
+        return '@' + text
+    return text
 
 
 def category_id_for_path(parts, depth):
@@ -201,6 +219,7 @@ def build_payload(client, master_sheet, admin_secret):
             'name': project['name'],
             'botToken': project['bot_token'],
             'webhookSecret': webhook_secret(project['code'], admin_secret),
+            'mainChannel': project.get('main_channel', ''),
             'active': True,
             'categories': categories,
             'channels': channels,
