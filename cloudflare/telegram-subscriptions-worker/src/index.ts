@@ -331,9 +331,9 @@ async function renderMainMenu(env: Env, projectCode: string, userId: string): Pr
 
   const statusLabel = status === 'free' ? 'Подписка (free)' : 'Подписка';
   const rows: Array<Array<{ text: string; callback_data: string }>> = [
-    [{ text: `📚 Категории (${categoryCount})`, callback_data: 'cats:root' }],
-    [{ text: `✅ Мои подписки (${subscriptionCount}/${channelCount})`, callback_data: 'subs:0' }],
-    [{ text: `📺 Все каналы (${channelCount})`, callback_data: 'allch:0' }],
+    [{ text: `📚 Категории ${categoryCount}`, callback_data: 'cats:root' }],
+    [{ text: `✅ ${subscriptionCount}/${channelCount} Подписки`, callback_data: 'subs:0' }],
+    [{ text: `📺 ${channelCount} Все каналы`, callback_data: 'allch:0' }],
     [{ text: statusLabel, callback_data: 'plan:root' }],
   ];
 
@@ -355,11 +355,11 @@ async function renderMenu(env: Env, projectCode: string, userId: string, categor
     }
     const stats = await categoryStats(env, projectCode, userId, category.category_id);
     const marker = stats.total > 0 && stats.selected === stats.total ? SELECTED_MARK : '📁';
-    rows.push([{ text: `${marker} ${category.title} (${stats.selected}/${stats.total})`, callback_data: `cat:${category.category_id}` }]);
+    rows.push([{ text: `${marker} ${stats.selected}/${stats.total} ${category.title}`, callback_data: `cat:${category.category_id}` }]);
   }
 
   if (categoryId === 'root') {
-    rows.push([{ text: `📺 Все каналы (${selected.size}/${await countChannels(env, projectCode)})`, callback_data: 'allch:0' }]);
+    rows.push([{ text: `📺 ${selected.size}/${await countChannels(env, projectCode)} Все каналы`, callback_data: 'allch:0' }]);
     if (rows.length === 1) {
       rows.unshift([{ text: 'Категории пока не настроены', callback_data: 'noop' }]);
     }
