@@ -39,29 +39,12 @@ function runTopusBotCloudflareSync() {
 function writeTopusBotSyncStatus_(text) {
   var ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(MASTER_SPREADSHEET_ID);
   var sheet = ss.getSheetByName('Боты') || ss.getActiveSheet();
-  var statusColumn = topusBotStatusColumn_(sheet);
-  sheet.getRange(2, statusColumn).setValue(text);
+  sheet.getRange('R2').setValue(text);
   SpreadsheetApp.flush();
 }
 
 function topusStatusTimestamp_() {
   return Utilities.formatDate(new Date(), DISPLAY_TIMEZONE, 'dd.MM.yyyy HH:mm:ss');
-}
-
-function topusBotStatusColumn_(sheet) {
-  var headers = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getValues()[0];
-  var rightmostDataColumn = 0;
-  for (var index = 0; index < headers.length; index++) {
-    var value = String(headers[index] || '').trim();
-    if (value && !isTopusBotServiceStatus_(value)) {
-      rightmostDataColumn = index + 1;
-    }
-  }
-  return Math.max(18, rightmostDataColumn + 1);
-}
-
-function isTopusBotServiceStatus_(value) {
-  return value.indexOf('Cloudflare sync ') === 0 || value.indexOf('Bot Cloudflare sync') === 0;
 }
 
 function installTopusMasterMenuTrigger() {

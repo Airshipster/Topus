@@ -84,12 +84,7 @@ def max_timestamp(*values):
 
 
 def display_timestamp(value):
-    if not value:
-        return ''
-    parsed = parse_iso_datetime(value)
-    if parsed:
-        return format_timestamp(parsed)
-    return normalize_timestamp(value)
+    return normalize_timestamp(value) if value else ''
 
 
 def parse_iso_datetime(value):
