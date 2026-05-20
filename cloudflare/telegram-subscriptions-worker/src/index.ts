@@ -157,6 +157,9 @@ export default {
       return json({ ok: false, error: 'internal_error' }, 500);
     }
   },
+  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(sendWeeklySubscriptionReminders(env));
+  },
 };
 
 async function handleAdminSync(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -284,6 +287,7 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
   }
 
   if (request.method === 'GET') {
+    await ensureWeeklyReminderColumns(env);
     const [projectsResult, users, subscriptions, allowlist, channels, usage] = await Promise.all([
       env.DB.prepare(
         `SELECT code, name, active, updated_at
@@ -347,8 +351,8 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
       continue;
     }
     statements.push(env.DB.prepare(
-      `INSERT INTO users (project_code, user_id, username, first_name, is_paid, is_allowlisted, is_admin, access_expires_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO users (project_code, user_id, username, first_name, is_paid, is_allowlisted, is_admin, access_expires_at, weekly_reminders, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(project_code, user_id) DO UPDATE SET
          username = COALESCE(excluded.username, users.username),
          first_name = COALESCE(excluded.first_name, users.first_name),
@@ -356,6 +360,7 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
          is_allowlisted = excluded.is_allowlisted,
          is_admin = excluded.is_admin,
          access_expires_at = excluded.access_expires_at,
+         weekly_reminders = users.weekly_reminders,
          updated_at = excluded.updated_at`,
     ).bind(
       user.projectCode,
@@ -366,6 +371,7 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
       user.isAllowlisted ? 1 : 0,
       user.isAdmin ? 1 : 0,
       user.accessExpiresAt || null,
+      0,
       now,
       now,
     ));
@@ -618,6 +624,17 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
   } else if (action === 'plan') {
     menu = await renderPlan(env, project.code, String(callback.from.id));
     text = 'Статус подписки';
+  } else if (action === 'reminders') {
+    menu = await renderReminderMenu(env, project.code, String(callback.from.id));
+    text = REMINDER_SETTINGS_TEXT;
+  } else if (action === 'remon' || action === 'remoff') {
+    const enabled = action === 'remon';
+    await setWeeklyReminders(env, project.code, String(callback.from.id), enabled);
+    menu = await renderReminderMenu(env, project.code, String(callback.from.id));
+    text = enabled
+      ? 'Еженедельные напоминания включены.'
+      : 'Еженедельные напоминания отключены. Вы можете снова включить их через меню бота.';
+    toast = enabled ? 'Напоминания включены' : 'Напоминания отключены';
   } else if (action === 'extra') {
     menu = renderExtraMenu();
     text = 'Дополнительно';
@@ -726,6 +743,7 @@ async function renderMainMenu(env: Env, projectCode: string, userId: string): Pr
     [{ text: `✅ Мои подписки (${subscriptionCount}/${channelCount})`, callback_data: 'subs:0' }],
     [{ text: `📺 Все каналы (${channelCount})`, callback_data: 'allch:0' }],
     [{ text: statusLabel, callback_data: 'plan:root' }],
+    [{ text: 'Еженедельные напоминания', callback_data: 'reminders:root' }],
     [{ text: 'Дополнительно', callback_data: 'extra:root' }],
   ];
   if (admin) {
@@ -780,6 +798,39 @@ function renderExtraMenu(): object {
     [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
   ];
   return { inline_keyboard: rows };
+}
+
+const REMINDER_SETTINGS_TEXT = [
+  'Еженедельные напоминания помогают время от времени пересматривать подписки.',
+  '',
+  'Список каналов SciTopus может обновляться, а ваши интересы тоже могут меняться. Раз в неделю бот может напомнить открыть категории, подписаться на новые каналы или отключить лишнее.',
+].join('\n');
+
+const WEEKLY_REMINDER_TEXT = [
+  'Пора проверить подписки SciTopus.',
+  '',
+  'В списке могли появиться новые каналы, а ваши интересы могли измениться. Откройте категории, обновите вкусы: подпишитесь на новое или отключите лишнее.',
+].join('\n');
+
+async function renderReminderMenu(env: Env, projectCode: string, userId: string): Promise<object> {
+  const enabled = await weeklyRemindersEnabled(env, projectCode, userId);
+  const rows: Array<Array<TelegramButton>> = [
+    [{ text: enabled ? '✅ Напоминания включены' : 'Напоминания выключены', callback_data: 'noop' }],
+    [{ text: 'Включить', callback_data: 'remon:root' }],
+    [{ text: 'Отключить', callback_data: 'remoff:root' }],
+    [{ text: '📚 Открыть категории', callback_data: 'cats:root' }],
+    [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
+  ];
+  return { inline_keyboard: rows };
+}
+
+function renderWeeklyReminderMessageMenu(): object {
+  return {
+    inline_keyboard: [
+      [{ text: '📚 Обновить подписки', callback_data: 'cats:root' }],
+      [{ text: 'Отключить еженедельные напоминания', callback_data: 'remoff:root' }],
+    ],
+  };
 }
 
 async function renderMenu(env: Env, projectCode: string, userId: string, categoryId: string, page: number): Promise<object> {
@@ -950,6 +1001,7 @@ function channelMainFeedLabel(channel: Channel): string {
 }
 
 async function upsertUser(env: Env, projectCode: string, user: TelegramUser): Promise<void> {
+  await ensureWeeklyReminderColumns(env);
   const now = new Date().toISOString();
   const allowlisted = await env.DB.prepare(
     'SELECT 1 AS found FROM allowlist WHERE project_code = ? AND user_id = ? LIMIT 1',
@@ -975,6 +1027,26 @@ async function upsertUser(env: Env, projectCode: string, user: TelegramUser): Pr
     now,
     now,
   ).run();
+}
+
+async function weeklyRemindersEnabled(env: Env, projectCode: string, userId: string): Promise<boolean> {
+  await ensureWeeklyReminderColumns(env);
+  const row = await env.DB.prepare(
+    'SELECT COALESCE(weekly_reminders, 0) AS weekly_reminders FROM users WHERE project_code = ? AND user_id = ? LIMIT 1',
+  ).bind(projectCode, userId).first<{ weekly_reminders: number }>();
+  return row?.weekly_reminders === 1;
+}
+
+async function setWeeklyReminders(env: Env, projectCode: string, userId: string, enabled: boolean): Promise<void> {
+  await ensureWeeklyReminderColumns(env);
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO users (project_code, user_id, weekly_reminders, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(project_code, user_id) DO UPDATE SET
+       weekly_reminders = excluded.weekly_reminders,
+       updated_at = excluded.updated_at`,
+  ).bind(projectCode, userId, enabled ? 1 : 0, now, now).run();
 }
 
 async function handlePendingAdminMessage(env: Env, project: Project, message: TelegramMessage): Promise<boolean> {
@@ -1452,6 +1524,40 @@ async function sendNotifications(
   return deliveries;
 }
 
+async function sendWeeklySubscriptionReminders(env: Env): Promise<void> {
+  await ensureWeeklyReminderColumns(env);
+  const now = new Date().toISOString();
+  const rows = await env.DB.prepare(
+    `SELECT p.code AS project_code, p.bot_token, u.user_id
+     FROM users u
+     JOIN projects p ON p.code = u.project_code
+     WHERE p.active = 1
+       AND COALESCE(u.weekly_reminders, 0) = 1
+       AND (
+         u.last_reminder_at IS NULL
+         OR u.last_reminder_at = ''
+         OR u.last_reminder_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-6 days')
+       )
+     ORDER BY p.code, u.user_id
+     LIMIT 500`,
+  ).all<{ project_code: string; bot_token: string; user_id: string }>();
+
+  for (const row of rows.results || []) {
+    try {
+      await telegram(row.bot_token, 'sendMessage', {
+        chat_id: row.user_id,
+        text: WEEKLY_REMINDER_TEXT,
+        reply_markup: renderWeeklyReminderMessageMenu(),
+      });
+      await env.DB.prepare(
+        'UPDATE users SET last_reminder_at = ?, updated_at = ? WHERE project_code = ? AND user_id = ?',
+      ).bind(now, now, row.project_code, row.user_id).run();
+    } catch (error) {
+      console.error(JSON.stringify({ level: 'warn', source: 'weekly-reminder', project: row.project_code, userId: row.user_id, error: String(error) }));
+    }
+  }
+}
+
 function renderNotificationMenu(channelId: string, subscribed: boolean): object {
   return {
     inline_keyboard: [
@@ -1609,6 +1715,26 @@ function usageTableStatement(env: Env): D1PreparedStatement {
        updated_at TEXT NOT NULL
      )`,
   );
+}
+
+async function ensureWeeklyReminderColumns(env: Env): Promise<void> {
+  const key = 'schema:weekly-reminders:v1';
+  if (await env.CACHE.get(key)) {
+    return;
+  }
+  for (const statement of [
+    'ALTER TABLE users ADD COLUMN weekly_reminders INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE users ADD COLUMN last_reminder_at TEXT',
+  ]) {
+    try {
+      await env.DB.prepare(statement).run();
+    } catch (error) {
+      if (!String(error).toLowerCase().includes('duplicate column')) {
+        throw error;
+      }
+    }
+  }
+  await env.CACHE.put(key, '1');
 }
 
 async function recordCloudflareRequest(env: Env): Promise<void> {

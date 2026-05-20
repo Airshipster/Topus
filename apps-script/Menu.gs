@@ -40,9 +40,8 @@ function writeTopusBotSyncStatus_(text) {
   var ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(MASTER_SPREADSHEET_ID);
   var sheet = ss.getSheetByName('Боты') || ss.getActiveSheet();
   var statusColumn = topusBotStatusColumn_(sheet);
-  clearTopusBotStatusTail_(sheet, statusColumn);
   sheet.getRange(2, statusColumn).setValue(text);
-  clearTopusBotStatusTail_(sheet, statusColumn);
+  SpreadsheetApp.flush();
 }
 
 function topusStatusTimestamp_() {
@@ -50,16 +49,19 @@ function topusStatusTimestamp_() {
 }
 
 function topusBotStatusColumn_(sheet) {
-  // Bot data is currently A:Q; R is the single service status column.
-  return 18;
+  var headers = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getValues()[0];
+  var rightmostDataColumn = 0;
+  for (var index = 0; index < headers.length; index++) {
+    var value = String(headers[index] || '').trim();
+    if (value && !isTopusBotServiceStatus_(value)) {
+      rightmostDataColumn = index + 1;
+    }
+  }
+  return Math.max(18, rightmostDataColumn + 1);
 }
 
-function clearTopusBotStatusTail_(sheet, statusColumn) {
-  var firstDuplicateColumn = statusColumn + 1;
-  var lastColumn = Math.max(sheet.getLastColumn(), 26);
-  if (lastColumn >= firstDuplicateColumn) {
-    sheet.getRange(1, firstDuplicateColumn, 2, lastColumn - firstDuplicateColumn + 1).clearContent();
-  }
+function isTopusBotServiceStatus_(value) {
+  return value.indexOf('Cloudflare sync ') === 0 || value.indexOf('Bot Cloudflare sync') === 0;
 }
 
 function installTopusMasterMenuTrigger() {

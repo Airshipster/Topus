@@ -51,7 +51,7 @@ CLOUDFLARE_MONTHLY_REQUEST_LIMIT = 100000
 CLOUDFLARE_GRAPHQL_URL = 'https://api.cloudflare.com/client/v4/graphql'
 DEFAULT_CLOUDFLARE_ACCOUNT_ID = '8460cfa72309d5c869775d6c38ca41dd'
 DEFAULT_CLOUDFLARE_WORKER_SCRIPT = 'topus-telegram-subscriptions'
-BOT_STATUS_COLUMN_INDEX = len(HEADERS) + 1
+DEFAULT_BOT_STATUS_COLUMN_INDEX = len(HEADERS) + 1
 
 
 def bool_from_sheet(value, default=False):
@@ -84,7 +84,12 @@ def max_timestamp(*values):
 
 
 def display_timestamp(value):
-    return normalize_timestamp(value) if value else ''
+    if not value:
+        return ''
+    parsed = parse_iso_datetime(value)
+    if parsed:
+        return format_timestamp(parsed)
+    return normalize_timestamp(value)
 
 
 def parse_iso_datetime(value):
@@ -188,28 +193,15 @@ def is_service_status_cell(value):
     return text.startswith('Cloudflare sync ') or text.startswith('Bot Cloudflare sync')
 
 
-def cleanup_extra_bot_sheet_cells(worksheet):
-    status_column = a1_column(BOT_STATUS_COLUMN_INDEX)
-    values = get_values_with_quota_retry(worksheet, f'{status_column}1:Z2')
-    if not values:
-        return
-    ranges_to_clear = []
-    width = max((len(row) for row in values), default=0)
-    for offset in range(width):
-        column_index = BOT_STATUS_COLUMN_INDEX + offset
-        column = a1_column(column_index)
-        row1_value = values[0][offset] if len(values) > 0 and offset < len(values[0]) else ''
-        row2_value = values[1][offset] if len(values) > 1 and offset < len(values[1]) else ''
-        if column == status_column and str(clean_sheet_value(row1_value) or '').strip() == 'Sheet Synced At':
-            ranges_to_clear.append(f'{column}1:{column}{worksheet.row_count}')
-        elif column != status_column and (is_service_status_cell(row1_value) or is_service_status_cell(row2_value)):
-            ranges_to_clear.append(f'{column}1:{column}{worksheet.row_count}')
-    if ranges_to_clear:
-        worksheet.batch_clear(ranges_to_clear)
-
-
-def cleanup_duplicate_status_cells(worksheet):
-    cleanup_extra_bot_sheet_cells(worksheet)
+def bot_status_column_index(worksheet):
+    values = get_values_with_quota_retry(worksheet, '1:1')
+    headers = values[0] if values else []
+    rightmost_data_column = 0
+    for index, value in enumerate(headers, start=1):
+        text = str(clean_sheet_value(value) or '').strip()
+        if text and not is_service_status_cell(text):
+            rightmost_data_column = index
+    return max(DEFAULT_BOT_STATUS_COLUMN_INDEX, rightmost_data_column + 1)
 
 
 def rename_legacy_sheet(sheet):
@@ -234,13 +226,11 @@ def ensure_bot_worksheet(sheet):
     worksheet = rename_legacy_sheet(sheet)
     delete_extra_sheets(sheet)
     ensure_bot_row_count(sheet, worksheet)
-    cleanup_extra_bot_sheet_cells(worksheet)
     values = get_values_with_quota_retry(worksheet, '1:1')
     current_headers = [str(cell).strip() for cell in values[0]] if values else []
     previous_headers = current_headers[:]
     if current_headers != HEADERS:
         worksheet.update(range_name='A1', values=[HEADERS], value_input_option='USER_ENTERED')
-        cleanup_extra_bot_sheet_cells(worksheet)
     for index in range(len(previous_headers), len(HEADERS), -1):
         if previous_headers[index - 1] in {'Status', 'Role'}:
             column = a1_column(index)
@@ -688,15 +678,13 @@ def write_cloudflare_status(worksheet, user_count, applied_count, usage):
         f"remaining {month}: {remaining}\n"
         f"source: {source}"
     )
-    status_column = a1_column(BOT_STATUS_COLUMN_INDEX)
+    status_column = a1_column(bot_status_column_index(worksheet))
     worksheet.update(range_name=f'{status_column}1', values=[[status]], value_input_option='USER_ENTERED')
-    cleanup_duplicate_status_cells(worksheet)
 
 
 def write_operation_status(worksheet, status):
-    status_column = a1_column(BOT_STATUS_COLUMN_INDEX)
+    status_column = a1_column(bot_status_column_index(worksheet))
     worksheet.update(range_name=f'{status_column}2', values=[[status]], value_input_option='USER_ENTERED')
-    cleanup_duplicate_status_cells(worksheet)
 
 
 def write_single_sheet(worksheet, compact_state, sheet_rows):

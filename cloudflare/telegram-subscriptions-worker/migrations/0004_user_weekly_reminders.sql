@@ -1,0 +1,2 @@
+ALTER TABLE users ADD COLUMN weekly_reminders INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN last_reminder_at TEXT;
