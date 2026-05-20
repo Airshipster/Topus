@@ -86,6 +86,11 @@ type FreeGrant = {
   label: string;
 };
 
+type SubscriptionAccess = {
+  status: 'free' | 'paid' | 'trial' | 'none';
+  expiresAt: string | null;
+};
+
 const jsonHeaders = { 'content-type': 'application/json; charset=utf-8' };
 const CHANNELS_PER_PAGE = 20;
 const SELECTED_MARK = '✅';
@@ -858,11 +863,11 @@ async function renderSubscriptions(env: Env, projectCode: string, userId: string
 }
 
 async function renderPlan(env: Env, projectCode: string, userId: string): Promise<object> {
-  const status = await subscriptionStatus(env, projectCode, userId);
-  const label = status === 'free'
-    ? 'У вас свободный доступ.'
-    : status === 'trial'
-      ? 'У вас временный free-доступ.'
+  const access = await subscriptionAccess(env, projectCode, userId);
+  const label = access.status === 'free'
+    ? 'У вас свободный доступ без срока.'
+    : access.status === 'trial'
+      ? `У вас free-доступ до ${formatShortDate(access.expiresAt || '')}.`
       : 'Платная подписка будет подключена позже.';
   return {
     inline_keyboard: [
@@ -1218,26 +1223,31 @@ async function countSubscriptions(env: Env, projectCode: string, userId: string)
 }
 
 async function subscriptionStatus(env: Env, projectCode: string, userId: string): Promise<'free' | 'paid' | 'trial' | 'none'> {
+  return (await subscriptionAccess(env, projectCode, userId)).status;
+}
+
+async function subscriptionAccess(env: Env, projectCode: string, userId: string): Promise<SubscriptionAccess> {
   const row = await env.DB.prepare(
     `SELECT
        COALESCE(u.is_paid, 0) AS is_paid,
+       u.access_expires_at AS access_expires_at,
        CASE WHEN a.user_id IS NOT NULL OR (COALESCE(u.is_allowlisted, 0) = 1 AND (u.access_expires_at IS NULL OR u.access_expires_at = '')) THEN 1 ELSE 0 END AS is_free,
        CASE WHEN COALESCE(u.is_allowlisted, 0) = 1 AND u.access_expires_at IS NOT NULL AND u.access_expires_at != '' AND u.access_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') THEN 1 ELSE 0 END AS is_trial
      FROM users u
      LEFT JOIN allowlist a ON a.project_code = u.project_code AND a.user_id = u.user_id
      WHERE u.project_code = ? AND u.user_id = ?
      LIMIT 1`,
-  ).bind(projectCode, userId).first<{ is_paid: number; is_free: number; is_trial: number }>();
+  ).bind(projectCode, userId).first<{ is_paid: number; is_free: number; is_trial: number; access_expires_at: string | null }>();
   if (row?.is_free === 1) {
-    return 'free';
+    return { status: 'free', expiresAt: null };
   }
   if (row?.is_trial === 1) {
-    return 'trial';
+    return { status: 'trial', expiresAt: row.access_expires_at || null };
   }
   if (row?.is_paid === 1) {
-    return 'paid';
+    return { status: 'paid', expiresAt: null };
   }
-  return 'none';
+  return { status: 'none', expiresAt: null };
 }
 
 async function isAdmin(env: Env, projectCode: string, userId: string): Promise<boolean> {
