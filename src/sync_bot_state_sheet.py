@@ -612,9 +612,9 @@ def write_cloudflare_status(worksheet, user_count, applied_count, usage):
     month = usage.get('month') or ''
     source = usage.get('source') or 'unknown'
     status = (
-        f"Cloudflare sync OK: {format_timestamp()}; users={user_count}; "
-        f"applied={applied_count}; requests {month}: {used}/{limit}; "
-        f"remaining={remaining}; source={source}"
+        f"Cloudflare sync OK: {format_timestamp()}\n"
+        f"remaining {month}: {remaining}\n"
+        f"source: {source}"
     )
     worksheet.update(range_name='S1', values=[[status]], value_input_option='USER_ENTERED')
 
