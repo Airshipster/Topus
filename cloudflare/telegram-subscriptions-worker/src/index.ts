@@ -80,6 +80,12 @@ type SyncProject = {
   }>;
 };
 
+type FreeGrant = {
+  userId: string;
+  expiresAt: string | null;
+  label: string;
+};
+
 const jsonHeaders = { 'content-type': 'application/json; charset=utf-8' };
 const CHANNELS_PER_PAGE = 20;
 const SELECTED_MARK = '✅';
@@ -508,7 +514,15 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
       await telegram(project.bot_token, 'editMessageText', {
         chat_id: message.chat.id,
         message_id: message.message_id,
-        text: 'Отправьте ID пользователя, которому нужно выдать free-доступ.',
+        text: [
+          'Отправьте ID пользователя и, если нужно, срок free-доступа.',
+          '',
+          'Примеры:',
+          '123456789',
+          '123456789 6',
+          '123456789 год',
+          '123456789 до 20.06.2026',
+        ].join('\n'),
         reply_markup: renderAdminCancelMenu(),
       });
     }
@@ -914,44 +928,117 @@ async function handlePendingAdminMessage(env: Env, project: Project, message: Te
   }
   await env.CACHE.delete(key);
 
-  const targetUserId = (message.text || '').trim().match(/-?\d+/)?.[0] || '';
-  if (!targetUserId) {
+  const grant = parseAdminFreeGrant(message.text || '');
+  if (!grant) {
     await telegram(project.bot_token, 'sendMessage', {
       chat_id: message.chat.id,
-      text: 'Не вижу ID пользователя. Нажмите «Дать free-доступ» ещё раз и отправьте только числовой Telegram ID.',
+      text: 'Не вижу ID пользователя. Нажмите «Дать free-доступ» ещё раз и отправьте ID, например: 123456789 или 123456789 6.',
       reply_markup: renderAdminCancelMenu(),
     });
     return true;
   }
 
-  await grantFreeAccess(env, project.code, targetUserId, userId);
+  await grantFreeAccess(env, project.code, grant.userId, userId, grant.expiresAt);
   await telegram(project.bot_token, 'sendMessage', {
     chat_id: message.chat.id,
-    text: `Free-доступ выдан пользователю ${targetUserId}. При следующей синхронизации это попадёт в лист «Боты».`,
+    text: `Free-доступ ${grant.label} для пользователя ${grant.userId}. Лист «Боты» обновится при следующей синхронизации.`,
     reply_markup: renderAdminStatsMenu(),
   });
   return true;
 }
 
-async function grantFreeAccess(env: Env, projectCode: string, targetUserId: string, adminUserId: string): Promise<void> {
+async function grantFreeAccess(env: Env, projectCode: string, targetUserId: string, adminUserId: string, expiresAt: string | null): Promise<void> {
   const now = new Date().toISOString();
-  await env.DB.batch([
+  const statements = [
     env.DB.prepare(
       `INSERT INTO users (project_code, user_id, is_paid, is_allowlisted, is_admin, access_expires_at, created_at, updated_at)
-       VALUES (?, ?, 0, 1, 0, NULL, ?, ?)
+       VALUES (?, ?, 0, 1, 0, ?, ?, ?)
        ON CONFLICT(project_code, user_id) DO UPDATE SET
          is_allowlisted = 1,
-         access_expires_at = NULL,
+         access_expires_at = excluded.access_expires_at,
          updated_at = excluded.updated_at`,
-    ).bind(projectCode, targetUserId, now, now),
-    env.DB.prepare(
+    ).bind(projectCode, targetUserId, expiresAt, now, now),
+  ];
+  if (expiresAt) {
+    statements.push(env.DB.prepare(
+      'DELETE FROM allowlist WHERE project_code = ? AND user_id = ?',
+    ).bind(projectCode, targetUserId));
+  } else {
+    statements.push(env.DB.prepare(
       `INSERT INTO allowlist (project_code, user_id, note, created_at)
        VALUES (?, ?, ?, ?)
        ON CONFLICT(project_code, user_id) DO UPDATE SET
          note = excluded.note,
          created_at = excluded.created_at`,
-    ).bind(projectCode, targetUserId, `granted by admin ${adminUserId}`, now),
-  ]);
+    ).bind(projectCode, targetUserId, `granted by admin ${adminUserId}`, now));
+  }
+  await env.DB.batch(statements);
+}
+
+function parseAdminFreeGrant(text: string): FreeGrant | null {
+  const trimmed = text.trim();
+  const match = trimmed.match(/-?\d+/);
+  if (!match) {
+    return null;
+  }
+  const userId = match[0];
+  const details = trimmed
+    .slice(0, match.index)
+    .concat(' ', trimmed.slice((match.index || 0) + match[0].length))
+    .replace(/[,;]/g, ' ')
+    .trim()
+    .toLowerCase();
+  const expiresAt = parseFreeGrantExpiry(details);
+  return {
+    userId,
+    expiresAt,
+    label: expiresAt ? `выдан до ${formatShortDate(expiresAt)}` : 'выдан навсегда',
+  };
+}
+
+function parseFreeGrantExpiry(details: string): string | null {
+  if (!details || /^(free|навсегда|вечн(?:о|ый)?|forever|permanent)$/i.test(details)) {
+    return null;
+  }
+  if (/\b(год|year)\b/.test(details)) {
+    return addMonths(new Date(), 12).toISOString();
+  }
+  if (/\b(полгода|half\s*year)\b/.test(details)) {
+    return addMonths(new Date(), 6).toISOString();
+  }
+  const monthMatch = details.match(/\b(1[0-2]|[1-9])\b/);
+  if (monthMatch) {
+    return addMonths(new Date(), Number.parseInt(monthMatch[1], 10)).toISOString();
+  }
+  const isoDate = details.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+  if (isoDate) {
+    return new Date(Date.UTC(Number(isoDate[1]), Number(isoDate[2]) - 1, Number(isoDate[3]), 23, 59, 59)).toISOString();
+  }
+  const dotDate = details.match(/\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b/);
+  if (dotDate) {
+    return new Date(Date.UTC(Number(dotDate[3]), Number(dotDate[2]) - 1, Number(dotDate[1]), 23, 59, 59)).toISOString();
+  }
+  return null;
+}
+
+function addMonths(date: Date, months: number): Date {
+  const next = new Date(date.getTime());
+  const targetMonth = next.getUTCMonth() + months;
+  next.setUTCMonth(targetMonth);
+  if (next.getUTCMonth() !== ((targetMonth % 12) + 12) % 12) {
+    next.setUTCDate(0);
+  }
+  return next;
+}
+
+function formatShortDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  return `${day}.${month}.${date.getUTCFullYear()}`;
 }
 
 async function toggleSubscription(env: Env, projectCode: string, userId: string, channelId: string): Promise<boolean> {
