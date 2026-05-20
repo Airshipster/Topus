@@ -7,7 +7,17 @@ import gspread
 import requests
 
 import config
-from sheets import authenticate_google_sheets, clean_sheet_value, format_timestamp, get_values_with_quota_retry, normalize_timestamp, parse_datetime_value
+from sheets import (
+    ROW_INSERT_INHERIT_BUFFER,
+    TARGET_WORKSHEET_ROWS,
+    authenticate_google_sheets,
+    clean_sheet_value,
+    format_timestamp,
+    get_values_with_quota_retry,
+    last_used_row,
+    normalize_timestamp,
+    parse_datetime_value,
+)
 
 
 LEGACY_SHEET_NAME = 'Бот данные'
@@ -202,7 +212,7 @@ def rename_legacy_sheet(sheet):
         worksheet.update_title(SHEET_NAME)
         return worksheet
     except gspread.exceptions.WorksheetNotFound:
-        return sheet.add_worksheet(SHEET_NAME, rows=1000, cols=len(HEADERS))
+        return sheet.add_worksheet(SHEET_NAME, rows=TARGET_WORKSHEET_ROWS, cols=len(HEADERS))
 
 
 def delete_extra_sheets(sheet):
@@ -212,6 +222,7 @@ def delete_extra_sheets(sheet):
 def ensure_bot_worksheet(sheet):
     worksheet = rename_legacy_sheet(sheet)
     delete_extra_sheets(sheet)
+    ensure_bot_row_count(sheet, worksheet)
     cleanup_extra_bot_sheet_cells(worksheet)
     values = get_values_with_quota_retry(worksheet, '1:1')
     current_headers = [str(cell).strip() for cell in values[0]] if values else []
@@ -224,6 +235,44 @@ def ensure_bot_worksheet(sheet):
             column = a1_column(index)
             worksheet.batch_clear([f'{column}1:{column}{worksheet.row_count}'])
     return worksheet
+
+
+def ensure_bot_row_count(sheet, worksheet):
+    current_rows = worksheet.row_count
+    try:
+        used_rows = last_used_row(get_values_with_quota_retry(worksheet))
+    except Exception:
+        used_rows = current_rows
+    target_rows = max(TARGET_WORKSHEET_ROWS, used_rows)
+    if current_rows == target_rows:
+        return
+
+    if current_rows < target_rows:
+        start_index = max(1, current_rows - ROW_INSERT_INHERIT_BUFFER)
+        request = {
+            'insertDimension': {
+                'range': {
+                    'sheetId': worksheet.id,
+                    'dimension': 'ROWS',
+                    'startIndex': start_index,
+                    'endIndex': start_index + (target_rows - current_rows),
+                },
+                'inheritFromBefore': True,
+            }
+        }
+    else:
+        request = {
+            'deleteDimension': {
+                'range': {
+                    'sheetId': worksheet.id,
+                    'dimension': 'ROWS',
+                    'startIndex': target_rows,
+                    'endIndex': current_rows,
+                }
+            }
+        }
+    sheet.batch_update({'requests': [request]})
+    print(f"  📐 Normalized bot sheet row count: {target_rows}")
 
 
 def request_worker(method, path, worker_url, admin_secret, **kwargs):
