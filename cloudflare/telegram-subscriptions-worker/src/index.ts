@@ -677,7 +677,6 @@ async function renderMainMenu(env: Env, projectCode: string, userId: string): Pr
 function renderAdminStatsMenu(): object {
   return {
     inline_keyboard: [
-      [{ text: 'Дать free-доступ', callback_data: 'grantfree:root' }],
       [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
     ],
   };
@@ -1125,8 +1124,25 @@ async function isAdmin(env: Env, projectCode: string, userId: string): Promise<b
 }
 
 async function renderAdminStatsText(env: Env, projectCode: string): Promise<string> {
-  const [users, access, admins, subscriptions, channels] = await Promise.all([
+  const [users, startedUsers, usersWithSubscriptions, access, admins, subscriptions, channels] = await Promise.all([
     env.DB.prepare('SELECT COUNT(*) AS count FROM users WHERE project_code = ?').bind(projectCode).first<{ count: number }>(),
+    env.DB.prepare(
+      `SELECT COUNT(*) AS count
+       FROM users
+       WHERE project_code = ?
+         AND (NULLIF(TRIM(COALESCE(username, '')), '') IS NOT NULL
+          OR NULLIF(TRIM(COALESCE(first_name, '')), '') IS NOT NULL)`,
+    ).bind(projectCode).first<{ count: number }>(),
+    env.DB.prepare(
+      `SELECT COUNT(*) AS count
+       FROM (
+         SELECT user_id
+         FROM user_subscriptions
+         WHERE project_code = ? AND active = 1
+         GROUP BY user_id
+         HAVING COUNT(*) > 0
+       )`,
+    ).bind(projectCode).first<{ count: number }>(),
     env.DB.prepare(
       `SELECT
          SUM(CASE WHEN COALESCE(u.is_paid, 0) = 1 THEN 1 ELSE 0 END) AS paid,
@@ -1148,7 +1164,9 @@ async function renderAdminStatsText(env: Env, projectCode: string): Promise<stri
   return [
     'Статистика бота',
     '',
-    `Пользователей: ${userCount}`,
+    `Пользователей в базе: ${userCount}`,
+    `Запустили бота: ${startedUsers?.count || 0}`,
+    `С подписками >0: ${usersWithSubscriptions?.count || 0}`,
     `Админов: ${admins?.count || 0}`,
     `Free: ${freeCount}`,
     `Free временный: ${trialCount}`,
