@@ -50,42 +50,13 @@ function topusStatusTimestamp_() {
 }
 
 function topusBotStatusColumn_(sheet) {
-  var headers = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getValues()[0];
-  var knownHeaders = [
-    'Project Code',
-    'Bot',
-    'User ID',
-    'Username',
-    'First Name',
-    'Access',
-    'Access Until GMT+4',
-    'Access Until',
-    'Role',
-    'Subscription Mode',
-    'Included Channel IDs',
-    'Excluded Channel IDs',
-    'Subscribed Count',
-    'Total Channels',
-    'Free Note',
-    'Cloudflare Updated At',
-    'Sheet Synced At',
-    'Sync Action'
-  ];
-  var rightmostDataColumn = 0;
-  for (var index = 0; index < headers.length; index++) {
-    if (knownHeaders.indexOf(String(headers[index]).trim()) !== -1) {
-      rightmostDataColumn = index + 1;
-    }
-  }
-  if (rightmostDataColumn > 0) {
-    return rightmostDataColumn + 1;
-  }
+  // Bot data is currently A:Q; R is the single service status column.
   return 18;
 }
 
 function clearTopusBotStatusTail_(sheet, statusColumn) {
   var firstDuplicateColumn = statusColumn + 1;
-  var lastColumn = Math.max(sheet.getLastColumn(), firstDuplicateColumn + 8);
+  var lastColumn = Math.max(sheet.getLastColumn(), 26);
   if (lastColumn >= firstDuplicateColumn) {
     sheet.getRange(1, firstDuplicateColumn, 2, lastColumn - firstDuplicateColumn + 1).clearContent();
   }
