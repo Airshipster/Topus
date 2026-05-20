@@ -110,7 +110,7 @@ const WELCOME_TEXT = [
   '',
   'В наш <a href="https://t.me/SciTopus">Telegram-канал</a> попадает только около 20% научпоп-каналов из базы SciTopus. Если вы хотите получать уведомления по большему числу каналов или собрать свою личную ленту из всего списка, настройте подписки здесь.',
   '',
-  'Каналы с пометкой @SciTopus уже выходят в основном канале. Каналы без этой пометки полезны для личной ленты через бота.',
+  'Знак @ после названия канала означает, что этот канал уже выходит в основном Telegram-канале SciTopus. Каналы без @ полезны для личной ленты через бота.',
   '',
   'Можно выбрать отдельные каналы, категории или подписаться на всё, а потом отключить лишнее.',
   '',
@@ -946,7 +946,7 @@ function renderChannelList(
 }
 
 function channelMainFeedLabel(channel: Channel): string {
-  return channel.status === 'green' ? ' · @SciTopus' : '';
+  return channel.status === 'green' ? ' @' : '';
 }
 
 async function upsertUser(env: Env, projectCode: string, user: TelegramUser): Promise<void> {
