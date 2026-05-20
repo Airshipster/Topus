@@ -1166,7 +1166,7 @@ async function renderAdminStatsText(env: Env, projectCode: string): Promise<stri
     '',
     `Пользователей в базе: ${userCount}`,
     `Запустили бота: ${startedUsers?.count || 0}`,
-    `С подписками >0: ${usersWithSubscriptions?.count || 0}`,
+    `С подписками: ${usersWithSubscriptions?.count || 0}`,
     `Админов: ${admins?.count || 0}`,
     `Free: ${freeCount}`,
     `Free временный: ${trialCount}`,
