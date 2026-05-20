@@ -108,7 +108,9 @@ type TelegramButton = { text: string; callback_data?: string; url?: string };
 const WELCOME_TEXT = [
   'Добро пожаловать в бот SciTopus.',
   '',
-  'В наш <a href="https://t.me/SciTopus">Telegram-канал</a> попадает только часть научпоп-каналов из базы SciTopus. Если вы хотите получать уведомления по большему числу каналов или собрать свою личную ленту из всего списка, настройте подписки здесь.',
+  'В наш <a href="https://t.me/SciTopus">Telegram-канал</a> попадает только около 20% научпоп-каналов из базы SciTopus. Если вы хотите получать уведомления по большему числу каналов или собрать свою личную ленту из всего списка, настройте подписки здесь.',
+  '',
+  'Каналы с пометкой @SciTopus уже выходят в основном канале. Каналы без этой пометки полезны для личной ленты через бота.',
   '',
   'Можно выбрать отдельные каналы, категории или подписаться на всё, а потом отключить лишнее.',
   '',
@@ -912,7 +914,7 @@ function renderChannelList(
   for (const channel of visibleChannels) {
     const marker = selected.has(channel.channel_id) ? SELECTED_MARK : UNSELECTED_MARK;
     const prefix = showUnselected ? `${marker} ` : `${SELECTED_MARK} `;
-    rows.push([{ text: `${prefix}${channel.title}`, callback_data: `${toggleAction}:${channel.channel_id}:${currentPage}` }]);
+    rows.push([{ text: `${prefix}${channel.title}${channelMainFeedLabel(channel)}`, callback_data: `${toggleAction}:${channel.channel_id}:${currentPage}` }]);
   }
 
   if (totalPages > 1) {
@@ -941,6 +943,10 @@ function renderChannelList(
 
   rows.push([{ text: '🏠 Главное меню', callback_data: 'menu:root' }]);
   return { inline_keyboard: rows };
+}
+
+function channelMainFeedLabel(channel: Channel): string {
+  return channel.status === 'green' ? ' · @SciTopus' : '';
 }
 
 async function upsertUser(env: Env, projectCode: string, user: TelegramUser): Promise<void> {

@@ -195,7 +195,7 @@ def cleanup_extra_bot_sheet_cells(worksheet):
         row2_value = values[1][offset] if len(values) > 1 and offset < len(values[1]) else ''
         if column == 'R' and str(clean_sheet_value(row1_value) or '').strip() == 'Sheet Synced At':
             ranges_to_clear.append(f'{column}1:{column}{worksheet.row_count}')
-        elif column != 'S' and (is_service_status_cell(row1_value) or is_service_status_cell(row2_value)):
+        elif column != 'R' and (is_service_status_cell(row1_value) or is_service_status_cell(row2_value)):
             ranges_to_clear.append(f'{column}1:{column}{worksheet.row_count}')
     if ranges_to_clear:
         worksheet.batch_clear(ranges_to_clear)
@@ -674,11 +674,11 @@ def write_cloudflare_status(worksheet, user_count, applied_count, usage):
         f"remaining {month}: {remaining}\n"
         f"source: {source}"
     )
-    worksheet.update(range_name='S1', values=[[status]], value_input_option='USER_ENTERED')
+    worksheet.update(range_name='R1', values=[[status]], value_input_option='USER_ENTERED')
 
 
 def write_operation_status(worksheet, status):
-    worksheet.update(range_name='S2', values=[[status]], value_input_option='USER_ENTERED')
+    worksheet.update(range_name='R2', values=[[status]], value_input_option='USER_ENTERED')
 
 
 def write_single_sheet(worksheet, compact_state, sheet_rows):
