@@ -58,6 +58,7 @@ function topusBotStatusColumn_(sheet) {
     'Username',
     'First Name',
     'Access',
+    'Access Until GMT+4',
     'Access Until',
     'Role',
     'Subscription Mode',
