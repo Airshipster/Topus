@@ -40,9 +40,9 @@ function writeTopusBotSyncStatus_(text) {
   var ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(MASTER_SPREADSHEET_ID);
   var sheet = ss.getSheetByName('Боты') || ss.getActiveSheet();
   var statusColumn = topusBotStatusColumn_(sheet);
-  clearTopusBotStatusDuplicates_(sheet, statusColumn);
+  clearTopusBotStatusTail_(sheet, statusColumn);
   sheet.getRange(2, statusColumn).setValue(text);
-  clearTopusBotStatusDuplicates_(sheet, statusColumn);
+  clearTopusBotStatusTail_(sheet, statusColumn);
 }
 
 function topusStatusTimestamp_() {
@@ -51,38 +51,43 @@ function topusStatusTimestamp_() {
 
 function topusBotStatusColumn_(sheet) {
   var headers = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getValues()[0];
+  var knownHeaders = [
+    'Project Code',
+    'Bot',
+    'User ID',
+    'Username',
+    'First Name',
+    'Access',
+    'Access Until',
+    'Role',
+    'Subscription Mode',
+    'Included Channel IDs',
+    'Excluded Channel IDs',
+    'Subscribed Count',
+    'Total Channels',
+    'Free Note',
+    'Cloudflare Updated At',
+    'Sheet Synced At',
+    'Sync Action'
+  ];
+  var rightmostDataColumn = 0;
   for (var index = 0; index < headers.length; index++) {
-    if (String(headers[index]).trim() === 'Sync Action') {
-      return index + 2;
+    if (knownHeaders.indexOf(String(headers[index]).trim()) !== -1) {
+      rightmostDataColumn = index + 1;
     }
   }
-  for (var last = headers.length - 1; last >= 0; last--) {
-    if (String(headers[last]).trim()) {
-      return last + 2;
-    }
+  if (rightmostDataColumn > 0) {
+    return rightmostDataColumn + 1;
   }
   return 18;
 }
 
-function clearTopusBotStatusDuplicates_(sheet, statusColumn) {
-  var firstStatusColumn = Math.max(18, statusColumn);
-  var lastColumn = Math.max(sheet.getLastColumn(), firstStatusColumn + 8);
-  var values = sheet.getRange(1, firstStatusColumn, 2, lastColumn - firstStatusColumn + 1).getValues();
-  for (var offset = 0; offset < values[0].length; offset++) {
-    var column = firstStatusColumn + offset;
-    if (column === statusColumn) {
-      continue;
-    }
-    var row1 = String(values[0][offset] || '').trim();
-    var row2 = String(values[1][offset] || '').trim();
-    if (isTopusBotServiceStatus_(row1) || isTopusBotServiceStatus_(row2)) {
-      sheet.getRange(1, column, 2, 1).clearContent();
-    }
+function clearTopusBotStatusTail_(sheet, statusColumn) {
+  var firstDuplicateColumn = statusColumn + 1;
+  var lastColumn = Math.max(sheet.getLastColumn(), firstDuplicateColumn + 8);
+  if (lastColumn >= firstDuplicateColumn) {
+    sheet.getRange(1, firstDuplicateColumn, 2, lastColumn - firstDuplicateColumn + 1).clearContent();
   }
-}
-
-function isTopusBotServiceStatus_(value) {
-  return value.indexOf('Cloudflare sync ') === 0 || value.indexOf('Bot Cloudflare sync') === 0;
 }
 
 function installTopusMasterMenuTrigger() {
