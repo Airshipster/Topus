@@ -114,6 +114,8 @@ def parse_access_until(value, existing_value=''):
     text = str(clean_sheet_value(value) or '').strip()
     if not text:
         return existing_value or ''
+    if text.lower() in {'forever', 'permanent', 'навсегда', 'вечный', 'вечно'}:
+        return ''
     text = re.sub(r'^(?:до|until|till)\s+', '', text, flags=re.IGNORECASE).strip()
     if re.fullmatch(r'(?:[1-9]|1[0-2])', text):
         return add_months(datetime.now(timezone.utc), int(text)).isoformat().replace('+00:00', 'Z')
@@ -139,7 +141,7 @@ def parse_access_spec(access_value, access_until_value='', existing_expiry=''):
     if access != 'free':
         return access, ''
     expiry_source = inline_until or access_until_value
-    return access, parse_access_until(expiry_source, existing_expiry if expiry_source else '')
+    return access, parse_access_until(expiry_source, existing_expiry)
 
 
 def access_kind(value):
