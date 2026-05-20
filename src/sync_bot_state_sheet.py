@@ -138,6 +138,9 @@ def parse_access_spec(access_value, access_until_value='', existing_expiry=''):
         access = 'free'
         if not inline_until and not access_until_value:
             inline_until = '1'
+    if access == 'paid':
+        expiry_source = inline_until or access_until_value
+        return access, parse_access_until(expiry_source, existing_expiry)
     if access != 'free':
         return access, ''
     expiry_source = inline_until or access_until_value
@@ -574,7 +577,7 @@ def collect_changes(action_rows, compact_state):
             requested_access, requested_expiry = parse_access_spec(row['access'], row.get('access_until'), existing_user.get('access_expires_at') or '')
             requested_access = requested_access or existing_access
             requested_role = normalize_role(row.get('role'))
-            access_expires_at = requested_expiry if requested_access == 'free' and requested_expiry else None
+            access_expires_at = requested_expiry if requested_access in {'free', 'paid'} and requested_expiry else None
             is_paid = requested_access == 'paid'
             is_allowlisted = requested_access == 'free'
             is_admin = requested_role == 'admin'
@@ -624,7 +627,10 @@ def user_access(user, allowlist_entry):
             return 'free'
         return 'none'
     if user.get('is_paid'):
-        return 'paid'
+        expires_at = user.get('access_expires_at') or ''
+        if not expires_at or is_future(expires_at):
+            return 'paid'
+        return 'none'
     return 'none'
 
 

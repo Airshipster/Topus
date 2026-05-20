@@ -82,13 +82,18 @@ type SyncProject = {
 
 type FreeGrant = {
   userId: string;
-  expiresAt: string | null;
+  grant: AccessGrant;
   label: string;
 };
 
 type FreeGrantInput = {
   userId: string;
   details: string;
+};
+
+type AccessGrant = {
+  expiresAt: string | null;
+  months?: number;
 };
 
 type SubscriptionAccess = {
@@ -242,7 +247,10 @@ async function handleAdminNotify(request: Request, env: Env, ctx: ExecutionConte
 
   const paymentCondition = paymentsRequired(env)
     ? `AND (
-         COALESCE(u.is_paid, 0) = 1
+         (
+           COALESCE(u.is_paid, 0) = 1
+           AND (u.access_expires_at IS NULL OR u.access_expires_at = '' OR u.access_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+         )
          OR (
            COALESCE(u.is_allowlisted, 0) = 1
            AND (u.access_expires_at IS NULL OR u.access_expires_at = '' OR u.access_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -555,15 +563,14 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
     }
     await env.CACHE.delete(pendingAdminKey);
     const targetUserId = pendingAction.slice('grantfree:duration:'.length);
-    const expiresAt = parseFreeGrantExpiry(value);
-    const label = expiresAt ? `выдан до ${formatShortDate(expiresAt)}` : 'выдан навсегда';
-    await grantFreeAccess(env, project.code, targetUserId, String(callback.from.id), expiresAt);
+    const grant = parseFreeGrantGrant(value);
+    const result = await grantFreeAccess(env, project.code, targetUserId, String(callback.from.id), grant);
     await answer(project.bot_token, callback.id, 'Free-доступ обновлён');
     if (message) {
       await telegram(project.bot_token, 'editMessageText', {
         chat_id: message.chat.id,
         message_id: message.message_id,
-        text: `Free-доступ ${label} для пользователя ${targetUserId}. Лист «Боты» обновится при следующей синхронизации.`,
+        text: `${result.statusLabel} для пользователя ${targetUserId}. Лист «Боты» обновится при следующей синхронизации.`,
         reply_markup: renderAdminStatsMenu(),
       });
     }
@@ -875,7 +882,9 @@ async function renderPlan(env: Env, projectCode: string, userId: string): Promis
     ? 'У вас свободный доступ без срока.'
     : access.status === 'trial'
       ? `У вас free-доступ до ${formatShortDate(access.expiresAt || '')}.`
-      : 'Платная подписка будет подключена позже.';
+      : access.status === 'paid'
+        ? (access.expiresAt ? `У вас paid-доступ до ${formatShortDate(access.expiresAt)}.` : 'У вас paid-доступ без срока.')
+        : 'Платная подписка будет подключена позже.';
   return {
     inline_keyboard: [
       [{ text: label, callback_data: 'noop' }],
@@ -996,10 +1005,10 @@ async function handlePendingAdminMessage(env: Env, project: Project, message: Te
       if (!grant) {
         return true;
       }
-      await grantFreeAccess(env, project.code, grant.userId, userId, grant.expiresAt);
+      const result = await grantFreeAccess(env, project.code, grant.userId, userId, grant.grant);
       await telegram(project.bot_token, 'sendMessage', {
         chat_id: message.chat.id,
-        text: `Free-доступ ${grant.label} для пользователя ${grant.userId}. Лист «Боты» обновится при следующей синхронизации.`,
+        text: `${result.statusLabel} для пользователя ${grant.userId}. Лист «Боты» обновится при следующей синхронизации.`,
         reply_markup: renderAdminStatsMenu(),
       });
       return true;
@@ -1020,30 +1029,36 @@ async function handlePendingAdminMessage(env: Env, project: Project, message: Te
 
   await env.CACHE.delete(key);
   const targetUserId = action.slice('grantfree:duration:'.length);
-  const expiresAt = parseFreeGrantExpiry((message.text || '').trim() || 'forever');
-  const label = expiresAt ? `выдан до ${formatShortDate(expiresAt)}` : 'выдан навсегда';
-  await grantFreeAccess(env, project.code, targetUserId, userId, expiresAt);
+  const grant = parseFreeGrantGrant((message.text || '').trim() || 'forever');
+  const result = await grantFreeAccess(env, project.code, targetUserId, userId, grant);
   await telegram(project.bot_token, 'sendMessage', {
     chat_id: message.chat.id,
-    text: `Free-доступ ${label} для пользователя ${targetUserId}. Лист «Боты» обновится при следующей синхронизации.`,
+    text: `${result.statusLabel} для пользователя ${targetUserId}. Лист «Боты» обновится при следующей синхронизации.`,
     reply_markup: renderAdminStatsMenu(),
   });
   return true;
 }
 
-async function grantFreeAccess(env: Env, projectCode: string, targetUserId: string, adminUserId: string, expiresAt: string | null): Promise<void> {
+async function grantFreeAccess(env: Env, projectCode: string, targetUserId: string, adminUserId: string, grant: AccessGrant): Promise<{ statusLabel: string }> {
   const now = new Date().toISOString();
+  const existing = await env.DB.prepare(
+    'SELECT COALESCE(is_paid, 0) AS is_paid, access_expires_at FROM users WHERE project_code = ? AND user_id = ? LIMIT 1',
+  ).bind(projectCode, targetUserId).first<{ is_paid: number; access_expires_at: string | null }>();
+  const existingPaid = existing?.is_paid === 1;
+  const expiresAt = resolveGrantedExpiry(grant, existing?.access_expires_at || null, existingPaid);
+  const keepPaid = Boolean(expiresAt && existingPaid);
   const statements = [
     env.DB.prepare(
       `INSERT INTO users (project_code, user_id, is_paid, is_allowlisted, is_admin, access_expires_at, created_at, updated_at)
-       VALUES (?, ?, 0, 1, 0, ?, ?, ?)
+       VALUES (?, ?, ?, ?, 0, ?, ?, ?)
        ON CONFLICT(project_code, user_id) DO UPDATE SET
-         is_allowlisted = 1,
+         is_paid = excluded.is_paid,
+         is_allowlisted = excluded.is_allowlisted,
          access_expires_at = excluded.access_expires_at,
          updated_at = excluded.updated_at`,
-    ).bind(projectCode, targetUserId, expiresAt, now, now),
+    ).bind(projectCode, targetUserId, keepPaid ? 1 : 0, keepPaid ? 0 : 1, expiresAt, now, now),
   ];
-  if (expiresAt) {
+  if (expiresAt || keepPaid) {
     statements.push(env.DB.prepare(
       'DELETE FROM allowlist WHERE project_code = ? AND user_id = ?',
     ).bind(projectCode, targetUserId));
@@ -1057,6 +1072,10 @@ async function grantFreeAccess(env: Env, projectCode: string, targetUserId: stri
     ).bind(projectCode, targetUserId, `granted by admin ${adminUserId}`, now));
   }
   await env.DB.batch(statements);
+  if (keepPaid) {
+    return { statusLabel: `Paid-доступ продлён до ${formatShortDate(expiresAt || '')}` };
+  }
+  return { statusLabel: expiresAt ? `Free-доступ выдан до ${formatShortDate(expiresAt)}` : 'Free-доступ выдан навсегда' };
 }
 
 function parseAdminFreeGrant(text: string, defaultDuration = 'forever'): FreeGrant | null {
@@ -1064,11 +1083,11 @@ function parseAdminFreeGrant(text: string, defaultDuration = 'forever'): FreeGra
   if (!input) {
     return null;
   }
-  const expiresAt = parseFreeGrantExpiry(input.details || defaultDuration);
+  const grant = parseFreeGrantGrant(input.details || defaultDuration);
   return {
     userId: input.userId,
-    expiresAt,
-    label: expiresAt ? `выдан до ${formatShortDate(expiresAt)}` : 'выдан навсегда',
+    grant,
+    label: grant.expiresAt ? `выдан до ${formatShortDate(grant.expiresAt)}` : 'выдан навсегда',
   };
 }
 
@@ -1091,29 +1110,47 @@ function parseFreeGrantInput(text: string): FreeGrantInput | null {
   };
 }
 
-function parseFreeGrantExpiry(details: string): string | null {
+function parseFreeGrantGrant(details: string): AccessGrant {
   if (!details || /^(free|навсегда|вечн(?:о|ый)?|forever|permanent)$/i.test(details)) {
-    return null;
+    return { expiresAt: null };
   }
   if (/\b(год|year)\b/.test(details)) {
-    return addMonths(new Date(), 12).toISOString();
+    return { expiresAt: addMonths(new Date(), 12).toISOString(), months: 12 };
   }
   if (/\b(полгода|half\s*year)\b/.test(details)) {
-    return addMonths(new Date(), 6).toISOString();
+    return { expiresAt: addMonths(new Date(), 6).toISOString(), months: 6 };
   }
   const monthMatch = details.match(/\b(1[0-2]|[1-9])\b/);
   if (monthMatch) {
-    return addMonths(new Date(), Number.parseInt(monthMatch[1], 10)).toISOString();
+    const months = Number.parseInt(monthMatch[1], 10);
+    return { expiresAt: addMonths(new Date(), months).toISOString(), months };
   }
   const isoDate = details.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
   if (isoDate) {
-    return new Date(Date.UTC(Number(isoDate[1]), Number(isoDate[2]) - 1, Number(isoDate[3]), 23, 59, 59)).toISOString();
+    return { expiresAt: new Date(Date.UTC(Number(isoDate[1]), Number(isoDate[2]) - 1, Number(isoDate[3]), 23, 59, 59)).toISOString() };
   }
   const dotDate = details.match(/\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b/);
   if (dotDate) {
-    return new Date(Date.UTC(Number(dotDate[3]), Number(dotDate[2]) - 1, Number(dotDate[1]), 23, 59, 59)).toISOString();
+    return { expiresAt: new Date(Date.UTC(Number(dotDate[3]), Number(dotDate[2]) - 1, Number(dotDate[1]), 23, 59, 59)).toISOString() };
   }
-  return null;
+  return { expiresAt: null };
+}
+
+function parseFreeGrantExpiry(details: string): string | null {
+  return parseFreeGrantGrant(details).expiresAt;
+}
+
+function resolveGrantedExpiry(grant: AccessGrant, existingExpiry: string | null, existingPaid: boolean): string | null {
+  if (!grant.expiresAt) {
+    return null;
+  }
+  if (!existingPaid || !grant.months) {
+    return grant.expiresAt;
+  }
+  const now = new Date();
+  const existing = existingExpiry ? new Date(existingExpiry) : null;
+  const base = existing && !Number.isNaN(existing.getTime()) && existing > now ? existing : now;
+  return addMonths(base, grant.months).toISOString();
 }
 
 function addMonths(date: Date, months: number): Date {
@@ -1297,8 +1334,8 @@ async function subscriptionAccess(env: Env, projectCode: string, userId: string)
   if (row?.is_trial === 1) {
     return { status: 'trial', expiresAt: row.access_expires_at || null };
   }
-  if (row?.is_paid === 1) {
-    return { status: 'paid', expiresAt: null };
+  if (row?.is_paid === 1 && (!row.access_expires_at || row.access_expires_at > new Date().toISOString())) {
+    return { status: 'paid', expiresAt: row.access_expires_at || null };
   }
   return { status: 'none', expiresAt: null };
 }
@@ -1332,7 +1369,7 @@ async function renderAdminStatsText(env: Env, projectCode: string): Promise<stri
     ).bind(projectCode).first<{ count: number }>(),
     env.DB.prepare(
       `SELECT
-         SUM(CASE WHEN COALESCE(u.is_paid, 0) = 1 THEN 1 ELSE 0 END) AS paid,
+         SUM(CASE WHEN COALESCE(u.is_paid, 0) = 1 AND (u.access_expires_at IS NULL OR u.access_expires_at = '' OR u.access_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) THEN 1 ELSE 0 END) AS paid,
          SUM(CASE WHEN a.user_id IS NOT NULL OR (COALESCE(u.is_allowlisted, 0) = 1 AND (u.access_expires_at IS NULL OR u.access_expires_at = '')) THEN 1 ELSE 0 END) AS free,
          SUM(CASE WHEN COALESCE(u.is_allowlisted, 0) = 1 AND u.access_expires_at IS NOT NULL AND u.access_expires_at != '' AND u.access_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') THEN 1 ELSE 0 END) AS trial
        FROM users u
