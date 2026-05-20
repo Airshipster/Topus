@@ -487,16 +487,16 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
 
   if (action === 'unsub') {
     const channel = await getChannel(env, project.code, value);
-    const nextMenu = channel ? renderUnsubscribedNotificationMenu() : null;
+    let subscribed = false;
     if (channel) {
-      await setBulkSubscriptions(env, project.code, String(callback.from.id), [channel.channel_id], false);
+      subscribed = await toggleSubscription(env, project.code, String(callback.from.id), channel.channel_id);
     }
-    await answer(project.bot_token, callback.id, channel ? 'Вы отписались от канала' : 'Канал не найден');
-    if (message && nextMenu) {
+    await answer(project.bot_token, callback.id, channel ? (subscribed ? 'Вы подписались на этот канал' : 'Вы отписались от этого канала') : 'Канал не найден');
+    if (message && channel) {
       await telegram(project.bot_token, 'editMessageReplyMarkup', {
         chat_id: message.chat.id,
         message_id: message.message_id,
-        reply_markup: nextMenu,
+        reply_markup: renderNotificationMenu(channel.channel_id, subscribed),
       });
     }
     return;
@@ -773,15 +773,6 @@ function renderExtraMenu(): object {
     [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
   ];
   return { inline_keyboard: rows };
-}
-
-function renderUnsubscribedNotificationMenu(): object {
-  return {
-    inline_keyboard: [
-      [{ text: 'Вы отписались от этого канала', callback_data: 'noop' }],
-      [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
-    ],
-  };
 }
 
 async function renderMenu(env: Env, projectCode: string, userId: string, categoryId: string, page: number): Promise<object> {
@@ -1414,7 +1405,7 @@ async function sendNotifications(
       text,
       parse_mode: parseMode,
       disable_web_page_preview: false,
-      reply_markup: renderNotificationMenu(channelId),
+      reply_markup: renderNotificationMenu(channelId, true),
     }) as { ok?: boolean; result?: { message_id?: number } } | null;
     deliveries.push({
       userId: recipient.user_id,
@@ -1424,10 +1415,10 @@ async function sendNotifications(
   return deliveries;
 }
 
-function renderNotificationMenu(channelId: string): object {
+function renderNotificationMenu(channelId: string, subscribed: boolean): object {
   return {
     inline_keyboard: [
-      [{ text: 'Отписаться от канала', callback_data: `unsub:${channelId}` }],
+      [{ text: subscribed ? '✅ Отписаться от канала' : 'Подписаться на канал', callback_data: `unsub:${channelId}` }],
     ],
   };
 }

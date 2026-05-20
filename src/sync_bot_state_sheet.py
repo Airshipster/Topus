@@ -201,6 +201,10 @@ def cleanup_extra_bot_sheet_cells(worksheet):
         worksheet.batch_clear(ranges_to_clear)
 
 
+def cleanup_duplicate_status_cells(worksheet):
+    cleanup_extra_bot_sheet_cells(worksheet)
+
+
 def rename_legacy_sheet(sheet):
     try:
         return sheet.worksheet(SHEET_NAME)
@@ -613,7 +617,7 @@ def user_access(user, allowlist_entry):
         if not expires_at:
             return 'free'
         if is_future(expires_at):
-            return f"free, до {display_timestamp(expires_at)}"
+            return 'free'
         return 'none'
     if user.get('is_paid'):
         return 'paid'
@@ -675,10 +679,12 @@ def write_cloudflare_status(worksheet, user_count, applied_count, usage):
         f"source: {source}"
     )
     worksheet.update(range_name='R1', values=[[status]], value_input_option='USER_ENTERED')
+    cleanup_duplicate_status_cells(worksheet)
 
 
 def write_operation_status(worksheet, status):
     worksheet.update(range_name='R2', values=[[status]], value_input_option='USER_ENTERED')
+    cleanup_duplicate_status_cells(worksheet)
 
 
 def write_single_sheet(worksheet, compact_state, sheet_rows):
