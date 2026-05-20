@@ -172,16 +172,23 @@ def is_service_status_cell(value):
     return text.startswith('Cloudflare sync ') or text.startswith('Bot Cloudflare sync ')
 
 
-def cleanup_duplicate_service_status_columns(worksheet):
-    values = get_values_with_quota_retry(worksheet, 'S1:Z2')
+def cleanup_extra_bot_sheet_cells(worksheet):
+    values = get_values_with_quota_retry(worksheet, 'R1:Z2')
     if not values:
         return
+    ranges_to_clear = []
     width = max((len(row) for row in values), default=0)
-    for offset in range(width - 1, 0, -1):
+    for offset in range(width):
+        column_index = 18 + offset
+        column = a1_column(column_index)
         row1_value = values[0][offset] if len(values) > 0 and offset < len(values[0]) else ''
         row2_value = values[1][offset] if len(values) > 1 and offset < len(values[1]) else ''
-        if is_service_status_cell(row1_value) or is_service_status_cell(row2_value):
-            worksheet.delete_columns(19 + offset)
+        if column == 'R' and str(clean_sheet_value(row1_value) or '').strip() == 'Sheet Synced At':
+            ranges_to_clear.append(f'{column}1:{column}{worksheet.row_count}')
+        elif column != 'S' and (is_service_status_cell(row1_value) or is_service_status_cell(row2_value)):
+            ranges_to_clear.append(f'{column}1:{column}{worksheet.row_count}')
+    if ranges_to_clear:
+        worksheet.batch_clear(ranges_to_clear)
 
 
 def rename_legacy_sheet(sheet):
@@ -205,15 +212,17 @@ def delete_extra_sheets(sheet):
 def ensure_bot_worksheet(sheet):
     worksheet = rename_legacy_sheet(sheet)
     delete_extra_sheets(sheet)
-    cleanup_duplicate_service_status_columns(worksheet)
+    cleanup_extra_bot_sheet_cells(worksheet)
     values = get_values_with_quota_retry(worksheet, '1:1')
     current_headers = [str(cell).strip() for cell in values[0]] if values else []
     previous_headers = current_headers[:]
     if current_headers != HEADERS:
         worksheet.update(range_name='A1', values=[HEADERS], value_input_option='USER_ENTERED')
+        cleanup_extra_bot_sheet_cells(worksheet)
     for index in range(len(previous_headers), len(HEADERS), -1):
         if previous_headers[index - 1] in {'Status', 'Role'}:
-            worksheet.delete_columns(index)
+            column = a1_column(index)
+            worksheet.batch_clear([f'{column}1:{column}{worksheet.row_count}'])
     return worksheet
 
 

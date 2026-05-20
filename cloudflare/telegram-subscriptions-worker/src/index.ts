@@ -508,21 +508,25 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
       }
       return;
     }
-    await env.CACHE.put(pendingAdminActionKey(project.code, String(callback.from.id)), 'grantfree', { expirationTtl: 600 });
+    if (!value || value === 'root') {
+      await answer(project.bot_token, callback.id);
+      if (message) {
+        await telegram(project.bot_token, 'editMessageText', {
+          chat_id: message.chat.id,
+          message_id: message.message_id,
+          text: 'Выберите срок free-доступа.',
+          reply_markup: renderFreeGrantDurationMenu(),
+        });
+      }
+      return;
+    }
+    await env.CACHE.put(pendingAdminActionKey(project.code, String(callback.from.id)), `grantfree:${value}`, { expirationTtl: 600 });
     await answer(project.bot_token, callback.id, 'Отправьте ID пользователя');
     if (message) {
       await telegram(project.bot_token, 'editMessageText', {
         chat_id: message.chat.id,
         message_id: message.message_id,
-        text: [
-          'Отправьте ID пользователя и, если нужно, срок free-доступа.',
-          '',
-          'Примеры:',
-          '123456789',
-          '123456789 6',
-          '123456789 год',
-          '123456789 до 20.06.2026',
-        ].join('\n'),
+        text: renderFreeGrantPrompt(value),
         reply_markup: renderAdminCancelMenu(),
       });
     }
@@ -702,6 +706,39 @@ function renderAdminCancelMenu(): object {
       [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
     ],
   };
+}
+
+function renderFreeGrantDurationMenu(): object {
+  return {
+    inline_keyboard: [
+      [{ text: 'Навсегда', callback_data: 'grantfree:forever' }],
+      [
+        { text: '1 месяц', callback_data: 'grantfree:1' },
+        { text: '3 месяца', callback_data: 'grantfree:3' },
+      ],
+      [
+        { text: '6 месяцев', callback_data: 'grantfree:6' },
+        { text: '1 год', callback_data: 'grantfree:12' },
+      ],
+      [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
+    ],
+  };
+}
+
+function renderFreeGrantPrompt(duration: string): string {
+  const label = duration === 'forever'
+    ? 'навсегда'
+    : duration === '12'
+      ? 'на 1 год'
+      : `на ${duration} мес.`;
+  return [
+    `Free-доступ: ${label}.`,
+    '',
+    'Теперь отправьте ID пользователя.',
+    '',
+    'Можно также отправить ID со своим сроком, например:',
+    '123456789 до 20.06.2026',
+  ].join('\n');
 }
 
 function renderExtraMenu(): object {
@@ -923,12 +960,13 @@ async function handlePendingAdminMessage(env: Env, project: Project, message: Te
   }
   const key = pendingAdminActionKey(project.code, userId);
   const action = await env.CACHE.get(key);
-  if (action !== 'grantfree') {
+  if (!action?.startsWith('grantfree')) {
     return false;
   }
   await env.CACHE.delete(key);
 
-  const grant = parseAdminFreeGrant(message.text || '');
+  const [, defaultDuration = 'forever'] = action.split(':', 2);
+  const grant = parseAdminFreeGrant(message.text || '', defaultDuration);
   if (!grant) {
     await telegram(project.bot_token, 'sendMessage', {
       chat_id: message.chat.id,
@@ -975,7 +1013,7 @@ async function grantFreeAccess(env: Env, projectCode: string, targetUserId: stri
   await env.DB.batch(statements);
 }
 
-function parseAdminFreeGrant(text: string): FreeGrant | null {
+function parseAdminFreeGrant(text: string, defaultDuration = 'forever'): FreeGrant | null {
   const trimmed = text.trim();
   const match = trimmed.match(/-?\d+/);
   if (!match) {
@@ -988,7 +1026,7 @@ function parseAdminFreeGrant(text: string): FreeGrant | null {
     .replace(/[,;]/g, ' ')
     .trim()
     .toLowerCase();
-  const expiresAt = parseFreeGrantExpiry(details);
+  const expiresAt = parseFreeGrantExpiry(details || defaultDuration);
   return {
     userId,
     expiresAt,
