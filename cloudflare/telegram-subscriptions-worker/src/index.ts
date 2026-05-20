@@ -658,7 +658,7 @@ async function renderMainMenu(env: Env, projectCode: string, userId: string): Pr
     isAdmin(env, projectCode, userId),
   ]);
 
-  const statusLabel = status === 'free' ? 'Подписка (free)' : status === 'trial' ? 'Подписка (trial)' : 'Подписка';
+  const statusLabel = status === 'free' || status === 'trial' ? 'Подписка (free)' : 'Подписка';
   const rows: Array<Array<TelegramButton>> = [
     [{ text: `📚 Категории (${categoryCount})`, callback_data: 'cats:root' }],
     [{ text: `✅ Мои подписки (${subscriptionCount}/${channelCount})`, callback_data: 'subs:0' }],
@@ -813,7 +813,7 @@ async function renderPlan(env: Env, projectCode: string, userId: string): Promis
   const label = status === 'free'
     ? 'У вас свободный доступ.'
     : status === 'trial'
-      ? 'У вас пробный доступ.'
+      ? 'У вас временный free-доступ.'
       : 'Платная подписка будет подключена позже.';
   return {
     inline_keyboard: [
@@ -1151,7 +1151,7 @@ async function renderAdminStatsText(env: Env, projectCode: string): Promise<stri
     `Пользователей: ${userCount}`,
     `Админов: ${admins?.count || 0}`,
     `Free: ${freeCount}`,
-    `Trial: ${trialCount}`,
+    `Free временный: ${trialCount}`,
     `Paid: ${paidCount}`,
     `Без доступа: ${noneCount}`,
     `Активных подписок: ${subscriptions?.count || 0}`,

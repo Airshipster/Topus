@@ -103,6 +103,7 @@ def parse_access_until(value, existing_value=''):
     text = str(clean_sheet_value(value) or '').strip()
     if not text:
         return existing_value or ''
+    text = re.sub(r'^(?:до|until|till)\s+', '', text, flags=re.IGNORECASE).strip()
     if re.fullmatch(r'(?:[1-9]|1[0-2])', text):
         return add_months(datetime.now(timezone.utc), int(text)).isoformat().replace('+00:00', 'Z')
     parsed = parse_datetime_value(text)
@@ -111,6 +112,28 @@ def parse_access_until(value, existing_value=''):
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
     return text
+
+
+def parse_access_spec(access_value, access_until_value='', existing_expiry=''):
+    text = str(clean_sheet_value(access_value) or '').strip().lower()
+    if not text:
+        return '', ''
+    parts = [part.strip() for part in re.split(r'[,;]', text, maxsplit=1)]
+    access = normalize_access(parts[0])
+    inline_until = parts[1] if len(parts) > 1 else ''
+    if access == 'trial':
+        access = 'free'
+        if not inline_until and not access_until_value:
+            inline_until = '1'
+    if access != 'free':
+        return access, ''
+    expiry_source = inline_until or access_until_value
+    return access, parse_access_until(expiry_source, existing_expiry if expiry_source else '')
+
+
+def access_kind(value):
+    text = str(value or '').strip().lower()
+    return normalize_access(re.split(r'[,;]', text, maxsplit=1)[0].strip())
 
 
 def bot_display(project):
@@ -144,6 +167,23 @@ def a1_column(column_index):
     return re.sub(r'\d+', '', gspread.utils.rowcol_to_a1(1, column_index))
 
 
+def is_service_status_cell(value):
+    text = str(clean_sheet_value(value) or '').strip()
+    return text.startswith('Cloudflare sync ') or text.startswith('Bot Cloudflare sync ')
+
+
+def cleanup_duplicate_service_status_columns(worksheet):
+    values = get_values_with_quota_retry(worksheet, 'S1:Z2')
+    if not values:
+        return
+    width = max((len(row) for row in values), default=0)
+    for offset in range(width - 1, 0, -1):
+        row1_value = values[0][offset] if len(values) > 0 and offset < len(values[0]) else ''
+        row2_value = values[1][offset] if len(values) > 1 and offset < len(values[1]) else ''
+        if is_service_status_cell(row1_value) or is_service_status_cell(row2_value):
+            worksheet.delete_columns(19 + offset)
+
+
 def rename_legacy_sheet(sheet):
     try:
         return sheet.worksheet(SHEET_NAME)
@@ -165,6 +205,7 @@ def delete_extra_sheets(sheet):
 def ensure_bot_worksheet(sheet):
     worksheet = rename_legacy_sheet(sheet)
     delete_extra_sheets(sheet)
+    cleanup_duplicate_service_status_columns(worksheet)
     values = get_values_with_quota_retry(worksheet, '1:1')
     current_headers = [str(cell).strip() for cell in values[0]] if values else []
     previous_headers = current_headers[:]
@@ -410,14 +451,14 @@ def read_action_rows(sheet_rows, compact_state):
         access = row['access']
         key = row_key(project_code, user_id)
         existing_access = user_access(users.get(key, {}), allowlist.get(key))
+        existing_access_kind = access_kind(existing_access)
         existing_role = user_role(users.get(key, {}))
         existing_expiry = str(users.get(key, {}).get('access_expires_at') or '').strip()
-        requested_access = normalize_access(access)
+        requested_access, requested_expiry = parse_access_spec(access, row.get('access_until'), existing_expiry)
         requested_role = normalize_role(row.get('role'))
-        requested_expiry = parse_access_until(row.get('access_until'), existing_expiry if requested_access == 'trial' else '')
-        is_new_free_user = key not in users and requested_access in {'free', 'trial'}
-        access_changed = requested_access in ACCESS_VALUES and requested_access != existing_access
-        expiry_changed = requested_access == 'trial' and requested_expiry != existing_expiry
+        is_new_free_user = key not in users and requested_access == 'free'
+        access_changed = requested_access in ACCESS_VALUES and requested_access != existing_access_kind
+        expiry_changed = requested_access == 'free' and requested_expiry != existing_expiry
         role_changed = requested_role != existing_role
         if action not in {'push', 'delete'} and not is_new_free_user and not access_changed and not expiry_changed and not role_changed:
             continue
@@ -464,13 +505,14 @@ def collect_changes(action_rows, compact_state):
         else:
             desired = desired_subscriptions(row, channels_by_project.get(project_code, []))
             existing_access = user_access(existing_user, allowlist.get(key))
-            requested_access = normalize_access(row['access']) or existing_access
+            requested_access, requested_expiry = parse_access_spec(row['access'], row.get('access_until'), existing_user.get('access_expires_at') or '')
+            requested_access = requested_access or existing_access
             requested_role = normalize_role(row.get('role'))
-            access_expires_at = row.get('access_until') if requested_access == 'trial' else None
+            access_expires_at = requested_expiry if requested_access == 'free' and requested_expiry else None
             is_paid = requested_access == 'paid'
-            is_allowlisted = requested_access in {'free', 'trial'}
+            is_allowlisted = requested_access == 'free'
             is_admin = requested_role == 'admin'
-            if requested_access == 'free':
+            if requested_access == 'free' and not access_expires_at:
                 payload['allowlist'].append({
                     'projectCode': project_code,
                     'userId': user_id,
@@ -513,7 +555,7 @@ def user_access(user, allowlist_entry):
         if not expires_at:
             return 'free'
         if is_future(expires_at):
-            return 'trial'
+            return f"free, до {display_timestamp(expires_at)}"
         return 'none'
     if user.get('is_paid'):
         return 'paid'
