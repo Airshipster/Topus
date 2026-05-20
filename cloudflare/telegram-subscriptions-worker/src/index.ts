@@ -712,14 +712,13 @@ function renderFreeGrantDurationMenu(): object {
   return {
     inline_keyboard: [
       [{ text: 'Навсегда', callback_data: 'grantfree:forever' }],
-      [
-        { text: '1 месяц', callback_data: 'grantfree:1' },
-        { text: '3 месяца', callback_data: 'grantfree:3' },
-      ],
-      [
-        { text: '6 месяцев', callback_data: 'grantfree:6' },
-        { text: '1 год', callback_data: 'grantfree:12' },
-      ],
+      ...chunks(
+        Array.from({ length: 12 }, (_, index) => {
+          const months = index + 1;
+          return { text: String(months), callback_data: `grantfree:${months}` };
+        }),
+        4,
+      ),
       [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
     ],
   };
