@@ -7,7 +7,7 @@ import gspread
 import requests
 
 import config
-from sheets import authenticate_google_sheets, clean_sheet_value, format_timestamp, get_values_with_quota_retry, normalize_timestamp
+from sheets import authenticate_google_sheets, clean_sheet_value, format_timestamp, get_values_with_quota_retry, normalize_timestamp, parse_datetime_value
 
 
 LEGACY_SHEET_NAME = 'Бот данные'
@@ -21,7 +21,8 @@ HEADERS = [
     'Username',
     'First Name',
     'Access',
-    'Status',
+    'Access Until',
+    'Role',
     'Subscription Mode',
     'Included Channel IDs',
     'Excluded Channel IDs',
@@ -35,6 +36,7 @@ HEADERS = [
 
 TRUE_VALUES = {'1', 'true', 'yes', 'y', 'да', 'истина', '✅', 'on', 'active', 'free', 'paid'}
 FALSE_VALUES = {'0', 'false', 'no', 'n', 'нет', 'ложь', '❌', 'off', 'inactive', 'none'}
+ACCESS_VALUES = {'free', 'paid', 'none', 'trial'}
 CLOUDFLARE_MONTHLY_REQUEST_LIMIT = 100000
 CLOUDFLARE_GRAPHQL_URL = 'https://api.cloudflare.com/client/v4/graphql'
 DEFAULT_CLOUDFLARE_ACCOUNT_ID = '8460cfa72309d5c869775d6c38ca41dd'
@@ -74,6 +76,43 @@ def display_timestamp(value):
     return normalize_timestamp(value) if value else ''
 
 
+def parse_iso_datetime(value):
+    text = str(value or '').strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+
+
+def is_future(value):
+    parsed = parse_iso_datetime(value)
+    return bool(parsed and parsed > datetime.now(timezone.utc))
+
+
+def add_months(start, months):
+    month = start.month - 1 + months
+    year = start.year + month // 12
+    month = month % 12 + 1
+    days = [31, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    return start.replace(year=year, month=month, day=min(start.day, days[month - 1]))
+
+
+def parse_access_until(value, existing_value=''):
+    text = str(clean_sheet_value(value) or '').strip()
+    if not text:
+        return existing_value or ''
+    if re.fullmatch(r'(?:[1-9]|1[0-2])', text):
+        return add_months(datetime.now(timezone.utc), int(text)).isoformat().replace('+00:00', 'Z')
+    parsed = parse_datetime_value(text)
+    if parsed:
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+    return text
+
+
 def bot_display(project):
     return str(project.get('bot_username') or project.get('name') or project.get('code') or '').strip()
 
@@ -91,6 +130,14 @@ def get_cell(row, headers, name):
     if index is None or index >= len(row):
         return ''
     return clean_sheet_value(row[index])
+
+
+def get_first_cell(row, headers, names):
+    for name in names:
+        value = get_cell(row, headers, name)
+        if value:
+            return value
+    return ''
 
 
 def a1_column(column_index):
@@ -120,12 +167,12 @@ def ensure_bot_worksheet(sheet):
     delete_extra_sheets(sheet)
     values = get_values_with_quota_retry(worksheet, '1:1')
     current_headers = [str(cell).strip() for cell in values[0]] if values else []
-    if 'Status' not in current_headers and 'Access' in current_headers:
-        worksheet.insert_cols([['Status']], col=current_headers.index('Access') + 2, value_input_option='USER_ENTERED')
-        values = get_values_with_quota_retry(worksheet, '1:1')
-        current_headers = [str(cell).strip() for cell in values[0]] if values else []
+    previous_headers = current_headers[:]
     if current_headers != HEADERS:
         worksheet.update(range_name='A1', values=[HEADERS], value_input_option='USER_ENTERED')
+    for index in range(len(previous_headers), len(HEADERS), -1):
+        if previous_headers[index - 1] in {'Status', 'Role'}:
+            worksheet.delete_columns(index)
     return worksheet
 
 
@@ -267,6 +314,7 @@ def build_state(state):
             'is_paid': worker_bool(user, 'is_paid'),
             'is_allowlisted': worker_bool(user, 'is_allowlisted'),
             'is_admin': worker_bool(user, 'is_admin'),
+            'access_expires_at': user.get('access_expires_at') or '',
             'updated_at': user.get('updated_at') or user.get('created_at') or '',
         }
 
@@ -300,6 +348,7 @@ def build_state(state):
             'is_paid': False,
             'is_allowlisted': False,
             'is_admin': False,
+            'access_expires_at': '',
             'updated_at': '',
         })
 
@@ -335,7 +384,8 @@ def read_sheet_rows(worksheet):
             'username': str(get_cell(raw_row, headers, 'Username') or '').strip(),
             'first_name': str(get_cell(raw_row, headers, 'First Name') or '').strip(),
             'access': str(get_cell(raw_row, headers, 'Access') or '').strip().lower(),
-            'role': str(get_cell(raw_row, headers, 'Status') or '').strip().lower(),
+            'access_until': str(get_cell(raw_row, headers, 'Access Until') or '').strip(),
+            'role': str(get_first_cell(raw_row, headers, ['Role', 'Status']) or '').strip().lower(),
             'mode': str(get_cell(raw_row, headers, 'Subscription Mode') or '').strip().lower(),
             'included': get_cell(raw_row, headers, 'Included Channel IDs'),
             'excluded': get_cell(raw_row, headers, 'Excluded Channel IDs'),
@@ -361,16 +411,22 @@ def read_action_rows(sheet_rows, compact_state):
         key = row_key(project_code, user_id)
         existing_access = user_access(users.get(key, {}), allowlist.get(key))
         existing_role = user_role(users.get(key, {}))
+        existing_expiry = str(users.get(key, {}).get('access_expires_at') or '').strip()
+        requested_access = normalize_access(access)
         requested_role = normalize_role(row.get('role'))
-        is_new_free_user = key not in users and access == 'free'
-        access_changed = access == 'free' and existing_access != 'free'
+        requested_expiry = parse_access_until(row.get('access_until'), existing_expiry if requested_access == 'trial' else '')
+        is_new_free_user = key not in users and requested_access in {'free', 'trial'}
+        access_changed = requested_access in ACCESS_VALUES and requested_access != existing_access
+        expiry_changed = requested_access == 'trial' and requested_expiry != existing_expiry
         role_changed = requested_role != existing_role
-        if action not in {'push', 'delete'} and not is_new_free_user and not access_changed and not role_changed:
+        if action not in {'push', 'delete'} and not is_new_free_user and not access_changed and not expiry_changed and not role_changed:
             continue
-        if (is_new_free_user or access_changed or role_changed) and action not in {'push', 'delete'}:
+        if (is_new_free_user or access_changed or expiry_changed or role_changed) and action not in {'push', 'delete'}:
             action = 'push'
         action_row = dict(row)
         action_row['action'] = action
+        action_row['access'] = requested_access
+        action_row['access_until'] = requested_expiry
         rows.append(action_row)
     return rows
 
@@ -404,15 +460,17 @@ def collect_changes(action_rows, compact_state):
             is_paid = False
             is_allowlisted = False
             is_admin = False
+            access_expires_at = None
         else:
             desired = desired_subscriptions(row, channels_by_project.get(project_code, []))
             existing_access = user_access(existing_user, allowlist.get(key))
-            requested_access = row['access'] or existing_access
+            requested_access = normalize_access(row['access']) or existing_access
             requested_role = normalize_role(row.get('role'))
+            access_expires_at = row.get('access_until') if requested_access == 'trial' else None
             is_paid = requested_access == 'paid'
-            is_allowlisted = requested_access == 'free'
+            is_allowlisted = requested_access in {'free', 'trial'}
             is_admin = requested_role == 'admin'
-            if is_allowlisted:
+            if requested_access == 'free':
                 payload['allowlist'].append({
                     'projectCode': project_code,
                     'userId': user_id,
@@ -430,6 +488,7 @@ def collect_changes(action_rows, compact_state):
             'isPaid': is_paid,
             'isAllowlisted': is_allowlisted,
             'isAdmin': is_admin,
+            'accessExpiresAt': access_expires_at,
         })
 
         current = {channel_id for channel_id, active in current_sub_rows.get(key, {}).items() if active}
@@ -447,11 +506,27 @@ def collect_changes(action_rows, compact_state):
 
 
 def user_access(user, allowlist_entry):
-    if user.get('is_allowlisted') or allowlist_entry:
+    if allowlist_entry:
         return 'free'
+    if user.get('is_allowlisted'):
+        expires_at = user.get('access_expires_at') or ''
+        if not expires_at:
+            return 'free'
+        if is_future(expires_at):
+            return 'trial'
+        return 'none'
     if user.get('is_paid'):
         return 'paid'
     return 'none'
+
+
+def normalize_access(value):
+    text = str(value or '').strip().lower()
+    if text in {'пробный', 'trial', 'test'}:
+        return 'trial'
+    if text in ACCESS_VALUES:
+        return text
+    return ''
 
 
 def normalize_role(value):
@@ -530,6 +605,7 @@ def write_single_sheet(worksheet, compact_state, sheet_rows):
             'is_paid': False,
             'is_allowlisted': False,
             'is_admin': False,
+            'access_expires_at': '',
             'updated_at': '',
         })
         allowlist_entry = allowlist.get(key)
@@ -549,6 +625,7 @@ def write_single_sheet(worksheet, compact_state, sheet_rows):
             user.get('username') or existing_row.get('username', ''),
             user.get('first_name') or existing_row.get('first_name', ''),
             user_access(user, allowlist_entry),
+            display_timestamp(user.get('access_expires_at') or ''),
             user_role(user),
             mode,
             included,

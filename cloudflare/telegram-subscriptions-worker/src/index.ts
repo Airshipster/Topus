@@ -223,7 +223,14 @@ async function handleAdminNotify(request: Request, env: Env, ctx: ExecutionConte
   }
 
   const paymentCondition = paymentsRequired(env)
-    ? 'AND (COALESCE(u.is_paid, 0) = 1 OR COALESCE(u.is_allowlisted, 0) = 1 OR a.user_id IS NOT NULL)'
+    ? `AND (
+         COALESCE(u.is_paid, 0) = 1
+         OR (
+           COALESCE(u.is_allowlisted, 0) = 1
+           AND (u.access_expires_at IS NULL OR u.access_expires_at = '' OR u.access_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+         )
+         OR a.user_id IS NOT NULL
+       )`
     : '';
   const recipients = await env.DB.prepare(
     `SELECT s.user_id
@@ -258,7 +265,7 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
          ORDER BY code`,
       ).all<{ code: string; name: string; active: number; updated_at: string }>(),
       env.DB.prepare(
-        `SELECT project_code, user_id, username, first_name, is_paid, is_allowlisted, COALESCE(is_admin, 0) AS is_admin, created_at, updated_at
+        `SELECT project_code, user_id, username, first_name, is_paid, is_allowlisted, COALESCE(is_admin, 0) AS is_admin, access_expires_at, created_at, updated_at
          FROM users
          ORDER BY project_code, user_id`,
       ).all(),
@@ -302,7 +309,7 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
   }
 
   const body = await request.json<{
-    users?: Array<{ projectCode: string; userId: string; username?: string; firstName?: string; isPaid?: boolean; isAllowlisted?: boolean; isAdmin?: boolean }>;
+    users?: Array<{ projectCode: string; userId: string; username?: string; firstName?: string; isPaid?: boolean; isAllowlisted?: boolean; isAdmin?: boolean; accessExpiresAt?: string | null }>;
     subscriptions?: Array<{ projectCode: string; userId: string; channelId: string; active?: boolean; delete?: boolean }>;
     allowlist?: Array<{ projectCode: string; userId: string; note?: string; active?: boolean; delete?: boolean }>;
   }>();
@@ -314,14 +321,15 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
       continue;
     }
     statements.push(env.DB.prepare(
-      `INSERT INTO users (project_code, user_id, username, first_name, is_paid, is_allowlisted, is_admin, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO users (project_code, user_id, username, first_name, is_paid, is_allowlisted, is_admin, access_expires_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(project_code, user_id) DO UPDATE SET
          username = COALESCE(excluded.username, users.username),
          first_name = COALESCE(excluded.first_name, users.first_name),
          is_paid = excluded.is_paid,
          is_allowlisted = excluded.is_allowlisted,
          is_admin = excluded.is_admin,
+         access_expires_at = excluded.access_expires_at,
          updated_at = excluded.updated_at`,
     ).bind(
       user.projectCode,
@@ -331,6 +339,7 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
       user.isPaid ? 1 : 0,
       user.isAllowlisted ? 1 : 0,
       user.isAdmin ? 1 : 0,
+      user.accessExpiresAt || null,
       now,
       now,
     ));
@@ -649,7 +658,7 @@ async function renderMainMenu(env: Env, projectCode: string, userId: string): Pr
     isAdmin(env, projectCode, userId),
   ]);
 
-  const statusLabel = status === 'free' ? 'Подписка (free)' : 'Подписка';
+  const statusLabel = status === 'free' ? 'Подписка (free)' : status === 'trial' ? 'Подписка (trial)' : 'Подписка';
   const rows: Array<Array<TelegramButton>> = [
     [{ text: `📚 Категории (${categoryCount})`, callback_data: 'cats:root' }],
     [{ text: `✅ Мои подписки (${subscriptionCount}/${channelCount})`, callback_data: 'subs:0' }],
@@ -803,7 +812,9 @@ async function renderPlan(env: Env, projectCode: string, userId: string): Promis
   const status = await subscriptionStatus(env, projectCode, userId);
   const label = status === 'free'
     ? 'У вас свободный доступ.'
-    : 'Платная подписка будет подключена позже.';
+    : status === 'trial'
+      ? 'У вас пробный доступ.'
+      : 'Платная подписка будет подключена позже.';
   return {
     inline_keyboard: [
       [{ text: label, callback_data: 'noop' }],
@@ -877,6 +888,7 @@ async function upsertUser(env: Env, projectCode: string, user: TelegramUser): Pr
        username = excluded.username,
        first_name = excluded.first_name,
        is_allowlisted = CASE WHEN users.is_allowlisted = 1 THEN 1 ELSE excluded.is_allowlisted END,
+       access_expires_at = users.access_expires_at,
        is_admin = users.is_admin,
        updated_at = excluded.updated_at`,
   ).bind(
@@ -926,10 +938,11 @@ async function grantFreeAccess(env: Env, projectCode: string, targetUserId: stri
   const now = new Date().toISOString();
   await env.DB.batch([
     env.DB.prepare(
-      `INSERT INTO users (project_code, user_id, is_paid, is_allowlisted, is_admin, created_at, updated_at)
-       VALUES (?, ?, 0, 1, 0, ?, ?)
+      `INSERT INTO users (project_code, user_id, is_paid, is_allowlisted, is_admin, access_expires_at, created_at, updated_at)
+       VALUES (?, ?, 0, 1, 0, NULL, ?, ?)
        ON CONFLICT(project_code, user_id) DO UPDATE SET
          is_allowlisted = 1,
+         access_expires_at = NULL,
          updated_at = excluded.updated_at`,
     ).bind(projectCode, targetUserId, now, now),
     env.DB.prepare(
@@ -1081,18 +1094,22 @@ async function countSubscriptions(env: Env, projectCode: string, userId: string)
   return row?.count || 0;
 }
 
-async function subscriptionStatus(env: Env, projectCode: string, userId: string): Promise<'free' | 'paid' | 'none'> {
+async function subscriptionStatus(env: Env, projectCode: string, userId: string): Promise<'free' | 'paid' | 'trial' | 'none'> {
   const row = await env.DB.prepare(
     `SELECT
        COALESCE(u.is_paid, 0) AS is_paid,
-       CASE WHEN COALESCE(u.is_allowlisted, 0) = 1 OR a.user_id IS NOT NULL THEN 1 ELSE 0 END AS is_free
+       CASE WHEN a.user_id IS NOT NULL OR (COALESCE(u.is_allowlisted, 0) = 1 AND (u.access_expires_at IS NULL OR u.access_expires_at = '')) THEN 1 ELSE 0 END AS is_free,
+       CASE WHEN COALESCE(u.is_allowlisted, 0) = 1 AND u.access_expires_at IS NOT NULL AND u.access_expires_at != '' AND u.access_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') THEN 1 ELSE 0 END AS is_trial
      FROM users u
      LEFT JOIN allowlist a ON a.project_code = u.project_code AND a.user_id = u.user_id
      WHERE u.project_code = ? AND u.user_id = ?
      LIMIT 1`,
-  ).bind(projectCode, userId).first<{ is_paid: number; is_free: number }>();
+  ).bind(projectCode, userId).first<{ is_paid: number; is_free: number; is_trial: number }>();
   if (row?.is_free === 1) {
     return 'free';
+  }
+  if (row?.is_trial === 1) {
+    return 'trial';
   }
   if (row?.is_paid === 1) {
     return 'paid';
@@ -1113,25 +1130,28 @@ async function renderAdminStatsText(env: Env, projectCode: string): Promise<stri
     env.DB.prepare(
       `SELECT
          SUM(CASE WHEN COALESCE(u.is_paid, 0) = 1 THEN 1 ELSE 0 END) AS paid,
-         SUM(CASE WHEN COALESCE(u.is_allowlisted, 0) = 1 OR a.user_id IS NOT NULL THEN 1 ELSE 0 END) AS free
+         SUM(CASE WHEN a.user_id IS NOT NULL OR (COALESCE(u.is_allowlisted, 0) = 1 AND (u.access_expires_at IS NULL OR u.access_expires_at = '')) THEN 1 ELSE 0 END) AS free,
+         SUM(CASE WHEN COALESCE(u.is_allowlisted, 0) = 1 AND u.access_expires_at IS NOT NULL AND u.access_expires_at != '' AND u.access_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') THEN 1 ELSE 0 END) AS trial
        FROM users u
        LEFT JOIN allowlist a ON a.project_code = u.project_code AND a.user_id = u.user_id
        WHERE u.project_code = ?`,
-    ).bind(projectCode).first<{ paid: number; free: number }>(),
+    ).bind(projectCode).first<{ paid: number; free: number; trial: number }>(),
     env.DB.prepare('SELECT COUNT(*) AS count FROM users WHERE project_code = ? AND COALESCE(is_admin, 0) = 1').bind(projectCode).first<{ count: number }>(),
     env.DB.prepare('SELECT COUNT(*) AS count FROM user_subscriptions WHERE project_code = ? AND active = 1').bind(projectCode).first<{ count: number }>(),
     env.DB.prepare('SELECT COUNT(*) AS count FROM channels WHERE project_code = ?').bind(projectCode).first<{ count: number }>(),
   ]);
   const userCount = users?.count || 0;
   const freeCount = access?.free || 0;
+  const trialCount = access?.trial || 0;
   const paidCount = access?.paid || 0;
-  const noneCount = Math.max(0, userCount - freeCount - paidCount);
+  const noneCount = Math.max(0, userCount - freeCount - trialCount - paidCount);
   return [
     'Статистика бота',
     '',
     `Пользователей: ${userCount}`,
     `Админов: ${admins?.count || 0}`,
     `Free: ${freeCount}`,
+    `Trial: ${trialCount}`,
     `Paid: ${paidCount}`,
     `Без доступа: ${noneCount}`,
     `Активных подписок: ${subscriptions?.count || 0}`,
