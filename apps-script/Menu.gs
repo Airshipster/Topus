@@ -22,14 +22,17 @@ function runTopusSubscriptionRenew() {
 }
 
 function runTopusBotCloudflareSyncV2() {
+  writeTopusBotSyncStatus_('Bot Cloudflare sync: GitHub Actions dispatching at ' + topusStatusTimestamp_());
   var result = triggerPublisher_('', '', {syncBotState: true});
 
   if (result && result.ok) {
+    writeTopusBotSyncStatus_('Bot Cloudflare sync: GitHub Actions accepted at ' + topusStatusTimestamp_() + '; status=' + result.status);
     SpreadsheetApp.getActiveSpreadsheet().toast('Синхронизация ботов с Cloudflare отправлена в GitHub Actions', 'Topus', 5);
     return;
   }
 
   var message = result && result.message ? result.message : 'unknown error';
+  writeTopusBotSyncStatus_('Bot Cloudflare sync: dispatch failed at ' + topusStatusTimestamp_() + '; ' + message);
   SpreadsheetApp.getActiveSpreadsheet().toast('Синхронизация ботов с Cloudflare не отправлена', 'Topus', 8);
 }
 
@@ -38,7 +41,42 @@ function runTopusBotCloudflareSync() {
 }
 
 function writeTopusBotSyncStatus_(text) {
-  return;
+  var ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(MASTER_SPREADSHEET_ID);
+  var sheet = ss.getSheetByName('Боты') || ss.getActiveSheet();
+  var column = findTopusBotStatusColumn_(sheet);
+  sheet.getRange(2, column).setValue(text);
+}
+
+function findTopusBotStatusColumn_(sheet) {
+  var maxColumns = sheet.getMaxColumns();
+  var firstRow = sheet.getRange(1, 1, 1, maxColumns).getDisplayValues()[0];
+  var secondRow = sheet.getRange(2, 1, 1, maxColumns).getDisplayValues()[0];
+  var syncActionIndex = firstRow.indexOf('Sync Action');
+  var startColumn = syncActionIndex >= 0 ? syncActionIndex + 2 : 18;
+
+  for (var column = startColumn; column <= maxColumns; column++) {
+    var top = String(firstRow[column - 1] || '').trim();
+    var bottom = String(secondRow[column - 1] || '').trim();
+    var combined = top + '\n' + bottom;
+    if (/Cloudflare sync|Bot Cloudflare sync|remaining|source:/i.test(combined)) {
+      return column;
+    }
+  }
+
+  for (var emptyColumn = startColumn; emptyColumn <= maxColumns; emptyColumn++) {
+    var topValue = String(firstRow[emptyColumn - 1] || '').trim();
+    var bottomValue = String(secondRow[emptyColumn - 1] || '').trim();
+    if (!topValue && !bottomValue) {
+      return emptyColumn;
+    }
+  }
+
+  sheet.insertColumnAfter(maxColumns);
+  return maxColumns + 1;
+}
+
+function topusStatusTimestamp_() {
+  return Utilities.formatDate(new Date(), DISPLAY_TIMEZONE, 'dd.MM.yyyy HH:mm:ss');
 }
 
 function installTopusMasterMenuTrigger() {
