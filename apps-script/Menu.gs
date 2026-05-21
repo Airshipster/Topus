@@ -33,6 +33,14 @@ function runTopusBotCloudflareSyncV2() {
   SpreadsheetApp.getActiveSpreadsheet().toast('Синхронизация ботов с Cloudflare не отправлена', 'Topus', 8);
 }
 
+function runTopusBotCloudflareSync() {
+  return runTopusBotCloudflareSyncV2();
+}
+
+function writeTopusBotSyncStatus_(text) {
+  return;
+}
+
 function installTopusMasterMenuTrigger() {
   var triggers = ScriptApp.getProjectTriggers();
 
