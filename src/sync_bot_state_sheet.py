@@ -2,6 +2,7 @@ import os
 import re
 from collections import defaultdict
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import gspread
 import requests
@@ -85,6 +86,13 @@ def max_timestamp(*values):
 
 def display_timestamp(value):
     return normalize_timestamp(value) if value else ''
+
+
+def display_access_until(value):
+    parsed = parse_iso_datetime(value)
+    if not parsed:
+        return display_timestamp(value)
+    return format_timestamp(parsed.astimezone(ZoneInfo('Asia/Baku')))
 
 
 def parse_iso_datetime(value):
@@ -726,7 +734,7 @@ def write_single_sheet(worksheet, compact_state, sheet_rows):
             user.get('username') or existing_row.get('username', ''),
             user.get('first_name') or existing_row.get('first_name', ''),
             user_access(user, allowlist_entry),
-            display_timestamp(user.get('access_expires_at') or ''),
+            display_access_until(user.get('access_expires_at') or ''),
             user_role(user),
             mode,
             included,
