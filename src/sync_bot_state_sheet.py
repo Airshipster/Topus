@@ -191,6 +191,56 @@ def a1_column(column_index):
     return re.sub(r'\d+', '', gspread.utils.rowcol_to_a1(1, column_index))
 
 
+def find_bot_status_column(worksheet):
+    values = get_values_with_quota_retry(worksheet, '1:2')
+    first_row = values[0] if values else []
+    second_row = values[1] if len(values) > 1 else []
+    max_columns = max(worksheet.col_count, len(first_row), len(second_row), len(HEADERS) + 1)
+    start_column = len(HEADERS) + 1
+
+    for column in range(start_column, max_columns + 1):
+        top = str(first_row[column - 1] if column <= len(first_row) else '').strip()
+        bottom = str(second_row[column - 1] if column <= len(second_row) else '').strip()
+        combined = f'{top}\n{bottom}'
+        if re.search(r'Cloudflare sync|Bot Cloudflare sync|remaining|source:', combined, re.IGNORECASE):
+            return column
+
+    for column in range(start_column, max_columns + 1):
+        top = str(first_row[column - 1] if column <= len(first_row) else '').strip()
+        bottom = str(second_row[column - 1] if column <= len(second_row) else '').strip()
+        if not top and not bottom:
+            return column
+
+    worksheet.add_cols(1)
+    return max_columns + 1
+
+
+def write_bot_sync_status(worksheet, top_text='', bottom_text=''):
+    column = find_bot_status_column(worksheet)
+    column_letter = a1_column(column)
+    current = get_values_with_quota_retry(worksheet, f'{column_letter}1:{column_letter}2')
+    current_top = current[0][0] if current and current[0] else ''
+    current_bottom = current[1][0] if len(current) > 1 and current[1] else ''
+    worksheet.update(
+        range_name=f'{column_letter}1:{column_letter}2',
+        values=[[top_text or current_top], [bottom_text or current_bottom]],
+        value_input_option='USER_ENTERED',
+    )
+
+
+def cloudflare_status_text(usage):
+    if not usage:
+        return 'Cloudflare sync OK: unknown usage'
+    month = usage.get('month') or datetime.now(timezone.utc).strftime('%Y-%m')
+    remaining = usage.get('remaining')
+    source = usage.get('source') or 'unknown'
+    return '\n'.join([
+        f'Cloudflare sync OK: {format_timestamp()}',
+        f'remaining {month}: {remaining}',
+        f'source: {source}',
+    ])
+
+
 def rename_legacy_sheet(sheet):
     try:
         return sheet.worksheet(SHEET_NAME)
@@ -723,6 +773,10 @@ def main():
     client = authenticate_google_sheets()
     sheet = client.open_by_key(config.SPREADSHEET_ID)
     worksheet = ensure_bot_worksheet(sheet)
+    write_bot_sync_status(
+        worksheet,
+        bottom_text=f'Bot Cloudflare sync running in GitHub Actions: {format_timestamp()}',
+    )
     state = fetch_worker_state(worker_url, admin_secret)
     compact_state = build_state(state)
     sheet_rows = read_sheet_rows(worksheet)
@@ -740,6 +794,12 @@ def main():
         print('  No bot sheet changes to push')
 
     write_single_sheet(worksheet, compact_state, sheet_rows)
+    usage = resolve_usage(compact_state.get('usage'))
+    write_bot_sync_status(
+        worksheet,
+        top_text=cloudflare_status_text(usage),
+        bottom_text=f'Bot Cloudflare sync finished: {format_timestamp()}; applied={applied_count}',
+    )
     print(f"  Synced one-sheet bot state: {len(compact_state['users'])} users")
 
 
