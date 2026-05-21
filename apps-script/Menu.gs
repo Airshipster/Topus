@@ -22,29 +22,15 @@ function runTopusSubscriptionRenew() {
 }
 
 function runTopusBotCloudflareSync() {
-  writeTopusBotSyncStatus_('Bot Cloudflare sync: dispatching to GitHub Actions at ' + topusStatusTimestamp_());
   var result = triggerPublisher_('', '', {syncBotState: true});
 
   if (result && result.ok) {
-    writeTopusBotSyncStatus_('Bot Cloudflare sync: GitHub Actions accepted dispatch at ' + topusStatusTimestamp_() + '; status=' + result.status);
     SpreadsheetApp.getActiveSpreadsheet().toast('Синхронизация ботов с Cloudflare отправлена в GitHub Actions', 'Topus', 5);
     return;
   }
 
   var message = result && result.message ? result.message : 'unknown error';
-  writeTopusBotSyncStatus_('Bot Cloudflare sync: dispatch failed at ' + topusStatusTimestamp_() + '; ' + message);
   SpreadsheetApp.getActiveSpreadsheet().toast('Синхронизация ботов с Cloudflare не отправлена', 'Topus', 8);
-}
-
-function writeTopusBotSyncStatus_(text) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(MASTER_SPREADSHEET_ID);
-  var sheet = ss.getSheetByName('Боты') || ss.getActiveSheet();
-  sheet.getRange('R2').setValue(text);
-  SpreadsheetApp.flush();
-}
-
-function topusStatusTimestamp_() {
-  return Utilities.formatDate(new Date(), DISPLAY_TIMEZONE, 'dd.MM.yyyy HH:mm:ss');
 }
 
 function installTopusMasterMenuTrigger() {
