@@ -191,22 +191,6 @@ def a1_column(column_index):
     return re.sub(r'\d+', '', gspread.utils.rowcol_to_a1(1, column_index))
 
 
-def is_service_status_cell(value):
-    text = str(clean_sheet_value(value) or '').strip()
-    return text.startswith('Cloudflare sync ') or text.startswith('Bot Cloudflare sync')
-
-
-def bot_status_column_index(worksheet):
-    values = get_values_with_quota_retry(worksheet, '1:1')
-    headers = values[0] if values else []
-    rightmost_data_column = 0
-    for index, value in enumerate(headers, start=1):
-        text = str(clean_sheet_value(value) or '').strip()
-        if text and not is_service_status_cell(text):
-            rightmost_data_column = index
-    return max(DEFAULT_BOT_STATUS_COLUMN_INDEX, rightmost_data_column + 1)
-
-
 def rename_legacy_sheet(sheet):
     try:
         return sheet.worksheet(SHEET_NAME)
@@ -668,28 +652,6 @@ def write_rows(worksheet, rows):
         worksheet.batch_clear([f'A{len(payload) + 1}:{last_col}{len(existing_values)}'])
 
 
-def write_cloudflare_status(worksheet, user_count, applied_count, usage):
-    limit = usage.get('limit') or CLOUDFLARE_MONTHLY_REQUEST_LIMIT
-    used = usage.get('used') or 0
-    remaining = usage.get('remaining')
-    if remaining is None:
-        remaining = max(0, int(limit) - int(used))
-    month = usage.get('month') or ''
-    source = usage.get('source') or 'unknown'
-    status = (
-        f"Cloudflare sync OK: {format_timestamp()}\n"
-        f"remaining {month}: {remaining}\n"
-        f"source: {source}"
-    )
-    status_column = a1_column(bot_status_column_index(worksheet))
-    worksheet.update(range_name=f'{status_column}1', values=[[status]], value_input_option='USER_ENTERED')
-
-
-def write_operation_status(worksheet, status):
-    status_column = a1_column(bot_status_column_index(worksheet))
-    worksheet.update(range_name=f'{status_column}2', values=[[status]], value_input_option='USER_ENTERED')
-
-
 def write_single_sheet(worksheet, compact_state, sheet_rows):
     sync_time = format_timestamp()
     projects = compact_state['projects']
@@ -761,8 +723,6 @@ def main():
     client = authenticate_google_sheets()
     sheet = client.open_by_key(config.SPREADSHEET_ID)
     worksheet = ensure_bot_worksheet(sheet)
-    write_operation_status(worksheet, f"Bot Cloudflare sync running in GitHub Actions: {format_timestamp()}")
-
     state = fetch_worker_state(worker_url, admin_secret)
     compact_state = build_state(state)
     sheet_rows = read_sheet_rows(worksheet)
@@ -780,12 +740,6 @@ def main():
         print('  No bot sheet changes to push')
 
     write_single_sheet(worksheet, compact_state, sheet_rows)
-    usage = resolve_usage(compact_state.get('usage') or {})
-    write_cloudflare_status(worksheet, len(compact_state['users']), applied_count, usage)
-    write_operation_status(
-        worksheet,
-        f"Bot Cloudflare sync finished: {format_timestamp()}; users={len(compact_state['users'])}; applied={applied_count}",
-    )
     print(f"  Synced one-sheet bot state: {len(compact_state['users'])} users")
 
 
