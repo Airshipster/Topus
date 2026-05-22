@@ -343,6 +343,41 @@ def get_failed_subscriptions(subscription_records, active_channels):
 
     return failed
 
+def subscription_status_body(status):
+    text = str(status or '').strip()
+    if not text:
+        return ''
+    if text.startswith('⚠️'):
+        text = text[2:].strip()
+    elif text[0] in {'✅', '❌', '⚠'}:
+        text = text[1:].strip()
+    if text.lower().startswith('бот:'):
+        text = text.split(':', 1)[1].strip()
+    return text
+
+def is_bot_only_subscription(active_channels_dict, channel_id):
+    channel_info = active_channels_dict.get(channel_id, {}).get('channel_info', {})
+    return bool(channel_info.get('bot_only'))
+
+def format_subscription_status(status, active_channels_dict=None, channel_id=''):
+    text = str(status or '').strip()
+    if not text:
+        return text
+    active_channels_dict = active_channels_dict or {}
+    icon = ''
+    body = text
+    if text.startswith('⚠️'):
+        icon = '⚠️'
+        body = text[2:].strip()
+    elif text[0] in {'✅', '❌', '⚠'}:
+        icon = text[0]
+        body = text[1:].strip()
+    if body.lower().startswith('бот:'):
+        body = body.split(':', 1)[1].strip()
+    if is_bot_only_subscription(active_channels_dict, channel_id):
+        body = f'бот: {body}'
+    return f'{icon} {body}'.strip() if icon else body
+
 def format_channel_projects(active_channels_dict, channel_id):
     projects = sorted(set(active_channels_dict.get(channel_id, {}).get('projects', [])))
     return ', '.join(projects)
@@ -362,7 +397,7 @@ def save_subscribed_channels_batch(sheet, channel_ids, active_channels_dict):
             'Channel ID': subscription_channel_formula(channel_id),
             'Subscribed At': sheet_datetime_value(timestamp),
             'Last Renewed': sheet_datetime_value(timestamp),
-            'Status': '✅ subscribed',
+            'Status': format_subscription_status('✅ subscribed', active_channels_dict, channel_id),
         }
         rows.append(subscription_row_for_headers(headers, row_values))
     
@@ -379,7 +414,7 @@ def save_subscribed_channels_batch(sheet, channel_ids, active_channels_dict):
                 time.sleep(delay_seconds)
                 delay_seconds *= 2
 
-def update_subscription_renewals_batch(sheet, subscription_records, channel_ids):
+def update_subscription_renewals_batch(sheet, subscription_records, channel_ids, active_channels_dict=None):
     """Обновление времени продления существующих подписок"""
     if not channel_ids:
         return
@@ -409,7 +444,7 @@ def update_subscription_renewals_batch(sheet, subscription_records, channel_ids)
             if status_col:
                 updates.append({
                     'range': gspread.utils.rowcol_to_a1(record["row_index"], status_col),
-                    'values': [['✅ renewed']]
+                    'values': [[format_subscription_status('✅ renewed', active_channels_dict, channel_id)]]
                 })
             clear_rows.append(record['row_index'])
 
@@ -436,7 +471,7 @@ def update_subscription_renewals_batch(sheet, subscription_records, channel_ids)
         print(f"  ⚠️  Error updating subscription renewals: {e}")
 
 
-def update_subscription_statuses(sheet, subscription_records, status_by_channel):
+def update_subscription_statuses(sheet, subscription_records, status_by_channel, active_channels_dict=None):
     if not status_by_channel:
         return
     try:
@@ -455,6 +490,7 @@ def update_subscription_statuses(sheet, subscription_records, status_by_channel)
             record = subscription_records.get(channel_id)
             if not record:
                 continue
+            status = format_subscription_status(status, active_channels_dict, channel_id)
             row_index = record['row_index']
             updates.append({'range': gspread.utils.rowcol_to_a1(row_index, status_col), 'values': [[status]]})
             if str(status).startswith('❌'):
@@ -507,7 +543,7 @@ def update_subscription_statuses(sheet, subscription_records, status_by_channel)
         print(f"  ⚠️  Error updating subscription statuses: {e}")
 
 
-def normalize_subscription_status_formatting(sheet, subscription_records):
+def normalize_subscription_status_formatting(sheet, subscription_records, active_channels_dict=None):
     """Keep red Channel ID highlighting only for rows with current ❌ status."""
     try:
         worksheet = get_or_create_subscriptions_worksheet(sheet)
@@ -515,8 +551,10 @@ def normalize_subscription_status_formatting(sheet, subscription_records):
         headers = ensure_subscription_headers(worksheet, [str(cell).strip() for cell in values[0]]) if values else SUBSCRIPTIONS_HEADERS
         indexes = subscription_header_indexes(headers)
         channel_col = subscription_col(indexes, 'Channel ID')
+        status_col = subscription_col(indexes, 'Status')
         if not channel_col:
             return
+        status_updates = []
         requests = [{
             'repeatCell': {
                 'range': {
@@ -531,8 +569,16 @@ def normalize_subscription_status_formatting(sheet, subscription_records):
             }
         }]
 
-        for record in subscription_records.values():
-            if not str(record.get('status', '')).startswith('❌'):
+        for channel_id, record in subscription_records.items():
+            current_status = str(record.get('status', ''))
+            normalized_status = format_subscription_status(current_status, active_channels_dict, channel_id)
+            if status_col and normalized_status != current_status:
+                status_updates.append({
+                    'range': gspread.utils.rowcol_to_a1(record['row_index'], status_col),
+                    'values': [[normalized_status]],
+                })
+                record['status'] = normalized_status
+            if not normalized_status.startswith('❌'):
                 continue
             row_index = record['row_index']
             requests.append({
@@ -549,6 +595,9 @@ def normalize_subscription_status_formatting(sheet, subscription_records):
                 }
             })
 
+        for i in range(0, len(status_updates), config.BATCH_SIZE):
+            worksheet.batch_update(status_updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
+            time.sleep(0.2)
         sheet.batch_update({'requests': requests})
         print("  🎨 Normalized subscription status formatting")
     except Exception as e:
@@ -563,15 +612,16 @@ def split_project_names(projects_text):
     }
 
 
-def update_subscription_inventory_warnings(sheet, subscription_records, failed_project_names):
+def update_subscription_inventory_warnings(sheet, subscription_records, failed_project_names, active_channels_dict=None):
     statuses = {}
     if not failed_project_names:
         for channel_id, record in subscription_records.items():
             status = str(record.get('status', ''))
-            if not status or status.startswith('⚠️ project read failed') or status == '✅ project read ok':
+            body = subscription_status_body(status)
+            if not status or body.startswith('project read failed') or body == 'project read ok':
                 statuses[channel_id] = '✅ renewed' if record.get('last_renewed') else '✅ subscribed'
         if statuses:
-            update_subscription_statuses(sheet, subscription_records, statuses)
+            update_subscription_statuses(sheet, subscription_records, statuses, active_channels_dict)
             print(f"  ✅ Cleared subscription inventory warnings: {len(statuses)}")
         return
 
@@ -586,7 +636,7 @@ def update_subscription_inventory_warnings(sheet, subscription_records, failed_p
         statuses[channel_id] = f"⚠️ project read failed: {project_text}"
 
     if statuses:
-        update_subscription_statuses(sheet, subscription_records, statuses)
+        update_subscription_statuses(sheet, subscription_records, statuses, active_channels_dict)
         print(f"  ⚠️  Marked subscription inventory warnings: {len(statuses)}")
 
 
@@ -776,7 +826,7 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
         }
     else:
         failed_project_names = set()
-    update_subscription_inventory_warnings(master_sheet, subscription_records, failed_project_names)
+    update_subscription_inventory_warnings(master_sheet, subscription_records, failed_project_names, active_channels_dict)
     subscribed_channels = set(subscription_records.keys())
     to_subscribe = active_channels - subscribed_channels
     to_unsubscribe = set() if not inventory_complete else subscribed_channels - active_channels
@@ -811,7 +861,7 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
                 time.sleep(0.1)
 
             if renewed:
-                update_subscription_renewals_batch(master_sheet, subscription_records, renewed)
+                update_subscription_renewals_batch(master_sheet, subscription_records, renewed, active_channels_dict)
                 changed_subscription_rows = True
                 print(f"  ✅ Successfully retried: {len(renewed)}")
             if renewal_errors:
@@ -819,6 +869,7 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
                     master_sheet,
                     subscription_records,
                     {channel_id: f'❌ subscribe/renew failed: {error_text}' for channel_id, error_text in renewal_errors.items()},
+                    active_channels_dict,
                 )
                 changed_subscription_rows = True
                 print(f"  ❌ Subscription retry failed: {len(renewal_errors)}")
@@ -837,7 +888,7 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
                 result.update({'ok': False, 'partial': True, 'reason': 'could not re-read subscriptions'})
                 return result
         update_subscription_project_links(master_sheet, subscription_records, active_channels_dict)
-        normalize_subscription_status_formatting(master_sheet, subscription_records)
+        normalize_subscription_status_formatting(master_sheet, subscription_records, active_channels_dict)
         return result
 
     if force:
@@ -907,11 +958,12 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
             time.sleep(0.1)
 
         if renewed:
-            update_subscription_renewals_batch(master_sheet, subscription_records, renewed)
+            update_subscription_renewals_batch(master_sheet, subscription_records, renewed, active_channels_dict)
             update_subscription_statuses(
                 master_sheet,
                 subscription_records,
                 {channel_id: '✅ renewed' for channel_id in renewed},
+                active_channels_dict,
             )
             print(f"  ✅ Successfully renewed: {len(renewed)}")
         failed_renewals = sorted(set(to_renew) - set(renewed))
@@ -923,6 +975,7 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
                     channel_id: f"❌ subscribe/renew failed: {renewal_errors.get(channel_id, 'unknown')}"
                     for channel_id in failed_renewals
                 },
+                active_channels_dict,
             )
             print(f"  ❌ Subscription renew failed: {len(failed_renewals)}")
     
@@ -948,7 +1001,7 @@ def sync_subscriptions(client, master_sheet, projects, force=False, active_chann
         result.update({'ok': False, 'partial': True, 'reason': 'could not re-read subscriptions'})
         return result
     update_subscription_project_links(master_sheet, subscription_records, active_channels_dict)
-    normalize_subscription_status_formatting(master_sheet, subscription_records)
+    normalize_subscription_status_formatting(master_sheet, subscription_records, active_channels_dict)
 
     if inventory_complete:
         update_subscription_sync_state(master_sheet)
