@@ -1561,7 +1561,7 @@ async function sendWeeklySubscriptionReminders(env: Env): Promise<void> {
 function renderNotificationMenu(channelId: string, subscribed: boolean): object {
   return {
     inline_keyboard: [
-      [{ text: subscribed ? '✅ Отписаться от канала' : 'Подписаться на канал', callback_data: `unsub:${channelId}` }],
+      [{ text: subscribed ? '✅ Вы подписаны' : '❌ Вы отписались от канала', callback_data: `unsub:${channelId}` }],
     ],
   };
 }
