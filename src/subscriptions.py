@@ -30,6 +30,18 @@ SUBSCRIPTIONS_READ_RANGE = 'A1:ZZ'
 SUBSCRIPTIONS_TARGET_ROWS = 10000
 
 
+def run_with_quota_retry(operation, description, attempts=5, delay_seconds=20):
+    for attempt in range(1, attempts + 1):
+        try:
+            return operation()
+        except Exception as error:
+            if not is_sheets_quota_error(error) or attempt >= attempts:
+                raise
+            print(f"  ⚠️  Sheets quota busy while {description}; retry {attempt}/{attempts - 1} in {delay_seconds}s")
+            time.sleep(delay_seconds)
+            delay_seconds *= 2
+
+
 def base_subscription_header(value):
     return str(value or '').splitlines()[0].strip()
 
@@ -449,7 +461,10 @@ def update_subscription_renewals_batch(sheet, subscription_records, channel_ids,
             clear_rows.append(record['row_index'])
 
         if updates:
-            worksheet.batch_update(updates, value_input_option='USER_ENTERED')
+            run_with_quota_retry(
+                lambda: worksheet.batch_update(updates, value_input_option='USER_ENTERED'),
+                'updating subscription renewals',
+            )
         if clear_rows and channel_col:
             requests = [{
                 'repeatCell': {
@@ -465,7 +480,10 @@ def update_subscription_renewals_batch(sheet, subscription_records, channel_ids,
                 }
             } for row_index in clear_rows]
             for i in range(0, len(requests), config.BATCH_SIZE):
-                sheet.batch_update({'requests': requests[i:i + config.BATCH_SIZE]})
+                run_with_quota_retry(
+                    lambda chunk=requests[i:i + config.BATCH_SIZE]: sheet.batch_update({'requests': chunk}),
+                    'clearing subscription error formatting',
+                )
                 time.sleep(0.2)
     except Exception as e:
         print(f"  ⚠️  Error updating subscription renewals: {e}")
@@ -499,7 +517,10 @@ def update_subscription_statuses(sheet, subscription_records, status_by_channel,
                 clear_rows.append(row_index)
 
         for i in range(0, len(updates), config.BATCH_SIZE):
-            worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
+            run_with_quota_retry(
+                lambda chunk=updates[i:i + config.BATCH_SIZE]: worksheet.batch_update(chunk, value_input_option='USER_ENTERED'),
+                'updating subscription statuses',
+            )
             time.sleep(0.2)
 
         requests = []
@@ -536,7 +557,10 @@ def update_subscription_statuses(sheet, subscription_records, status_by_channel,
                 }
             })
         for i in range(0, len(requests), config.BATCH_SIZE):
-            sheet.batch_update({'requests': requests[i:i + config.BATCH_SIZE]})
+            run_with_quota_retry(
+                lambda chunk=requests[i:i + config.BATCH_SIZE]: sheet.batch_update({'requests': chunk}),
+                'updating subscription status formatting',
+            )
             time.sleep(0.2)
         update_subscription_status_header(worksheet)
     except Exception as e:
@@ -596,9 +620,15 @@ def normalize_subscription_status_formatting(sheet, subscription_records, active
             })
 
         for i in range(0, len(status_updates), config.BATCH_SIZE):
-            worksheet.batch_update(status_updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
+            run_with_quota_retry(
+                lambda chunk=status_updates[i:i + config.BATCH_SIZE]: worksheet.batch_update(chunk, value_input_option='USER_ENTERED'),
+                'normalizing subscription status text',
+            )
             time.sleep(0.2)
-        sheet.batch_update({'requests': requests})
+        run_with_quota_retry(
+            lambda: sheet.batch_update({'requests': requests}),
+            'normalizing subscription formatting',
+        )
         print("  🎨 Normalized subscription status formatting")
     except Exception as e:
         print(f"  ⚠️  Error normalizing subscription formatting: {e}")
