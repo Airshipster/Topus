@@ -102,6 +102,8 @@ def inspect_project_statuses(sheet):
     for row_number, row in enumerate(values[1:], start=2):
         if any(str(cell).strip() == 'Настройки' for cell in row):
             break
+        if any(str(cell).strip() == '🔵' for cell in row):
+            break
         if not any(str(cell).strip() for cell in row):
             continue
 
