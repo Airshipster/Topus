@@ -2,6 +2,7 @@ from collections import Counter, defaultdict
 
 import config
 import gspread
+from google.auth.transport.requests import AuthorizedSession
 from sheets import (
     authenticate_google_sheets,
     clean_sheet_value,
@@ -60,6 +61,32 @@ def inspect_site_imports(client, sheet):
                 error_cells.append(f'{gspread.utils.rowcol_to_a1(row_index, column_index)}={value}')
 
     print(f'  A1:G12 error cells: {", ".join(error_cells) if error_cells else "none"}')
+    try:
+        session = AuthorizedSession(client.auth)
+        range_name = "'Сайт'!A1:G12"
+        fields = (
+            'sheets(data(rowData(values(userEnteredValue,effectiveValue,'
+            'formattedValue,errorValue,note))))'
+        )
+        url = (
+            f'https://sheets.googleapis.com/v4/spreadsheets/{sheet.id}'
+            f'?ranges={range_name}&includeGridData=true&fields={fields}'
+        )
+        response = session.get(url, timeout=30)
+        response.raise_for_status()
+        grid = response.json().get('sheets', [{}])[0].get('data', [{}])[0].get('rowData', [])
+        detailed_errors = []
+        for row_index, row in enumerate(grid, start=1):
+            for column_index, cell in enumerate(row.get('values', []), start=1):
+                error = cell.get('effectiveValue', {}).get('errorValue') or cell.get('errorValue')
+                if error:
+                    detailed_errors.append(
+                        f"{gspread.utils.rowcol_to_a1(row_index, column_index)}="
+                        f"{error.get('type', '')}: {compact(error.get('message', ''), 260)}"
+                    )
+        print(f'  Detailed errors: {detailed_errors or "none"}')
+    except Exception as error:
+        print(f'  Detailed error read failed: {type(error).__name__}: {compact(error, 300)}')
     print(f'  A1000:G1000 display: {tail[-1] if tail else []}')
 
     for row_index, row in enumerate(formulas, start=1):
