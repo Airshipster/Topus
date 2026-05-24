@@ -20,7 +20,7 @@ def formula_for_column(label: str, header: str, transform: str | None = None, ap
 
     return (
         f'=LET(sourceId;"{SOURCE_SPREADSHEET_ID}";'
-        f'data;IMPORTRANGE(sourceId;"Список. YouTube!A:Z");'
+        f'data;IMPORTRANGE(sourceId;"Список. YouTube!A1:W2100");'
         f'headers;INDEX(data;1;);'
         f'label;"{label}";'
         f'position;MATCH(label;headers;0);'
