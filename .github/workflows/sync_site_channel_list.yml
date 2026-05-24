@@ -1,0 +1,83 @@
+name: Sync Site Channel List
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  repository_dispatch:
+    types: [topus-sync-site-channel-list]
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Manual run reason
+        required: false
+        default: manual
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: site-channel-list-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Topus
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Set up GitLab SSH key
+        env:
+          GITLAB_SSH_PRIVATE_KEY: ${{ secrets.GITLAB_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$GITLAB_SSH_PRIVATE_KEY" ]; then
+            echo "GITLAB_SSH_PRIVATE_KEY secret is required for site deploy" >&2
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$GITLAB_SSH_PRIVATE_KEY" > ~/.ssh/gitlab_deploy_key
+          chmod 600 ~/.ssh/gitlab_deploy_key
+          ssh-keyscan -H gitlab.com >> ~/.ssh/known_hosts
+          cat >> ~/.ssh/config <<'EOF'
+          Host gitlab.com
+            HostName gitlab.com
+            User git
+            IdentityFile ~/.ssh/gitlab_deploy_key
+            IdentitiesOnly yes
+          EOF
+
+      - name: Sync TopusMaster site sheet to website repo
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          TOPUS_MASTER_SPREADSHEET_ID: ${{ secrets.TOPUS_MASTER_SPREADSHEET_ID }}
+          TOPUS_SITE_WORKSHEET_NAME: ${{ secrets.TOPUS_SITE_WORKSHEET_NAME }}
+          GITLAB_REPO_URL: ${{ secrets.GITLAB_REPO_URL }}
+          GITLAB_BRANCH: ${{ secrets.GITLAB_BRANCH }}
+          CSV_PATH: ${{ secrets.CSV_PATH }}
+          UPDATED_AT_PATH: ${{ secrets.UPDATED_AT_PATH }}
+          APP_UTC_OFFSET_HOURS: ${{ secrets.APP_UTC_OFFSET_HOURS }}
+          APP_TIMEZONE_LABEL: ${{ secrets.APP_TIMEZONE_LABEL }}
+          GIT_AUTHOR_NAME: ${{ secrets.GIT_AUTHOR_NAME }}
+          GIT_AUTHOR_EMAIL: ${{ secrets.GIT_AUTHOR_EMAIL }}
+        run: python src/sync_site_channels_to_gitlab.py
+
+      - name: Cleanup old successful site sync runs
+        if: success()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          WORKFLOW_ID: sync_site_channel_list.yml
+          KEEP_SUCCESSFUL_RUN_DAYS: "30"
+        run: python src/cleanup_successful_runs.py

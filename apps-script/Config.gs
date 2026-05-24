@@ -7,3 +7,4 @@ var GITHUB_OWNER = 'Airshipster';
 var GITHUB_REPO = 'Topus';
 var GITHUB_DISPATCH_EVENT_TYPE = 'topus-push';
 var GITHUB_WORKER_CONFIG_DISPATCH_EVENT_TYPE = 'topus-sync-worker-config';
+var GITHUB_SITE_LIST_DISPATCH_EVENT_TYPE = 'topus-sync-site-channel-list';

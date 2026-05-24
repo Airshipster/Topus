@@ -9,6 +9,7 @@ function addTopusMenu_() {
     .addItem('Проверить push-подписки', 'runTopusSubscriptionRenew')
     .addItem('Синхронизировать меню ботов', 'runTopusWorkerConfigSync')
     .addItem('Синхронизировать ботов с Cloudflare', 'runTopusBotCloudflareSyncV2')
+    .addItem('Задеплоить список каналов на сайт', 'runTopusSiteChannelListSync')
     .addToUi();
 }
 
@@ -54,6 +55,20 @@ function runTopusBotCloudflareSyncV2() {
 
 function runTopusBotCloudflareSync() {
   return runTopusBotCloudflareSyncV2();
+}
+
+function runTopusSiteChannelListSync() {
+  var result = triggerRepositoryDispatch_(GITHUB_SITE_LIST_DISPATCH_EVENT_TYPE, {
+    reason: 'manual-google-sheet-menu'
+  });
+
+  if (result && result.ok) {
+    SpreadsheetApp.getActiveSpreadsheet().toast('Деплой списка каналов на сайт отправлен в GitHub Actions', 'Topus', 5);
+    return;
+  }
+
+  var message = result && result.message ? result.message : 'unknown error';
+  SpreadsheetApp.getActiveSpreadsheet().toast('Деплой списка каналов на сайт не отправлен: ' + message, 'Topus', 8);
 }
 
 function writeTopusBotSyncStatus_(text) {
