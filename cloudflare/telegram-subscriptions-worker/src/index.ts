@@ -516,10 +516,22 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
     return;
   }
 
-  if (action === 'adminstats' || action === 'grantfree') {
+  if (action === 'adminstats' || action === 'grantfree' || action === 'adminsyncinfo') {
     const admin = await isAdmin(env, project.code, String(callback.from.id));
     if (!admin) {
       await answer(project.bot_token, callback.id, 'Недостаточно прав');
+      return;
+    }
+    if (action === 'adminsyncinfo') {
+      await answer(project.bot_token, callback.id, 'Синхронизация запускается из меню Topus в Google Sheets');
+      if (message) {
+        await telegram(project.bot_token, 'editMessageText', {
+          chat_id: message.chat.id,
+          message_id: message.message_id,
+          text: 'Список категорий и каналов для бота обновляется из Google Sheets через пункт меню Topus -> Синхронизировать меню ботов. Автоматически это также запускается каждый день в 10:00 GMT+4.',
+          reply_markup: renderAdminStatsMenu(),
+        });
+      }
       return;
     }
     if (action === 'adminstats') {
@@ -745,7 +757,7 @@ async function renderMainMenu(env: Env, projectCode: string, userId: string): Pr
     [{ text: `✅ Мои подписки (${subscriptionCount}/${channelCount})`, callback_data: 'subs:0' }],
     [{ text: `📺 Все каналы (${channelCount})`, callback_data: 'allch:0' }],
     [{ text: statusLabel, callback_data: 'plan:root' }],
-    [{ text: 'Еженедельные напоминания', callback_data: 'reminders:root' }],
+    [{ text: '🔔 Напоминания', callback_data: 'reminders:root' }],
     [{ text: 'Дополнительно', callback_data: 'extra:root' }],
   ];
   if (admin) {
@@ -759,6 +771,7 @@ async function renderMainMenu(env: Env, projectCode: string, userId: string): Pr
 function renderAdminStatsMenu(): object {
   return {
     inline_keyboard: [
+      [{ text: '🔄 Меню ботов обновляется из Google Sheets', callback_data: 'adminsyncinfo:root' }],
       [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
     ],
   };
