@@ -1,11 +1,6 @@
 from collections import Counter, defaultdict
-import json
-from urllib.parse import urlencode
 
 import config
-import gspread
-from google.auth.transport.requests import AuthorizedSession
-from google.oauth2.service_account import Credentials
 from sheets import (
     authenticate_google_sheets,
     clean_sheet_value,
@@ -39,96 +34,6 @@ def compact(value, limit=140):
     if len(text) <= limit:
         return text
     return text[:limit - 3] + '...'
-
-
-def inspect_site_imports(client, sheet):
-    print('\nSite sheet import diagnostics:')
-    try:
-        worksheet = sheet.worksheet('Сайт')
-    except gspread.WorksheetNotFound:
-        print('  Sheet "Сайт" not found')
-        return
-
-    print(
-        f'  TopusMaster -> Сайт: sheet_id={worksheet.id} '
-        f'rows={worksheet.row_count} cols={worksheet.col_count}'
-    )
-    display = worksheet.get('A1:G12', value_render_option='FORMATTED_VALUE')
-    formulas = worksheet.get('A1:G12', value_render_option='FORMULA')
-    tail = worksheet.get('A998:G1000', value_render_option='FORMATTED_VALUE')
-
-    error_cells = []
-    for row_index, row in enumerate(display, start=1):
-        for column_index, value in enumerate(row, start=1):
-            if str(value or '').strip().startswith('#'):
-                error_cells.append(f'{gspread.utils.rowcol_to_a1(row_index, column_index)}={value}')
-
-    print(f'  A1:G12 error cells: {", ".join(error_cells) if error_cells else "none"}')
-    print(f'  A1:G5 display sample: {display[:5]}')
-    try:
-        credentials = Credentials.from_service_account_info(
-            json.loads(config.SERVICE_ACCOUNT_JSON),
-            scopes=['https://www.googleapis.com/auth/spreadsheets'],
-        )
-        session = AuthorizedSession(credentials)
-        range_name = "'Сайт'!A1:G12"
-        fields = (
-            'sheets(data(rowData(values(userEnteredValue,effectiveValue,'
-            'formattedValue,errorValue,note))))'
-        )
-        query = urlencode({'ranges': range_name, 'includeGridData': 'true', 'fields': fields})
-        url = f'https://sheets.googleapis.com/v4/spreadsheets/{sheet.id}?{query}'
-        response = session.get(url, timeout=30)
-        response.raise_for_status()
-        grid = response.json().get('sheets', [{}])[0].get('data', [{}])[0].get('rowData', [])
-        detailed_errors = []
-        for row_index, row in enumerate(grid, start=1):
-            for column_index, cell in enumerate(row.get('values', []), start=1):
-                error = cell.get('effectiveValue', {}).get('errorValue') or cell.get('errorValue')
-                if error:
-                    detailed_errors.append(
-                        f"{gspread.utils.rowcol_to_a1(row_index, column_index)}="
-                        f"{error.get('type', '')}: {compact(error.get('message', ''), 260)}"
-                    )
-        print(f'  Detailed errors: {detailed_errors or "none"}')
-    except Exception as error:
-        print(f'  Detailed error read failed: {type(error).__name__}: {compact(error, 300)}')
-    print(f'  A1000:G1000 display: {tail[-1] if tail else []}')
-
-    for row_index, row in enumerate(formulas, start=1):
-        for column_index, formula in enumerate(row, start=1):
-            if formula:
-                single_line = compact(formula.replace('\n', '\\n'), 500)
-                print(f'  formula {gspread.utils.rowcol_to_a1(row_index, column_index)}: {single_line}')
-
-    source_id = ''
-    if tail and len(tail[-1]) > 0:
-        source_id = str(tail[-1][0] or '').strip()
-    if not source_id:
-        print('  Source spreadsheet id in A1000 is empty')
-        return
-
-    try:
-        source = client.open_by_key(source_id)
-        print(f'  Source spreadsheet: {source.title}')
-        names = [ws.title for ws in source.worksheets()]
-        print(f'  Source sheets: {", ".join(names)}')
-        try:
-            source_ws = source.worksheet('Список. YouTube')
-        except gspread.WorksheetNotFound:
-            print('  Source sheet "Список. YouTube" not found')
-            return
-        source_values = source_ws.get('A1:Z40', value_render_option='FORMATTED_VALUE')
-        headers = source_values[0] if source_values else []
-        print(f'  Source Список. YouTube rows={source_ws.row_count} cols={source_ws.col_count}')
-        print(f'  Source first row: {headers}')
-        marker_rows = []
-        for row_number, row in enumerate(source_values, start=1):
-            if any('🔵' in str(cell or '') for cell in row):
-                marker_rows.append(row_number)
-        print(f'  Blue marker rows in A1:Z40: {marker_rows or "none"}')
-    except Exception as error:
-        print(f'  Source open/read failed: {type(error).__name__}: {compact(error, 300)}')
 
 
 def inspect_subscriptions(sheet):
@@ -255,7 +160,6 @@ def inspect_project_statuses(sheet):
 def main():
     client = authenticate_google_sheets()
     sheet = client.open_by_key(config.SPREADSHEET_ID)
-    inspect_site_imports(client, sheet)
     inspect_subscriptions(sheet)
     inspect_project_statuses(sheet)
 
