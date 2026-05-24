@@ -1,5 +1,6 @@
 from collections import Counter, defaultdict
 import json
+from urllib.parse import urlencode
 
 import config
 import gspread
@@ -63,6 +64,7 @@ def inspect_site_imports(client, sheet):
                 error_cells.append(f'{gspread.utils.rowcol_to_a1(row_index, column_index)}={value}')
 
     print(f'  A1:G12 error cells: {", ".join(error_cells) if error_cells else "none"}')
+    print(f'  A1:G5 display sample: {display[:5]}')
     try:
         credentials = Credentials.from_service_account_info(
             json.loads(config.SERVICE_ACCOUNT_JSON),
@@ -74,10 +76,8 @@ def inspect_site_imports(client, sheet):
             'sheets(data(rowData(values(userEnteredValue,effectiveValue,'
             'formattedValue,errorValue,note))))'
         )
-        url = (
-            f'https://sheets.googleapis.com/v4/spreadsheets/{sheet.id}'
-            f'?ranges={range_name}&includeGridData=true&fields={fields}'
-        )
+        query = urlencode({'ranges': range_name, 'includeGridData': 'true', 'fields': fields})
+        url = f'https://sheets.googleapis.com/v4/spreadsheets/{sheet.id}?{query}'
         response = session.get(url, timeout=30)
         response.raise_for_status()
         grid = response.json().get('sheets', [{}])[0].get('data', [{}])[0].get('rowData', [])
