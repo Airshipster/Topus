@@ -1,8 +1,10 @@
 from collections import Counter, defaultdict
+import json
 
 import config
 import gspread
 from google.auth.transport.requests import AuthorizedSession
+from google.oauth2.service_account import Credentials
 from sheets import (
     authenticate_google_sheets,
     clean_sheet_value,
@@ -62,7 +64,11 @@ def inspect_site_imports(client, sheet):
 
     print(f'  A1:G12 error cells: {", ".join(error_cells) if error_cells else "none"}')
     try:
-        session = AuthorizedSession(client.auth)
+        credentials = Credentials.from_service_account_info(
+            json.loads(config.SERVICE_ACCOUNT_JSON),
+            scopes=['https://www.googleapis.com/auth/spreadsheets'],
+        )
+        session = AuthorizedSession(credentials)
         range_name = "'Сайт'!A1:G12"
         fields = (
             'sheets(data(rowData(values(userEnteredValue,effectiveValue,'
