@@ -6,3 +6,4 @@ var PUSH_EVENT_DEDUP_DAYS = 7;
 var GITHUB_OWNER = 'Airshipster';
 var GITHUB_REPO = 'Topus';
 var GITHUB_DISPATCH_EVENT_TYPE = 'topus-push';
+var GITHUB_WORKER_CONFIG_DISPATCH_EVENT_TYPE = 'topus-sync-worker-config';

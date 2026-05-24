@@ -7,6 +7,7 @@ function addTopusMenu_() {
     .createMenu('Topus')
     .addItem('Забрать обновления сейчас', 'runTopusManualRefresh')
     .addItem('Проверить push-подписки', 'runTopusSubscriptionRenew')
+    .addItem('Обновить каналы бота в Cloudflare', 'runTopusWorkerConfigSync')
     .addItem('Синхронизировать ботов с Cloudflare', 'runTopusBotCloudflareSyncV2')
     .addToUi();
 }
@@ -19,6 +20,21 @@ function runTopusManualRefresh() {
 function runTopusSubscriptionRenew() {
   triggerPublisher_('', '', {syncOnly: true, forceSubscriptionSync: true});
   SpreadsheetApp.getActiveSpreadsheet().toast('Проверка push-подписок отправлена в GitHub Actions', 'Topus', 5);
+}
+
+function runTopusWorkerConfigSync() {
+  writeTopusBotSyncStatus_('Bot channel list sync: GitHub Actions dispatching at ' + topusStatusTimestamp_());
+  var result = triggerRepositoryDispatch_(GITHUB_WORKER_CONFIG_DISPATCH_EVENT_TYPE, {});
+
+  if (result && result.ok) {
+    writeTopusBotSyncStatus_('Bot channel list sync: GitHub Actions accepted at ' + topusStatusTimestamp_() + '; status=' + result.status);
+    SpreadsheetApp.getActiveSpreadsheet().toast('Обновление каналов бота в Cloudflare отправлено в GitHub Actions', 'Topus', 5);
+    return;
+  }
+
+  var message = result && result.message ? result.message : 'unknown error';
+  writeTopusBotSyncStatus_('Bot channel list sync: dispatch failed at ' + topusStatusTimestamp_() + '; ' + message);
+  SpreadsheetApp.getActiveSpreadsheet().toast('Обновление каналов бота в Cloudflare не отправлено', 'Topus', 8);
 }
 
 function runTopusBotCloudflareSyncV2() {

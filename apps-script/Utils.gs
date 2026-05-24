@@ -35,14 +35,7 @@ function formatTimestamp_(date) {
 }
 
 function triggerPublisher_(videoId, channelId, options) {
-  var token = PropertiesService.getScriptProperties().getProperty('GITHUB_DISPATCH_TOKEN');
   options = options || {};
-
-  if (!token) {
-    var missingTokenMessage = 'GITHUB_DISPATCH_TOKEN is not set; publisher will run on cron fallback';
-    console.warn(missingTokenMessage);
-    return {ok: false, status: 0, message: missingTokenMessage};
-  }
 
   if (videoId || channelId) {
     var properties = PropertiesService.getScriptProperties();
@@ -56,16 +49,28 @@ function triggerPublisher_(videoId, channelId, options) {
     properties.setProperty('TOPUS_LAST_PUSH_DISPATCH_MS', String(now));
   }
 
+  return triggerRepositoryDispatch_(GITHUB_DISPATCH_EVENT_TYPE, {
+    video_id: videoId || '',
+    channel_id: channelId || '',
+    force_subscription_sync: options.forceSubscriptionSync ? 'true' : 'false',
+    sync_only: options.syncOnly ? 'true' : 'false',
+    sync_bot_state: options.syncBotState ? 'true' : 'false'
+  });
+}
+
+function triggerRepositoryDispatch_(eventType, clientPayload) {
+  var token = PropertiesService.getScriptProperties().getProperty('GITHUB_DISPATCH_TOKEN');
+
+  if (!token) {
+    var missingTokenMessage = 'GITHUB_DISPATCH_TOKEN is not set; GitHub dispatch cannot be sent';
+    console.warn(missingTokenMessage);
+    return {ok: false, status: 0, message: missingTokenMessage};
+  }
+
   var url = 'https://api.github.com/repos/' + GITHUB_OWNER + '/' + GITHUB_REPO + '/dispatches';
   var payload = {
-    event_type: GITHUB_DISPATCH_EVENT_TYPE,
-    client_payload: {
-      video_id: videoId || '',
-      channel_id: channelId || '',
-      force_subscription_sync: options.forceSubscriptionSync ? 'true' : 'false',
-      sync_only: options.syncOnly ? 'true' : 'false',
-      sync_bot_state: options.syncBotState ? 'true' : 'false'
-    }
+    event_type: eventType,
+    client_payload: clientPayload || {}
   };
 
   var response = UrlFetchApp.fetch(url, {
