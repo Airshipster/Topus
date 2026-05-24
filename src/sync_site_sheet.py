@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import config
+import gspread
+import time
 from sheets import authenticate_google_sheets, clean_sheet_value, get_values_with_quota_retry
 
 
 TARGET_SHEET_NAME = "Сайт"
 SOURCE_SHEET_NAME = "Список. YouTube"
 SOURCE_STATS_SHEET_NAME = "Стат. Каналы"
+SOURCE_READ_COLUMNS_END = "W"
 TARGET_ROWS_BEFORE_META = 999
 TARGET_COLUMNS = 7
 
@@ -23,6 +26,51 @@ HEADER = [
 
 def normalize_cell(value):
     return str(clean_sheet_value(value) or "").strip()
+
+
+def is_retryable_sheets_error(error):
+    text = str(error)
+    return isinstance(error, gspread.exceptions.APIError) and (
+        "[429]" in text
+        or "[500]" in text
+        or "[502]" in text
+        or "[503]" in text
+        or "[504]" in text
+        or "Quota exceeded" in text
+        or "service is currently unavailable" in text.lower()
+    )
+
+
+def read_values_with_retry(worksheet, range_name, attempts=8):
+    delay_seconds = 10
+    for attempt in range(1, attempts + 1):
+        try:
+            return worksheet.get(range_name)
+        except Exception as error:
+            if not is_retryable_sheets_error(error) or attempt >= attempts:
+                raise
+            print(
+                f"  ⚠️  Google Sheets busy while reading {worksheet.title} {range_name}; "
+                f"retry {attempt}/{attempts - 1} in {delay_seconds}s: {type(error).__name__}: {error}"
+            )
+            time.sleep(delay_seconds)
+            delay_seconds = min(delay_seconds * 2, 60)
+
+
+def update_values_with_retry(worksheet, range_name, values, attempts=5):
+    delay_seconds = 10
+    for attempt in range(1, attempts + 1):
+        try:
+            return worksheet.update(range_name, values, value_input_option="USER_ENTERED")
+        except Exception as error:
+            if not is_retryable_sheets_error(error) or attempt >= attempts:
+                raise
+            print(
+                f"  ⚠️  Google Sheets busy while writing {worksheet.title} {range_name}; "
+                f"retry {attempt}/{attempts - 1} in {delay_seconds}s: {type(error).__name__}: {error}"
+            )
+            time.sleep(delay_seconds)
+            delay_seconds = min(delay_seconds * 2, 60)
 
 
 def column_index(headers, label):
@@ -107,7 +155,9 @@ def main():
         raise RuntimeError("Source spreadsheet id is missing in Сайт!A1000")
 
     source = client.open_by_key(source_id)
-    source_values = get_values_with_quota_retry(source.worksheet(SOURCE_SHEET_NAME), "A:Z", attempts=5)
+    source_worksheet = source.worksheet(SOURCE_SHEET_NAME)
+    source_range = f"A1:{SOURCE_READ_COLUMNS_END}{source_worksheet.row_count}"
+    source_values = read_values_with_retry(source_worksheet, source_range)
     channel_folder = ""
     try:
         stats_values = get_values_with_quota_retry(source.worksheet(SOURCE_STATS_SHEET_NAME), "A2:A2", attempts=3)
@@ -116,7 +166,7 @@ def main():
         print(f"  ⚠️  Could not read {SOURCE_STATS_SHEET_NAME}!A2: {type(error).__name__}: {error}")
 
     rows = build_site_rows(source_values, channel_folder)
-    target.update(f"A1:G{TARGET_ROWS_BEFORE_META}", rows, value_input_option="USER_ENTERED")
+    update_values_with_retry(target, f"A1:G{TARGET_ROWS_BEFORE_META}", rows)
     print(f"Updated {TARGET_SHEET_NAME}: {len(rows)} rows from {source.title}/{SOURCE_SHEET_NAME}")
 
 
