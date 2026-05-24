@@ -3,45 +3,39 @@ from sheets import authenticate_google_sheets
 
 
 SOURCE_SPREADSHEET_ID = "1m67OLnwzOLCjnLCj_xZG_eT6R90yXwLWLXOxkTrjDuY"
+BLANK_ROW = "\\".join(['""'] * 7)
+UPDATED_ROW = "\\".join(["updated"] + ['""'] * 6)
 
-
-def formula_for_column(label: str, header: str, transform: str | None = None, append_timestamp: bool = False) -> str:
-    value_expr = "filtered"
-    if transform == "youtube_url":
-        value_expr = 'ARRAYFORMULA(IF(REGEXMATCH(filtered;"https://www\\\\.");REGEXREPLACE(filtered;"https://www\\\\.";"");filtered))'
-    elif transform == "partner":
-        value_expr = 'ARRAYFORMULA(IF(ARRAYFORMULA(IFERROR(FIND("🐙";filtered;1)>0;FALSE));"🐙";""))'
-    elif transform == "year":
-        value_expr = "ARRAYFORMULA(IF(ISNUMBER(filtered);YEAR(filtered);filtered))"
-
-    tail = ""
-    if append_timestamp:
-        tail = f';"";"";"";IMPORTRANGE("{SOURCE_SPREADSHEET_ID}";"\'Стат. Каналы\'!A2")'
-
-    return (
-        f'=LET(sourceId;"{SOURCE_SPREADSHEET_ID}";'
-        f'data;IMPORTRANGE(sourceId;"Список. YouTube!A:W");'
-        f'headers;INDEX(data;1;);'
-        f'label;"{label}";'
-        f'position;MATCH(label;headers;0);'
-        f'column;INDEX(data;;position);'
-        f'rowCount;ROWS(data);'
-        f'startRow;MATCH(label;column;0)+1;'
-        f'endRow;MATCH("🔵";column;0)-1;'
-        f'filtered;FILTER(column;(SEQUENCE(rowCount)>=startRow)*(SEQUENCE(rowCount)<=endRow));'
-        f'VSTACK("{header}";{value_expr}{tail}))'
-    )
-
-
-FORMULAS = [[
-    formula_for_column("Название", "Название" + chr(10) + "проекта", append_timestamp=True),
-    formula_for_column("/channel/", "Ссылка " + chr(10) + "на канал", "youtube_url"),
-    formula_for_column("3▼ Партнёр", "Партнёр " + chr(10) + "SciTopus", "partner"),
-    formula_for_column("Видео", "Кол." + chr(10) + " видео"),
-    formula_for_column("Посл. вид.", "Год послед." + chr(10) + " видео", "year"),
-    formula_for_column("Создан", "Год создания" + chr(10) + " канала", "year"),
-    formula_for_column("TG-каналы партнёров", "TG-каналы" + chr(10) + " партнёров"),
-]]
+FORMULA = f'''=LET(
+  sourceId;"{SOURCE_SPREADSHEET_ID}";
+  data;IMPORTRANGE(sourceId;"Список. YouTube!A:W");
+  updated;IMPORTRANGE(sourceId;"'Стат. Каналы'!A2");
+  headers;INDEX(data;1;);
+  rowCount;ROWS(data);
+  nameCol;INDEX(data;;MATCH("Название";headers;0));
+  startRow;MATCH("Название";nameCol;0)+1;
+  endRow;MATCH("🔵";nameCol;0)-1;
+  mask;(SEQUENCE(rowCount)>=startRow)*(SEQUENCE(rowCount)<=endRow);
+  names;FILTER(nameCol;mask);
+  rawLinks;FILTER(INDEX(data;;MATCH("/channel/";headers;0));mask);
+  rawPartners;FILTER(INDEX(data;;MATCH("3▼ Партнёр";headers;0));mask);
+  videos;FILTER(INDEX(data;;MATCH("Видео";headers;0));mask);
+  rawLast;FILTER(INDEX(data;;MATCH("Посл. вид.";headers;0));mask);
+  rawCreated;FILTER(INDEX(data;;MATCH("Создан";headers;0));mask);
+  tg;FILTER(INDEX(data;;MATCH("TG-каналы партнёров";headers;0));mask);
+  links;ARRAYFORMULA(IF(REGEXMATCH(rawLinks;"https://www\\.");REGEXREPLACE(rawLinks;"https://www\\.";"");rawLinks));
+  partners;ARRAYFORMULA(IF(IFERROR(FIND("🐙";rawPartners;1)>0;FALSE);"🐙";""));
+  lastYears;ARRAYFORMULA(IF(ISNUMBER(rawLast);YEAR(rawLast);rawLast));
+  createdYears;ARRAYFORMULA(IF(ISNUMBER(rawCreated);YEAR(rawCreated);rawCreated));
+  {{
+    "Название"&CHAR(10)&"проекта"\\"Ссылка "&CHAR(10)&"на канал"\\"Партнёр "&CHAR(10)&"SciTopus"\\"Кол."&CHAR(10)&" видео"\\"Год послед."&CHAR(10)&" видео"\\"Год создания"&CHAR(10)&" канала"\\"TG-каналы"&CHAR(10)&" партнёров";
+    names\\links\\partners\\videos\\lastYears\\createdYears\\tg;
+    {BLANK_ROW};
+    {BLANK_ROW};
+    {BLANK_ROW};
+    {UPDATED_ROW}
+  }}
+)'''
 
 
 def main():
@@ -49,8 +43,8 @@ def main():
     spreadsheet = client.open_by_key(config.SPREADSHEET_ID)
     worksheet = spreadsheet.worksheet("Сайт")
     worksheet.batch_clear(["A1:G1000", "A1000"])
-    worksheet.update("A1:G1", FORMULAS, value_input_option="USER_ENTERED")
-    print("Installed live Сайт formulas with embedded source ID and cleared A1000")
+    worksheet.update("A1", [[FORMULA]], value_input_option="USER_ENTERED")
+    print("Installed single live Сайт formula with dynamic blue-marker boundary")
 
 
 if __name__ == "__main__":
