@@ -27,6 +27,7 @@ CANONICAL_HEADER = [
 
 SOURCE_TIMESTAMP_PATTERN = re.compile(r"Обновление завершено:\s*(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2}):(\d{2})")
 SOURCE_PROGRESS_PATTERN = re.compile(r"^\[\d{2}:\d{2}:\d{2}\]\s+")
+SPREADSHEET_ERROR_VALUES = {"#REF!", "#N/A", "#VALUE!", "#ERROR!", "#DIV/0!", "#NAME?", "#NUM!", "#NULL!"}
 
 
 def require_env(name: str) -> str:
@@ -149,6 +150,15 @@ def should_skip_row(row: list[str]) -> bool:
     return False
 
 
+def find_spreadsheet_errors(row: list[str]) -> list[str]:
+    errors = []
+    for cell in row:
+        value = str(cell or "").strip()
+        if value in SPREADSHEET_ERROR_VALUES:
+            errors.append(value)
+    return errors
+
+
 def parse_source_updated_at(row: list[str], target_utc_offset_hours: int, timezone_label: str) -> str | None:
     text = " ".join(cell for cell in row if cell).strip()
     match = SOURCE_TIMESTAMP_PATTERN.search(text)
@@ -188,6 +198,11 @@ def normalize_rows(values: list[list[str]], target_utc_offset_hours: int, timezo
 
         if not any(row):
             continue
+        spreadsheet_errors = find_spreadsheet_errors(row)
+        if spreadsheet_errors:
+            raise RuntimeError(
+                f"Spreadsheet error in source sheet at row {line_number}: {', '.join(sorted(set(spreadsheet_errors)))}"
+            )
         if len(row) < 7:
             row.extend([""] * (7 - len(row)))
         row = row[:7]
