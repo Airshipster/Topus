@@ -627,8 +627,10 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
   } else if (action === 'reminders') {
     menu = await renderReminderMenu(env, project.code, String(callback.from.id));
     text = REMINDER_SETTINGS_TEXT;
-  } else if (action === 'remon' || action === 'remoff') {
-    const enabled = action === 'remon';
+  } else if (action === 'remtoggle' || action === 'remon' || action === 'remoff') {
+    const enabled = action === 'remtoggle'
+      ? !await weeklyRemindersEnabled(env, project.code, String(callback.from.id))
+      : action === 'remon';
     await setWeeklyReminders(env, project.code, String(callback.from.id), enabled);
     menu = await renderReminderMenu(env, project.code, String(callback.from.id));
     text = enabled
@@ -804,6 +806,8 @@ const REMINDER_SETTINGS_TEXT = [
   'Еженедельные напоминания помогают время от времени пересматривать подписки.',
   '',
   'Список каналов SciTopus может обновляться, а ваши интересы тоже могут меняться. Раз в неделю бот может напомнить открыть категории, подписаться на новые каналы или отключить лишнее.',
+  '',
+  'Напоминание приходит всем, кто его включил, в воскресенье вечером по московскому времени.',
 ].join('\n');
 
 const WEEKLY_REMINDER_TEXT = [
@@ -815,9 +819,7 @@ const WEEKLY_REMINDER_TEXT = [
 async function renderReminderMenu(env: Env, projectCode: string, userId: string): Promise<object> {
   const enabled = await weeklyRemindersEnabled(env, projectCode, userId);
   const rows: Array<Array<TelegramButton>> = [
-    [{ text: enabled ? '✅ Напоминания включены' : 'Напоминания выключены', callback_data: 'noop' }],
-    [{ text: 'Включить', callback_data: 'remon:root' }],
-    [{ text: 'Отключить', callback_data: 'remoff:root' }],
+    [{ text: enabled ? '✅ Напоминания включены' : '➕ Включить напоминания', callback_data: 'remtoggle:root' }],
     [{ text: '📚 Открыть категории', callback_data: 'cats:root' }],
     [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
   ];
@@ -1533,13 +1535,7 @@ async function sendWeeklySubscriptionReminders(env: Env): Promise<void> {
      JOIN projects p ON p.code = u.project_code
      WHERE p.active = 1
        AND COALESCE(u.weekly_reminders, 0) = 1
-       AND (
-         u.last_reminder_at IS NULL
-         OR u.last_reminder_at = ''
-         OR u.last_reminder_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-6 days')
-       )
-     ORDER BY p.code, u.user_id
-     LIMIT 500`,
+     ORDER BY p.code, u.user_id`,
   ).all<{ project_code: string; bot_token: string; user_id: string }>();
 
   for (const row of rows.results || []) {

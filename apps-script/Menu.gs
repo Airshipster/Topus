@@ -7,7 +7,7 @@ function addTopusMenu_() {
     .createMenu('Topus')
     .addItem('Забрать обновления сейчас', 'runTopusManualRefresh')
     .addItem('Проверить push-подписки', 'runTopusSubscriptionRenew')
-    .addItem('Обновить каналы бота в Cloudflare', 'runTopusWorkerConfigSync')
+    .addItem('Синхронизировать меню ботов', 'runTopusWorkerConfigSync')
     .addItem('Синхронизировать ботов с Cloudflare', 'runTopusBotCloudflareSyncV2')
     .addToUi();
 }
@@ -23,18 +23,18 @@ function runTopusSubscriptionRenew() {
 }
 
 function runTopusWorkerConfigSync() {
-  writeTopusBotSyncStatus_('Bot channel list sync: GitHub Actions dispatching at ' + topusStatusTimestamp_());
+  writeTopusBotSyncStatus_('Bot menu sync: GitHub Actions dispatching at ' + topusStatusTimestamp_());
   var result = triggerRepositoryDispatch_(GITHUB_WORKER_CONFIG_DISPATCH_EVENT_TYPE, {});
 
   if (result && result.ok) {
-    writeTopusBotSyncStatus_('Bot channel list sync: GitHub Actions accepted at ' + topusStatusTimestamp_() + '; status=' + result.status);
-    SpreadsheetApp.getActiveSpreadsheet().toast('Обновление каналов бота в Cloudflare отправлено в GitHub Actions', 'Topus', 5);
+    writeTopusBotSyncStatus_('Bot menu sync: GitHub Actions accepted at ' + topusStatusTimestamp_() + '; status=' + result.status);
+    SpreadsheetApp.getActiveSpreadsheet().toast('Синхронизация меню ботов отправлена в GitHub Actions', 'Topus', 5);
     return;
   }
 
   var message = result && result.message ? result.message : 'unknown error';
-  writeTopusBotSyncStatus_('Bot channel list sync: dispatch failed at ' + topusStatusTimestamp_() + '; ' + message);
-  SpreadsheetApp.getActiveSpreadsheet().toast('Обновление каналов бота в Cloudflare не отправлено', 'Topus', 8);
+  writeTopusBotSyncStatus_('Bot menu sync: dispatch failed at ' + topusStatusTimestamp_() + '; ' + message);
+  SpreadsheetApp.getActiveSpreadsheet().toast('Синхронизация меню ботов не отправлена', 'Topus', 8);
 }
 
 function runTopusBotCloudflareSyncV2() {
@@ -74,7 +74,7 @@ function findTopusBotStatusColumn_(sheet) {
     var top = String(firstRow[column - 1] || '').trim();
     var bottom = String(secondRow[column - 1] || '').trim();
     var combined = top + '\n' + bottom;
-    if (/Cloudflare sync|Bot Cloudflare sync|remaining|source:/i.test(combined)) {
+    if (/Cloudflare sync|Bot Cloudflare sync|Bot menu sync|remaining|source:/i.test(combined)) {
       return column;
     }
   }

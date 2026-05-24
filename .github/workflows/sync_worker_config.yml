@@ -1,6 +1,8 @@
 name: Sync Telegram Worker Config
 
 on:
+  schedule:
+    - cron: '0 6 * * *'
   repository_dispatch:
     types: [topus-sync-worker-config]
   workflow_dispatch:

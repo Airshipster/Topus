@@ -9,7 +9,7 @@
     "head_sampling_rate": 1
   },
   "triggers": {
-    "crons": ["0 8 * * 1"]
+    "crons": ["0 15 * * SUN"]
   },
   "d1_databases": [
     {
