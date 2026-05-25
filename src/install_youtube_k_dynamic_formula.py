@@ -26,7 +26,7 @@ STAT_ARRAY = "{" + SEP.join([
 ]) + "}"
 
 FORMULA = f'''=LET(
-  markerRow; IFERROR(MIN(FILTER(ROW(E3:E); REGEXMATCH(TO_TEXT(E3:E); "𐍈|🔵"))); MATCH(2; 1/(E:E<>""))+1);
+  markerRow; IFERROR(MIN(FILTER(ROW(E3:M); BYROW(E3:M; LAMBDA(row; REGEXMATCH(TEXTJOIN(""); row); "𐍈|🔵")))); MATCH(2; 1/(E:E<>""))+1);
   ids; E3:INDEX(E:E; markerRow-1);
   keys; 'Стат. Каналы'!M:M;
   VSTACK(
