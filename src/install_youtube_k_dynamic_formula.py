@@ -26,12 +26,11 @@ STAT_ARRAY = "{" + SEP.join([
 ]) + "}"
 
 FORMULA = f'''=LET(
-  markerEBlue; IFERROR(MATCH("*🔵*"; E3:E; 0)+2; 999999);
-  markerERune; IFERROR(MATCH("*𐍈*"; E3:E; 0)+2; 999999);
-  markerMBlue; IFERROR(MATCH("*🔵*"; M3:M; 0)+2; 999999);
-  markerMRune; IFERROR(MATCH("*𐍈*"; M3:M; 0)+2; 999999);
-  markerRow; IF(MIN(markerEBlue; markerERune; markerMBlue; markerMRune)<999999; MIN(markerEBlue; markerERune; markerMBlue; markerMRune); MATCH(2; 1/(E:E<>""))+1);
-  ids; E3:INDEX(E:E; markerRow-1);
+  blueRow; IFERROR(MATCH("*🔵*"; E3:E; 0)+2; 999999);
+  runeRow; IFERROR(MATCH("*𐍈*"; E3:E; 0)+2; 999999);
+  lastDataRow; MATCH(2; 1/(E:E<>""));
+  endRow; MIN(IF(blueRow<999999; blueRow-2; 999999); IF(runeRow<999999; runeRow-1; 999999); lastDataRow);
+  ids; E3:INDEX(E:E; endRow);
   keys; 'Стат. Каналы'!M:M;
   VSTACK(
     {HEADER_ARRAY};
