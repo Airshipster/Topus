@@ -7,9 +7,8 @@ from sheets import authenticate_google_sheets
 SPREADSHEET_ID_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9-_]+)|^([a-zA-Z0-9-_]{30,})$")
 FIXED_RANGE_RE = re.compile(r"(диапазон_ids\s*;\s*)E3:E\d+(\s*;)", re.IGNORECASE)
 BROKEN_RANGE_RE = re.compile(
-    r"диапазон_blueRow\s*;\s*IFERROR\(MATCH\(\"🔵\"\; E3:E\; 0\)\+2\; MATCH\(2\; 1/\(E:E<>\"\"\)\)\+2\)\s*;\s*"
-    r"ids\s*;\s*E3:INDEX\(E:E\; blueRow-2\)\s*;",
-    re.IGNORECASE,
+    r"диапазон_blueRow\s*;.*?ids\s*;\s*E3:INDEX\(E:E;\s*blueRow-2\)\s*;",
+    re.IGNORECASE | re.DOTALL,
 )
 
 
