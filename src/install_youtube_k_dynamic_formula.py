@@ -65,7 +65,6 @@ def main():
 
     spreadsheet = client.open_by_key(project_id)
     worksheet = spreadsheet.worksheet(worksheet_name)
-    worksheet.batch_clear(["K1:O1000"])
     worksheet.update("K1", [[FORMULA]], value_input_option="USER_ENTERED")
     print(f"Installed dynamic K1 formula in {spreadsheet.title} / {worksheet_name}")
 
