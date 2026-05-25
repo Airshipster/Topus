@@ -5,7 +5,12 @@ from sheets import authenticate_google_sheets
 
 
 SPREADSHEET_ID_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9-_]+)|^([a-zA-Z0-9-_]{30,})$")
-IDS_RANGE_RE = re.compile(r"ids\s*;\s*E3:E\d+\s*;", re.IGNORECASE)
+FIXED_RANGE_RE = re.compile(r"(диапазон_ids\s*;\s*)E3:E\d+(\s*;)", re.IGNORECASE)
+BROKEN_RANGE_RE = re.compile(
+    r"диапазон_blueRow\s*;\s*IFERROR\(MATCH\(\"🔵\"\; E3:E\; 0\)\+2\; MATCH\(2\; 1/\(E:E<>\"\"\)\)\+2\)\s*;\s*"
+    r"ids\s*;\s*E3:INDEX\(E:E\; blueRow-2\)\s*;",
+    re.IGNORECASE,
+)
 
 
 def extract_spreadsheet_id(value):
@@ -41,11 +46,19 @@ def main():
         raise RuntimeError("K1 formula is empty")
 
     formula = formula_rows[0][0]
-    replacement = (
+    dynamic_range = (
         'blueRow; IFERROR(MATCH("*🔵*"; E3:E; 0)+2; MATCH(2; 1/(E:E<>""))+2);\n'
-        '  ids; E3:INDEX(E:E; blueRow-2);'
+        '  диапазон_ids; E3:INDEX(E:E; blueRow-2);'
     )
-    updated = IDS_RANGE_RE.sub(replacement, formula, count=1)
+    updated = BROKEN_RANGE_RE.sub(dynamic_range, formula, count=1)
+    if updated == formula:
+        updated = FIXED_RANGE_RE.sub(rf"\1E3:INDEX(E:E; blueRow-2)\2", formula, count=1)
+        if updated != formula and "blueRow;" not in updated:
+            updated = updated.replace(
+                "=LET(",
+                '=LET(\n  blueRow; IFERROR(MATCH("*🔵*"; E3:E; 0)+2; MATCH(2; 1/(E:E<>""))+2);',
+                1,
+            )
     if updated == formula:
         raise RuntimeError(f"Could not find fixed ids range in K1 formula: {formula[:300]}")
 
