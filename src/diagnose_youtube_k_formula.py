@@ -5,7 +5,12 @@ from sheets import authenticate_google_sheets
 def main():
     client = authenticate_google_sheets()
     spreadsheet = client.open_by_key(config.SPREADSHEET_ID)
-    worksheet = spreadsheet.worksheet("Список. YouTube")
+    print(f"Worksheets: {[sheet.title for sheet in spreadsheet.worksheets()]}")
+    worksheet = next(
+        sheet for sheet in spreadsheet.worksheets()
+        if "YouTube" in sheet.title or "Ютуб" in sheet.title or "ютуб" in sheet.title
+    )
+    print(f"Selected worksheet: {worksheet.title}")
     formulas = worksheet.get("K1:O1", value_render_option="FORMULA")
     values = worksheet.get("K1:O6", value_render_option="FORMATTED_VALUE")
     markers = worksheet.get("K:O", value_render_option="FORMATTED_VALUE")
