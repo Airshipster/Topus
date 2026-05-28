@@ -14,8 +14,9 @@ FORMULA = f'''=LET(
   rowCount;ROWS(data);
   nameCol;INDEX(data;;MATCH("Название";headers;0));
   startRow;MATCH("Название";nameCol;0)+1;
-  endRow;MATCH("🔵";nameCol;0)-1;
   rowNums;SEQUENCE(rowCount);
+  markerRows;FILTER(rowNums;rowNums>startRow;REGEXMATCH(TO_TEXT(nameCol);"🔵"));
+  endRow;INDEX(markerRows;1)-1;
   names;FILTER(nameCol;rowNums>=startRow;rowNums<=endRow);
   rawLinks;FILTER(INDEX(data;;MATCH("/channel/";headers;0));rowNums>=startRow;rowNums<=endRow);
   rawPartners;FILTER(INDEX(data;;MATCH("3▼ Партнёр";headers;0));rowNums>=startRow;rowNums<=endRow);
