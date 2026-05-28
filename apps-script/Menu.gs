@@ -88,16 +88,33 @@ function findTopusStatusColumn_(sheet, marker) {
   var syncActionIndex = firstRow.indexOf('Sync Action');
   var startColumn = syncActionIndex >= 0 ? syncActionIndex + 2 : 18;
 
-  for (var column = startColumn; column <= maxColumns; column++) {
+  for (var column = 1; column <= maxColumns; column++) {
     var top = String(firstRow[column - 1] || '').trim();
     var bottom = String(secondRow[column - 1] || '').trim();
     var combined = top + '\n' + bottom;
-    if (combined.indexOf(marker) !== -1 || /Cloudflare sync|Bot Cloudflare sync|Bot menu sync|Site deploy|remaining|source:/i.test(combined)) {
+    if (combined.indexOf(marker) !== -1) {
       return column;
     }
   }
 
-  for (var emptyColumn = startColumn; emptyColumn <= maxColumns; emptyColumn++) {
+  for (var knownColumn = 1; knownColumn <= maxColumns; knownColumn++) {
+    var knownTop = String(firstRow[knownColumn - 1] || '').trim();
+    var knownBottom = String(secondRow[knownColumn - 1] || '').trim();
+    var knownCombined = knownTop + '\n' + knownBottom;
+    if (/Cloudflare sync|Bot Cloudflare sync|Bot menu sync|Site deploy|remaining|source:/i.test(knownCombined)) {
+      return knownColumn;
+    }
+  }
+
+  for (var preferredEmptyColumn = startColumn; preferredEmptyColumn <= maxColumns; preferredEmptyColumn++) {
+    var preferredTopValue = String(firstRow[preferredEmptyColumn - 1] || '').trim();
+    var preferredBottomValue = String(secondRow[preferredEmptyColumn - 1] || '').trim();
+    if (!preferredTopValue && !preferredBottomValue) {
+      return preferredEmptyColumn;
+    }
+  }
+
+  for (var emptyColumn = 1; emptyColumn <= maxColumns; emptyColumn++) {
     var topValue = String(firstRow[emptyColumn - 1] || '').trim();
     var bottomValue = String(secondRow[emptyColumn - 1] || '').trim();
     if (!topValue && !bottomValue) {
