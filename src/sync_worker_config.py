@@ -27,6 +27,7 @@ TELEGRAM_BOT_COLUMN_NAMES = ['Telegram-бот', 'Telegram бот', 'Telegram bot
 CATEGORY_COLUMN_NAMES = ['Категория', 'Категории', 'Category', 'Раздел']
 CHANNEL_NAME_HEADERS = ['Название', 'Название канала', 'Канал', 'YouTube канал']
 LAST_VIDEO_HEADERS = ['Посл. вид.', 'Посл. видео', 'Последнее видео', 'Last video', 'Last Video']
+CHANNEL_STATS_SHEET_NAMES = ['Статистика каналов', 'Статистика', 'Channel Stats', 'Channels Stats']
 CATEGORY_MARKER = '🟡'
 BOT_DESCRIPTION = (
     'Бот SciTopus помогает собрать личную ленту уведомлений по научпоп YouTube-каналам. '
@@ -145,8 +146,44 @@ def last_video_timestamp(row, headers):
     return parsed.isoformat() if parsed else ''
 
 
+def channel_id_from_stats_row(row, headers):
+    return (
+        get_row_value(row, {header: index for index, header in enumerate(headers) if header}, 'ID')
+        or column_value(row, headers, ['Channel ID', 'ID канала', 'ID'])
+        or extract_youtube_channel_id_from_row(row)
+    )
+
+
+def read_channel_stats_last_videos(sheet):
+    for sheet_name in CHANNEL_STATS_SHEET_NAMES:
+        try:
+            worksheet = sheet.worksheet(sheet_name)
+            break
+        except Exception:
+            worksheet = None
+    if worksheet is None:
+        return {}
+
+    values = worksheet.get_all_values()
+    if not values:
+        return {}
+
+    headers = [str(cell).strip() for cell in values[0]]
+    stats = {}
+    for raw_row in values[1:]:
+        row = [str(cell).strip() for cell in raw_row]
+        channel_id = channel_id_from_stats_row(row, headers)
+        if not channel_id:
+            continue
+        timestamp = last_video_timestamp(row, headers)
+        if timestamp:
+            stats[channel_id] = timestamp
+    return stats
+
+
 def read_project_channels(client, project):
     sheet = client.open_by_key(project['sheet_id'])
+    stats_last_videos = read_channel_stats_last_videos(sheet)
     worksheets = []
     if project.get('channels_sheet_name'):
         try:
@@ -222,7 +259,7 @@ def read_project_channels(client, project):
                 'categoryId': category_id,
                 'status': 'green' if '🟢' in normalized else 'red',
                 'sortOrder': sort_order,
-                'lastVideoAt': last_video_timestamp(normalized, headers),
+                'lastVideoAt': stats_last_videos.get(channel_id) or last_video_timestamp(normalized, headers),
             })
 
     return list(categories_by_id.values()), channels

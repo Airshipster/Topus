@@ -990,13 +990,14 @@ function renderWeeklyReminderMessageMenu(): object {
 }
 
 async function renderMenu(env: Env, projectCode: string, userId: string, categoryId: string, page: number): Promise<object> {
-  const [categories, channels, selected] = await Promise.all([
+  const [categories, channels, selected, hiddenInfo] = await Promise.all([
     childCategories(env, projectCode, categoryId),
     childChannels(env, projectCode, categoryId, userId),
     selectedChannels(env, projectCode, userId),
+    hiddenNoticeButton(env, projectCode, userId),
   ]);
 
-  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+  const rows: Array<Array<TelegramButton>> = [];
 
   for (const category of categories) {
     if (category.category_id === 'root') {
@@ -1016,6 +1017,9 @@ async function renderMenu(env: Env, projectCode: string, userId: string, categor
     if (rows.length === 1) {
       rows.unshift([{ text: 'Категории пока не настроены', callback_data: 'noop' }]);
     }
+    if (hiddenInfo) {
+      rows.push([hiddenInfo]);
+    }
     rows.push([{ text: '🏠 Главное меню', callback_data: 'menu:root' }]);
     return { inline_keyboard: rows };
   }
@@ -1033,7 +1037,7 @@ async function renderMenu(env: Env, projectCode: string, userId: string, categor
   }
 
   if (totalPages > 1) {
-    const navRow: Array<{ text: string; callback_data: string }> = [];
+    const navRow: Array<TelegramButton> = [];
     if (currentPage > 0) {
       navRow.push({ text: '←', callback_data: `page:${categoryId}:${currentPage - 1}` });
     }
@@ -1052,6 +1056,9 @@ async function renderMenu(env: Env, projectCode: string, userId: string, categor
   if (categoryId !== 'root') {
     rows.push([{ text: '← Назад', callback_data: `back:${categoryId}` }]);
   }
+  if (hiddenInfo) {
+    rows.push([hiddenInfo]);
+  }
   rows.push([{ text: '🏠 Главное меню', callback_data: 'menu:root' }]);
 
   if (rows.length === 1) {
@@ -1062,33 +1069,41 @@ async function renderMenu(env: Env, projectCode: string, userId: string, categor
 }
 
 async function renderAllChannels(env: Env, projectCode: string, userId: string, page: number): Promise<object> {
-  const [channels, selected] = await Promise.all([
+  const [channels, selected, hiddenInfo] = await Promise.all([
     allChannels(env, projectCode, userId),
     selectedChannels(env, projectCode, userId),
+    hiddenNoticeButton(env, projectCode, userId),
   ]);
-  return renderChannelList(channels, selected, page, 'toggleall', 'allch', true, true);
+  return renderChannelList(channels, selected, page, 'toggleall', 'allch', true, true, false, hiddenInfo);
 }
 
 async function renderSubscriptions(env: Env, projectCode: string, userId: string, page: number): Promise<object> {
-  const channels = await subscribedChannels(env, projectCode, userId);
+  const [channels, hiddenInfo] = await Promise.all([
+    subscribedChannels(env, projectCode, userId),
+    hiddenNoticeButton(env, projectCode, userId),
+  ]);
   const selected = new Set(channels.map((channel) => channel.channel_id));
   if (channels.length === 0) {
+    const rows: Array<Array<TelegramButton>> = [
+      [{ text: 'Пока нет подписок', callback_data: 'noop' }],
+      [{ text: '📺 Все каналы', callback_data: 'allch:0' }],
+      [{ text: '📚 Выбрать категории', callback_data: 'cats:root' }],
+    ];
+    if (hiddenInfo) {
+      rows.push([hiddenInfo]);
+    }
+    rows.push([{ text: '🏠 Главное меню', callback_data: 'menu:root' }]);
     return {
-      inline_keyboard: [
-        [{ text: 'Пока нет подписок', callback_data: 'noop' }],
-        [{ text: '📺 Все каналы', callback_data: 'allch:0' }],
-        [{ text: '📚 Выбрать категории', callback_data: 'cats:root' }],
-        [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
-      ],
+      inline_keyboard: rows,
     };
   }
-  return renderChannelList(channels, selected, page, 'togglesub', 'subs', false, false, true);
+  return renderChannelList(channels, selected, page, 'togglesub', 'subs', false, false, true, hiddenInfo);
 }
 
 async function renderPlan(env: Env, projectCode: string, userId: string): Promise<object> {
   const access = await subscriptionAccess(env, projectCode, userId);
   const label = access.status === 'free'
-    ? 'У вас свободный доступ без срока.'
+    ? 'У вас полный free-доступ без срока.'
     : access.status === 'trial'
       ? `У вас free-доступ до ${formatShortDate(access.expiresAt || '')}.`
       : access.status === 'booster'
@@ -1100,7 +1115,7 @@ async function renderPlan(env: Env, projectCode: string, userId: string): Promis
   const rows: Array<Array<TelegramButton>> = [
     [{ text: label, callback_data: 'noop' }],
     [{ text: 'Проверить статус', callback_data: 'boostcheck:root' }],
-    [{ text: `Оплатить ${starPriceMonthly(env)} звёзд в месяц`, callback_data: 'starsbuy:1' }],
+    [{ text: `Оплатить ${starPriceMonthly(env)} Telegram Stars в месяц`, callback_data: 'starsbuy:1' }],
   ];
   if (boostUrl) {
     rows.push([{ text: `Передать ${boosterMinBoosts(env)} буста`, url: boostUrl }]);
@@ -1115,7 +1130,7 @@ async function renderPlan(env: Env, projectCode: string, userId: string): Promis
 async function renderPlanText(env: Env, projectCode: string, userId: string): Promise<string> {
   const access = await subscriptionAccess(env, projectCode, userId);
   const statusLine = access.status === 'free'
-    ? 'Сейчас у вас free-доступ.'
+    ? 'Сейчас у вас полный free-доступ без срока.'
     : access.status === 'trial'
       ? `Сейчас у вас временный free-доступ до ${formatShortDate(access.expiresAt || '')}.`
       : access.status === 'booster'
@@ -1129,8 +1144,10 @@ async function renderPlanText(env: Env, projectCode: string, userId: string): Pr
     '',
     statusLine,
     '',
+    'Все варианты ниже дают одинаковый полный доступ к личной ленте бота. Отличается только способ поддержки проекта.',
+    '',
     `1. Бусты: передайте ${boosterMinBoosts(env)} буста основному каналу и нажмите «Проверить статус». Пока бусты активны, доступ работает как Booster.`,
-    `2. Telegram Stars: ${starPriceMonthly(env)} звёзд в месяц. Платёж оформляется внутри Telegram; регулярное списание поддерживается Telegram Stars-подписками.`,
+    `2. Telegram Stars: ${starPriceMonthly(env)} Telegram Stars в месяц. Платёж оформляется внутри Telegram; регулярное списание поддерживается Telegram Stars-подписками.`,
     '3. TON/ручная оплата: можно подключить как ручной paid-доступ через администратора, если нужно принять оплату вне Telegram Stars.',
   ].join('\n');
 }
@@ -1160,8 +1177,9 @@ function renderChannelList(
   showUnselected: boolean,
   showBulkActions = false,
   showClearSubscriptions = false,
+  hiddenInfo: TelegramButton | null = null,
 ): object {
-  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+  const rows: Array<Array<TelegramButton>> = [];
   const totalPages = Math.max(1, Math.ceil(channels.length / CHANNELS_PER_PAGE));
   const currentPage = Math.min(Math.max(0, page), totalPages - 1);
   const visibleChannels = channels.slice(
@@ -1176,7 +1194,7 @@ function renderChannelList(
   }
 
   if (totalPages > 1) {
-    const navRow: Array<{ text: string; callback_data: string }> = [];
+    const navRow: Array<TelegramButton> = [];
     if (currentPage > 0) {
       navRow.push({ text: '←', callback_data: `${pageAction}:${currentPage - 1}` });
     }
@@ -1199,6 +1217,9 @@ function renderChannelList(
     rows.push([{ text: '📚 Категории', callback_data: 'cats:root' }]);
   }
 
+  if (hiddenInfo) {
+    rows.push([hiddenInfo]);
+  }
   rows.push([{ text: '🏠 Главное меню', callback_data: 'menu:root' }]);
   return { inline_keyboard: rows };
 }
@@ -2232,6 +2253,20 @@ async function channelVisibilityStats(env: Env, projectCode: string): Promise<{ 
     total: channels.length,
     hidden,
     visible: channels.length - hidden,
+  };
+}
+
+async function hiddenNoticeButton(env: Env, projectCode: string, userId: string): Promise<TelegramButton | null> {
+  if (!await hideInactiveYearEnabled(env, projectCode, userId)) {
+    return null;
+  }
+  const visibility = await channelVisibilityStats(env, projectCode);
+  if (visibility.hidden <= 0) {
+    return null;
+  }
+  return {
+    text: `Скрыты неактивные каналы: ${visibility.hidden}`,
+    callback_data: 'settings:root',
   };
 }
 
