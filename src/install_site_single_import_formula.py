@@ -3,8 +3,8 @@ from sheets import authenticate_google_sheets
 
 
 SOURCE_SPREADSHEET_ID = "1m67OLnwzOLCjnLCj_xZG_eT6R90yXwLWLXOxkTrjDuY"
-BLANK_ROW = "\\".join(['""'] * 8)
-UPDATED_ROW = "\\".join(["updated"] + ['""'] * 7)
+BLANK_ROW = "\\".join(['""'] * 7)
+UPDATED_ROW = "\\".join(["updated"] + ['""'] * 6)
 
 FORMULA = f'''=LET(
   sourceId;"{SOURCE_SPREADSHEET_ID}";
@@ -26,13 +26,12 @@ FORMULA = f'''=LET(
   tg;FILTER(INDEX(data;;MATCH("TG-каналы партнёров";headers;0));rowNums>=startRow;rowNums<=endRow);
   links;ARRAYFORMULA(IF(REGEXMATCH(rawLinks;"https://www\\.");REGEXREPLACE(rawLinks;"https://www\\.";"");rawLinks));
   partners;ARRAYFORMULA(IF(IFERROR(FIND("🐙";rawPartners;1)>0;FALSE);"🐙";""));
-  lastYears;ARRAYFORMULA(IF(ISNUMBER(rawLast);YEAR(rawLast);rawLast));
-  lastDates;ARRAYFORMULA(IF(ISNUMBER(rawLast);TEXT(rawLast;"yyyy-mm-dd");rawLast));
+  lastDates;ARRAYFORMULA(IF(ISNUMBER(rawLast);TEXT(rawLast;"dd.mm.yyyy");rawLast));
   createdYears;ARRAYFORMULA(IF(ISNUMBER(rawCreated);YEAR(rawCreated);rawCreated));
   cleanTg;ARRAYFORMULA(IF(REGEXMATCH(TO_TEXT(tg);"^\\s*-");"";tg));
   {{
-    "Название"&CHAR(10)&"проекта"\\"Ссылка "&CHAR(10)&"на канал"\\"Партнёр "&CHAR(10)&"SciTopus"\\"Кол."&CHAR(10)&" видео"\\"Год послед."&CHAR(10)&" видео"\\"Год создания"&CHAR(10)&" канала"\\"TG-каналы"&CHAR(10)&" партнёров"\\"Дата послед."&CHAR(10)&" видео";
-    names\\links\\partners\\videos\\lastYears\\createdYears\\cleanTg\\lastDates;
+    "Название"&CHAR(10)&"проекта"\\"Ссылка "&CHAR(10)&"на канал"\\"Партнёр "&CHAR(10)&"SciTopus"\\"Кол."&CHAR(10)&" видео"\\"Год послед."&CHAR(10)&" видео"\\"Год создания"&CHAR(10)&" канала"\\"TG-каналы"&CHAR(10)&" партнёров";
+    names\\links\\partners\\videos\\lastDates\\createdYears\\cleanTg;
     {BLANK_ROW};
     {BLANK_ROW};
     {BLANK_ROW};

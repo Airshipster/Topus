@@ -23,7 +23,6 @@ CANONICAL_HEADER = [
     "Год послед.\n видео",
     "Год создания\n канала",
     "TG-канал",
-    "Дата послед.\n видео",
 ]
 
 SOURCE_TIMESTAMP_PATTERN = re.compile(r"Обновление завершено:\s*(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2}):(\d{2})")
@@ -257,9 +256,9 @@ def normalize_rows(values: list[list[str]], target_utc_offset_hours: int, timezo
             raise RuntimeError(
                 f"Spreadsheet error in source sheet at row {line_number}: {', '.join(sorted(set(spreadsheet_errors)))}"
             )
-        if len(row) < 8:
-            row.extend([""] * (8 - len(row)))
-        row = row[:8]
+        if len(row) < 7:
+            row.extend([""] * (7 - len(row)))
+        row = row[:7]
         row[1] = normalize_youtube_url(row[1])
         row[6] = normalize_telegram_url(row[6])
 
