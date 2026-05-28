@@ -990,11 +990,12 @@ function renderWeeklyReminderMessageMenu(): object {
 }
 
 async function renderMenu(env: Env, projectCode: string, userId: string, categoryId: string, page: number): Promise<object> {
-  const [categories, channels, selected, hiddenInfo] = await Promise.all([
+  const [categories, channels, selected, hiddenInfo, hideInactiveButton] = await Promise.all([
     childCategories(env, projectCode, categoryId),
     childChannels(env, projectCode, categoryId, userId),
     selectedChannels(env, projectCode, userId),
     hiddenNoticeButton(env, projectCode, userId),
+    hideInactiveSettingsButton(env, projectCode, userId),
   ]);
 
   const rows: Array<Array<TelegramButton>> = [];
@@ -1056,6 +1057,9 @@ async function renderMenu(env: Env, projectCode: string, userId: string, categor
   if (categoryId !== 'root') {
     rows.push([{ text: '← Назад', callback_data: `back:${categoryId}` }]);
   }
+  if (hideInactiveButton) {
+    rows.push([hideInactiveButton]);
+  }
   if (hiddenInfo) {
     rows.push([hiddenInfo]);
   }
@@ -1069,12 +1073,13 @@ async function renderMenu(env: Env, projectCode: string, userId: string, categor
 }
 
 async function renderAllChannels(env: Env, projectCode: string, userId: string, page: number): Promise<object> {
-  const [channels, selected, hiddenInfo] = await Promise.all([
+  const [channels, selected, hiddenInfo, hideInactiveButton] = await Promise.all([
     allChannels(env, projectCode, userId),
     selectedChannels(env, projectCode, userId),
     hiddenNoticeButton(env, projectCode, userId),
+    hideInactiveSettingsButton(env, projectCode, userId),
   ]);
-  return renderChannelList(channels, selected, page, 'toggleall', 'allch', true, true, false, hiddenInfo);
+  return renderChannelList(channels, selected, page, 'toggleall', 'allch', true, true, false, hiddenInfo, hideInactiveButton);
 }
 
 async function renderSubscriptions(env: Env, projectCode: string, userId: string, page: number): Promise<object> {
@@ -1178,6 +1183,7 @@ function renderChannelList(
   showBulkActions = false,
   showClearSubscriptions = false,
   hiddenInfo: TelegramButton | null = null,
+  hideInactiveButton: TelegramButton | null = null,
 ): object {
   const rows: Array<Array<TelegramButton>> = [];
   const totalPages = Math.max(1, Math.ceil(channels.length / CHANNELS_PER_PAGE));
@@ -1210,6 +1216,9 @@ function renderChannelList(
       { text: '✅ Подписаться на все', callback_data: `allall:${currentPage}` },
       { text: '➖ Отписаться от всех', callback_data: `noneall:${currentPage}` },
     ]);
+    if (hideInactiveButton) {
+      rows.push([hideInactiveButton]);
+    }
   }
   if (showClearSubscriptions) {
     rows.push([{ text: '➖ Отписаться от всех', callback_data: 'clearsubs:0' }]);
@@ -2271,6 +2280,20 @@ async function hiddenNoticeButton(env: Env, projectCode: string, userId: string)
   }
   return {
     text: `Скрыты неактивные каналы: ${visibility.hidden}`,
+    callback_data: 'settings:root',
+  };
+}
+
+async function hideInactiveSettingsButton(env: Env, projectCode: string, userId: string): Promise<TelegramButton | null> {
+  if (await hideInactiveYearEnabled(env, projectCode, userId)) {
+    return null;
+  }
+  const visibility = await channelVisibilityStats(env, projectCode);
+  if (visibility.hidden <= 0) {
+    return null;
+  }
+  return {
+    text: `Скрыть неактивные (${visibility.hidden})`,
     callback_data: 'settings:root',
   };
 }
