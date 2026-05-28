@@ -181,6 +181,59 @@ def read_source_values() -> list[list[str]]:
     return get_values_with_quota_retry(worksheet, "A:Z", attempts=5)
 
 
+def a1_column(column_index: int) -> str:
+    letters = ""
+    while column_index:
+        column_index, remainder = divmod(column_index - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
+
+
+def write_site_sync_status(status: str) -> None:
+    try:
+        spreadsheet_id = optional_env("TOPUS_MASTER_SPREADSHEET_ID", config.SPREADSHEET_ID)
+        worksheet_name = optional_env("TOPUS_SITE_WORKSHEET_NAME", "Сайт")
+        client = authenticate_google_sheets()
+        spreadsheet = client.open_by_key(spreadsheet_id)
+        worksheet = spreadsheet.worksheet(worksheet_name)
+        max_columns = worksheet.col_count
+        first_row = get_values_with_quota_retry(worksheet, f"A1:{a1_column(max_columns)}1", attempts=5)
+        second_row = get_values_with_quota_retry(worksheet, f"A2:{a1_column(max_columns)}2", attempts=5)
+        first_values = first_row[0] if first_row else []
+        second_values = second_row[0] if second_row else []
+        marker = "Site deploy"
+        target_column = None
+
+        for index in range(max_columns):
+            top = str(first_values[index] if index < len(first_values) else "").strip()
+            bottom = str(second_values[index] if index < len(second_values) else "").strip()
+            if marker in top or marker in bottom:
+                target_column = index + 1
+                break
+
+        if target_column is None:
+            for index in range(max_columns):
+                top = str(first_values[index] if index < len(first_values) else "").strip()
+                bottom = str(second_values[index] if index < len(second_values) else "").strip()
+                if not top and not bottom:
+                    target_column = index + 1
+                    break
+
+        if target_column is None:
+            worksheet.add_cols(1)
+            target_column = max_columns + 1
+
+        worksheet.batch_update(
+            [
+                {"range": f"{a1_column(target_column)}1", "values": [[marker]]},
+                {"range": f"{a1_column(target_column)}2", "values": [[status]]},
+            ],
+            value_input_option="USER_ENTERED",
+        )
+    except Exception as error:
+        print(f"Could not update site deploy status: {error}", file=sys.stderr)
+
+
 def normalize_rows(values: list[list[str]], target_utc_offset_hours: int, timezone_label: str) -> tuple[list[list[str]], str | None]:
     if not values:
         raise RuntimeError("The source sheet is empty")
@@ -238,6 +291,7 @@ def configure_git(repo: Path) -> None:
 
 
 def main() -> int:
+    write_site_sync_status(f"running: GitHub Actions started at {datetime.now(timezone(timedelta(hours=4))).strftime('%d.%m.%Y %H:%M:%S')}")
     gitlab_repo_url = optional_env("GITLAB_REPO_URL", "git@gitlab.com:scitopus/scitopus-site.git")
     gitlab_token = optional_env("GITLAB_TOKEN", "")
     gitlab_username = optional_env("GITLAB_USERNAME", "oauth2")
@@ -263,12 +317,15 @@ def main() -> int:
         status = run(["git", "status", "--porcelain"], cwd=repo_dir)
         if not status:
             print("No website changes detected.")
+            write_site_sync_status(f"complete: no website changes at {datetime.now(timezone(timedelta(hours=4))).strftime('%d.%m.%Y %H:%M:%S')}")
             return 0
 
         run(["git", "add", str(csv_path), str(updated_at_path)], cwd=repo_dir)
         run(["git", "commit", "-m", f"chore: sync channel list {updated_at}"], cwd=repo_dir)
+        write_site_sync_status(f"running: pushing website changes at {datetime.now(timezone(timedelta(hours=4))).strftime('%d.%m.%Y %H:%M:%S')}")
         push_repo(gitlab_repo_url, gitlab_username, gitlab_token, branch, repo_dir)
         print(f"Updated channel list and timestamp: {updated_at}")
+        write_site_sync_status(f"complete: website updated at {datetime.now(timezone(timedelta(hours=4))).strftime('%d.%m.%Y %H:%M:%S')}")
 
     return 0
 
@@ -277,5 +334,6 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as error:
+        write_site_sync_status(f"failed: {error} at {datetime.now(timezone(timedelta(hours=4))).strftime('%d.%m.%Y %H:%M:%S')}")
         print(f"Sync failed: {error}", file=sys.stderr)
         raise SystemExit(1)

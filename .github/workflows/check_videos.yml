@@ -7,7 +7,7 @@ on:
     - cron: '17 2 * * *'
   repository_dispatch:
     types: [topus-push]
-  
+
   workflow_dispatch:
     inputs:
       maintenance_only:
@@ -43,16 +43,16 @@ jobs:
   check-and-publish:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
-    
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.11'
-    
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
@@ -74,7 +74,7 @@ jobs:
         CLOUDFLARE_WORKER_SCRIPT_NAME: 'topus-telegram-subscriptions'
       run: |
         python src/sync_bot_state_sheet.py
-    
+
     - name: Run main script
       if: ${{ !((github.event_name == 'workflow_dispatch' && github.event.inputs.sync_bot_state == 'true') || (github.event_name == 'repository_dispatch' && github.event.client_payload.sync_bot_state == 'true')) }}
       env:

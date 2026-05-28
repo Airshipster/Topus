@@ -54,7 +54,8 @@ function triggerPublisher_(videoId, channelId, options) {
     channel_id: channelId || '',
     force_subscription_sync: options.forceSubscriptionSync ? 'true' : 'false',
     sync_only: options.syncOnly ? 'true' : 'false',
-    sync_bot_state: options.syncBotState ? 'true' : 'false'
+    sync_bot_state: options.syncBotState ? 'true' : 'false',
+    deploy_site: options.deploySite ? 'true' : 'false'
   });
 }
 

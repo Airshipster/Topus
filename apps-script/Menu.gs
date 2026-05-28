@@ -5,17 +5,20 @@ function onOpen(e) {
 function addTopusMenu_() {
   SpreadsheetApp.getUi()
     .createMenu('Topus')
-    .addItem('Забрать обновления сейчас', 'runTopusManualRefresh')
-    .addItem('Проверить push-подписки', 'runTopusSubscriptionRenew')
-    .addItem('Синхронизировать меню ботов', 'runTopusWorkerConfigSync')
-    .addItem('Синхронизировать ботов с Cloudflare', 'runTopusBotCloudflareSyncV2')
-    .addItem('Задеплоить список каналов на сайт', 'runTopusSiteChannelListSync')
+    .addItem('Видео: перечитать проекты сейчас', 'runTopusManualRefresh')
+    .addSeparator()
+    .addItem('Push-подписки: проверить и обновить', 'runTopusSubscriptionRenew')
+    .addSeparator()
+    .addItem('Боты: синхронизировать меню', 'runTopusWorkerConfigSync')
+    .addItem('Боты: синхронизировать пользователей с Cloudflare', 'runTopusBotCloudflareSync')
+    .addSeparator()
+    .addItem('Сайт: задеплоить список каналов', 'runTopusSiteChannelListSync')
     .addToUi();
 }
 
 function runTopusManualRefresh() {
   triggerPublisher_('', '', {syncOnly: true});
-  SpreadsheetApp.getActiveSpreadsheet().toast('Запуск Topus отправлен в GitHub Actions', 'Topus', 5);
+  SpreadsheetApp.getActiveSpreadsheet().toast('Перечитывание проектов отправлено в GitHub Actions', 'Topus', 5);
 }
 
 function runTopusSubscriptionRenew() {
@@ -24,61 +27,61 @@ function runTopusSubscriptionRenew() {
 }
 
 function runTopusWorkerConfigSync() {
-  writeTopusBotSyncStatus_('Bot menu sync: GitHub Actions dispatching at ' + topusStatusTimestamp_());
+  writeTopusSheetStatus_('Боты', 'Bot menu sync', 'Bot menu sync: GitHub Actions dispatching at ' + topusStatusTimestamp_());
   var result = triggerRepositoryDispatch_(GITHUB_WORKER_CONFIG_DISPATCH_EVENT_TYPE, {});
 
   if (result && result.ok) {
-    writeTopusBotSyncStatus_('Bot menu sync: GitHub Actions accepted at ' + topusStatusTimestamp_() + '; status=' + result.status);
+    writeTopusSheetStatus_('Боты', 'Bot menu sync', 'Bot menu sync: GitHub Actions accepted at ' + topusStatusTimestamp_() + '; status=' + result.status);
     SpreadsheetApp.getActiveSpreadsheet().toast('Синхронизация меню ботов отправлена в GitHub Actions', 'Topus', 5);
     return;
   }
 
   var message = result && result.message ? result.message : 'unknown error';
-  writeTopusBotSyncStatus_('Bot menu sync: dispatch failed at ' + topusStatusTimestamp_() + '; ' + message);
+  writeTopusSheetStatus_('Боты', 'Bot menu sync', 'Bot menu sync: dispatch failed at ' + topusStatusTimestamp_() + '; ' + message);
   SpreadsheetApp.getActiveSpreadsheet().toast('Синхронизация меню ботов не отправлена', 'Topus', 8);
 }
 
-function runTopusBotCloudflareSyncV2() {
-  writeTopusBotSyncStatus_('Bot Cloudflare sync: GitHub Actions dispatching at ' + topusStatusTimestamp_());
+function runTopusBotCloudflareSync() {
+  writeTopusSheetStatus_('Боты', 'Bot Cloudflare sync', 'Bot Cloudflare sync: GitHub Actions dispatching at ' + topusStatusTimestamp_());
   var result = triggerPublisher_('', '', {syncBotState: true});
 
   if (result && result.ok) {
-    writeTopusBotSyncStatus_('Bot Cloudflare sync: GitHub Actions accepted at ' + topusStatusTimestamp_() + '; status=' + result.status);
+    writeTopusSheetStatus_('Боты', 'Bot Cloudflare sync', 'Bot Cloudflare sync: GitHub Actions accepted at ' + topusStatusTimestamp_() + '; status=' + result.status);
     SpreadsheetApp.getActiveSpreadsheet().toast('Синхронизация ботов с Cloudflare отправлена в GitHub Actions', 'Topus', 5);
     return;
   }
 
   var message = result && result.message ? result.message : 'unknown error';
-  writeTopusBotSyncStatus_('Bot Cloudflare sync: dispatch failed at ' + topusStatusTimestamp_() + '; ' + message);
+  writeTopusSheetStatus_('Боты', 'Bot Cloudflare sync', 'Bot Cloudflare sync: dispatch failed at ' + topusStatusTimestamp_() + '; ' + message);
   SpreadsheetApp.getActiveSpreadsheet().toast('Синхронизация ботов с Cloudflare не отправлена', 'Topus', 8);
 }
 
-function runTopusBotCloudflareSync() {
-  return runTopusBotCloudflareSyncV2();
-}
-
 function runTopusSiteChannelListSync() {
+  writeTopusSheetStatus_('Сайт', 'Site deploy', 'Site deploy: GitHub Actions dispatching at ' + topusStatusTimestamp_());
   var result = triggerRepositoryDispatch_(GITHUB_SITE_LIST_DISPATCH_EVENT_TYPE, {
     reason: 'manual-google-sheet-menu'
   });
 
   if (result && result.ok) {
+    writeTopusSheetStatus_('Сайт', 'Site deploy', 'Site deploy: GitHub Actions accepted at ' + topusStatusTimestamp_() + '; status=' + result.status);
     SpreadsheetApp.getActiveSpreadsheet().toast('Деплой списка каналов на сайт отправлен в GitHub Actions', 'Topus', 5);
     return;
   }
 
   var message = result && result.message ? result.message : 'unknown error';
+  writeTopusSheetStatus_('Сайт', 'Site deploy', 'Site deploy: dispatch failed at ' + topusStatusTimestamp_() + '; ' + message);
   SpreadsheetApp.getActiveSpreadsheet().toast('Деплой списка каналов на сайт не отправлен: ' + message, 'Topus', 8);
 }
 
-function writeTopusBotSyncStatus_(text) {
+function writeTopusSheetStatus_(sheetName, marker, text) {
   var ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(MASTER_SPREADSHEET_ID);
-  var sheet = ss.getSheetByName('Боты') || ss.getActiveSheet();
-  var column = findTopusBotStatusColumn_(sheet);
+  var sheet = ss.getSheetByName(sheetName) || ss.getActiveSheet();
+  var column = findTopusStatusColumn_(sheet, marker);
+  sheet.getRange(1, column).setValue(marker);
   sheet.getRange(2, column).setValue(text);
 }
 
-function findTopusBotStatusColumn_(sheet) {
+function findTopusStatusColumn_(sheet, marker) {
   var maxColumns = sheet.getMaxColumns();
   var firstRow = sheet.getRange(1, 1, 1, maxColumns).getDisplayValues()[0];
   var secondRow = sheet.getRange(2, 1, 1, maxColumns).getDisplayValues()[0];
@@ -89,7 +92,7 @@ function findTopusBotStatusColumn_(sheet) {
     var top = String(firstRow[column - 1] || '').trim();
     var bottom = String(secondRow[column - 1] || '').trim();
     var combined = top + '\n' + bottom;
-    if (/Cloudflare sync|Bot Cloudflare sync|Bot menu sync|remaining|source:/i.test(combined)) {
+    if (combined.indexOf(marker) !== -1 || /Cloudflare sync|Bot Cloudflare sync|Bot menu sync|Site deploy|remaining|source:/i.test(combined)) {
       return column;
     }
   }
