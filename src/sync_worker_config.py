@@ -26,8 +26,15 @@ BOT_COLUMN_NAMES = ['Бот', 'Индивидуальный бот', 'Персо
 TELEGRAM_BOT_COLUMN_NAMES = ['Telegram-бот', 'Telegram бот', 'Telegram bot', 'Telegram Bot']
 CATEGORY_COLUMN_NAMES = ['Категория', 'Категории', 'Category', 'Раздел']
 CHANNEL_NAME_HEADERS = ['Название', 'Название канала', 'Канал', 'YouTube канал']
-LAST_VIDEO_HEADERS = ['Посл. вид.', 'Посл. видео', 'Последнее видео', 'Last video', 'Last Video']
-CHANNEL_STATS_SHEET_NAMES = ['Статистика каналов', 'Статистика', 'Channel Stats', 'Channels Stats']
+LAST_VIDEO_HEADERS = [
+    'Посл. вид.',
+    'Посл. видео',
+    'Последнее видео',
+    'Год послед. видео',
+    'Last video',
+    'Last Video',
+]
+CHANNEL_STATS_SHEET_NAMES = ['Стат. Каналы', 'Статистика каналов', 'Статистика', 'Channel Stats', 'Channels Stats']
 CATEGORY_MARKER = '🟡'
 BOT_DESCRIPTION = (
     'Бот SciTopus помогает собрать личную ленту уведомлений по научпоп YouTube-каналам. '
@@ -140,37 +147,82 @@ def category_id_for_path(parts, depth):
     return slug(' / '.join(parts[:depth]))
 
 
+def normalize_header(value):
+    return re.sub(r'\s+', ' ', str(value or '').strip()).lower()
+
+
+def flexible_column_value(row, headers, candidates):
+    index = flexible_column_index(headers, candidates)
+    if index is not None and index < len(row):
+        return row[index]
+    return ''
+
+
+def flexible_column_index(headers, candidates):
+    normalized_candidates = {normalize_header(candidate) for candidate in candidates}
+    for index, header in enumerate(headers):
+        if normalize_header(header) in normalized_candidates:
+            return index
+    return None
+
+
 def last_video_timestamp(row, headers):
-    value = column_value(row, headers, LAST_VIDEO_HEADERS)
+    value = flexible_column_value(row, headers, LAST_VIDEO_HEADERS) or column_value(row, headers, LAST_VIDEO_HEADERS)
+    text = str(clean_sheet_value(value) or '').strip()
+    year_match = re.fullmatch(r'(19|20)\d{2}', text)
+    if year_match:
+        return f'{text}-12-31T23:59:59'
+    for fmt in ('%d.%m.%Y', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(text, fmt).isoformat()
+        except ValueError:
+            pass
     parsed = parse_datetime_value(value)
     return parsed.isoformat() if parsed else ''
 
 
 def channel_id_from_stats_row(row, headers):
+    header_indexes = {header: index for index, header in enumerate(headers) if header}
     return (
-        get_row_value(row, {header: index for index, header in enumerate(headers) if header}, 'ID')
-        or column_value(row, headers, ['Channel ID', 'ID канала', 'ID'])
+        get_row_value(row, header_indexes, 'ID')
+        or flexible_column_value(row, headers, ['Channel ID', 'ID канала', 'ID', 'Ссылка на канал', '/channel/'])
+        or column_value(row, headers, ['Channel ID', 'ID канала', 'ID', 'Ссылка на канал', '/channel/'])
         or extract_youtube_channel_id_from_row(row)
     )
 
 
+def find_header_row(values):
+    for index, row in enumerate(values[:20]):
+        normalized = [normalize_header(cell) for cell in row]
+        has_channel = any(value in {'id', 'channel id', 'id канала', 'ссылка на канал', '/channel/'} for value in normalized)
+        has_last_video = any(value in {normalize_header(item) for item in LAST_VIDEO_HEADERS} for value in normalized)
+        if has_channel and has_last_video:
+            return index
+    return 0
+
+
 def read_channel_stats_last_videos(sheet):
+    worksheet = None
+    selected_name = ''
     for sheet_name in CHANNEL_STATS_SHEET_NAMES:
         try:
             worksheet = sheet.worksheet(sheet_name)
+            selected_name = sheet_name
             break
         except Exception:
-            worksheet = None
+            pass
     if worksheet is None:
+        print("  ℹ️  Channel stats sheet not found; inactive-channel hiding will use channel-list dates only")
         return {}
 
     values = worksheet.get_all_values()
     if not values:
         return {}
 
-    headers = [str(cell).strip() for cell in values[0]]
+    header_row = find_header_row(values)
+    headers = [str(cell).strip() for cell in values[header_row]]
     stats = {}
-    for raw_row in values[1:]:
+    for raw_row in values[header_row + 1:]:
         row = [str(cell).strip() for cell in raw_row]
         channel_id = channel_id_from_stats_row(row, headers)
         if not channel_id:
@@ -178,6 +230,7 @@ def read_channel_stats_last_videos(sheet):
         timestamp = last_video_timestamp(row, headers)
         if timestamp:
             stats[channel_id] = timestamp
+    print(f"  📊 Channel stats dates loaded from '{selected_name}': {len(stats)}")
     return stats
 
 
@@ -202,8 +255,15 @@ def read_project_channels(client, project):
             continue
         headers = [str(cell).strip() for cell in values[0]]
         header_indexes = {header: index for index, header in enumerate(headers) if header}
+        last_video_col = flexible_column_index(headers, LAST_VIDEO_HEADERS)
+        if last_video_col is None:
+            print(f"  ⚠️  Last-video column not found in '{worksheet.title}'. Headers: {headers}")
+        else:
+            print(f"  📌 Last-video column in '{worksheet.title}': {headers[last_video_col]} ({last_video_col + 1})")
         category_col = find_column_index(headers, CATEGORY_COLUMN_NAMES)
         current_category_id = 'root'
+        raw_last_video_count = 0
+        parsed_last_video_count = 0
 
         for sort_order, raw_row in enumerate(values[1:], start=1):
             normalized = [str(cell).strip() for cell in raw_row]
@@ -253,14 +313,25 @@ def read_project_channels(client, project):
                 or get_row_value(normalized, header_indexes, 'Название')
                 or infer_channel_name(normalized, channel_id)
             )
+            raw_last_video = normalized[last_video_col] if last_video_col is not None and last_video_col < len(normalized) else ''
+            parsed_last_video = stats_last_videos.get(channel_id) or last_video_timestamp(normalized, headers)
+            if raw_last_video:
+                raw_last_video_count += 1
+            if parsed_last_video:
+                parsed_last_video_count += 1
             channels.append({
                 'id': channel_id,
                 'title': channel_name,
                 'categoryId': category_id,
                 'status': 'green' if '🟢' in normalized else 'red',
                 'sortOrder': sort_order,
-                'lastVideoAt': stats_last_videos.get(channel_id) or last_video_timestamp(normalized, headers),
+                'lastVideoAt': parsed_last_video,
             })
+
+        print(
+            f"  📊 Channel-list last-video values in '{worksheet.title}': "
+            f"raw={raw_last_video_count}, parsed={parsed_last_video_count}"
+        )
 
     return list(categories_by_id.values()), channels
 
