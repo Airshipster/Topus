@@ -18,6 +18,7 @@ from sheets import (
     infer_channel_name,
     is_enabled_marker,
     normalize_project_row,
+    parse_datetime_value,
 )
 
 
@@ -25,6 +26,7 @@ BOT_COLUMN_NAMES = ['Бот', 'Индивидуальный бот', 'Персо
 TELEGRAM_BOT_COLUMN_NAMES = ['Telegram-бот', 'Telegram бот', 'Telegram bot', 'Telegram Bot']
 CATEGORY_COLUMN_NAMES = ['Категория', 'Категории', 'Category', 'Раздел']
 CHANNEL_NAME_HEADERS = ['Название', 'Название канала', 'Канал', 'YouTube канал']
+LAST_VIDEO_HEADERS = ['Посл. вид.', 'Посл. видео', 'Последнее видео', 'Last video', 'Last Video']
 CATEGORY_MARKER = '🟡'
 BOT_DESCRIPTION = (
     'Бот SciTopus помогает собрать личную ленту уведомлений по научпоп YouTube-каналам. '
@@ -137,6 +139,12 @@ def category_id_for_path(parts, depth):
     return slug(' / '.join(parts[:depth]))
 
 
+def last_video_timestamp(row, headers):
+    value = column_value(row, headers, LAST_VIDEO_HEADERS)
+    parsed = parse_datetime_value(value)
+    return parsed.isoformat() if parsed else ''
+
+
 def read_project_channels(client, project):
     sheet = client.open_by_key(project['sheet_id'])
     worksheets = []
@@ -214,6 +222,7 @@ def read_project_channels(client, project):
                 'categoryId': category_id,
                 'status': 'green' if '🟢' in normalized else 'red',
                 'sortOrder': sort_order,
+                'lastVideoAt': last_video_timestamp(normalized, headers),
             })
 
     return list(categories_by_id.values()), channels
@@ -257,7 +266,7 @@ def set_telegram_webhooks(worker_url, payload):
             f"https://api.telegram.org/bot{project['botToken']}/setWebhook",
             json={
                 'url': webhook_url,
-                'allowed_updates': ['message', 'callback_query'],
+                'allowed_updates': ['message', 'callback_query', 'pre_checkout_query', 'chat_boost', 'removed_chat_boost'],
             },
             timeout=15,
         )

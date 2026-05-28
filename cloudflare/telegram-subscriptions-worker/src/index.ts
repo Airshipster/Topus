@@ -3,6 +3,8 @@ interface Env {
   CACHE: KVNamespace;
   ADMIN_SECRET: string;
   PAYMENTS_REQUIRED?: string;
+  BOOSTER_MIN_BOOSTS?: string;
+  STAR_PRICE_MONTHLY?: string;
 }
 
 type TelegramUser = {
@@ -22,6 +24,7 @@ type TelegramMessage = {
   chat: TelegramChat;
   from?: TelegramUser;
   new_chat_members?: TelegramUser[];
+  successful_payment?: TelegramSuccessfulPayment;
 };
 
 type TelegramCallbackQuery = {
@@ -34,6 +37,9 @@ type TelegramCallbackQuery = {
 type TelegramUpdate = {
   message?: TelegramMessage;
   callback_query?: TelegramCallbackQuery;
+  pre_checkout_query?: TelegramPreCheckoutQuery;
+  chat_boost?: TelegramChatBoostUpdated;
+  removed_chat_boost?: TelegramChatBoostRemoved;
 };
 
 type Project = {
@@ -48,6 +54,7 @@ type Channel = {
   channel_id: string;
   title: string;
   status: string;
+  last_video_at?: string | null;
 };
 
 type Category = {
@@ -77,6 +84,7 @@ type SyncProject = {
     categoryId?: string;
     status?: 'green' | 'red';
     sortOrder?: number;
+    lastVideoAt?: string;
   }>;
 };
 
@@ -97,14 +105,55 @@ type AccessGrant = {
 };
 
 type SubscriptionAccess = {
-  status: 'free' | 'paid' | 'trial' | 'none';
+  status: 'free' | 'paid' | 'trial' | 'booster' | 'none';
   expiresAt: string | null;
+  boostCount?: number;
+};
+
+type TelegramPreCheckoutQuery = {
+  id: string;
+  from: TelegramUser;
+  currency?: string;
+  total_amount?: number;
+  invoice_payload?: string;
+};
+
+type TelegramSuccessfulPayment = {
+  currency: string;
+  total_amount: number;
+  invoice_payload: string;
+  telegram_payment_charge_id: string;
+};
+
+type TelegramChatBoostUpdated = {
+  chat: TelegramChat;
+  boost?: TelegramChatBoost;
+};
+
+type TelegramChatBoostRemoved = {
+  chat: TelegramChat;
+  boost_id?: string;
+  source?: TelegramChatBoostSource;
+};
+
+type TelegramChatBoost = {
+  boost_id?: string;
+  add_date?: number;
+  expiration_date?: number;
+  source?: TelegramChatBoostSource;
+};
+
+type TelegramChatBoostSource = {
+  source?: string;
+  user?: TelegramUser;
 };
 
 const jsonHeaders = { 'content-type': 'application/json; charset=utf-8' };
 const CHANNELS_PER_PAGE = 20;
 const SELECTED_MARK = '✅';
 const UNSELECTED_MARK = '➕';
+const BOOSTER_MIN_BOOSTS_DEFAULT = 3;
+const DEFAULT_STAR_PRICE_MONTHLY = 100;
 const CLOUDFLARE_MONTHLY_REQUEST_LIMIT = 100000;
 const MAX_GROUP_HUMANS = 3;
 const MAX_GROUP_TOTAL_MEMBERS = MAX_GROUP_HUMANS + 1;
@@ -157,8 +206,11 @@ export default {
       return json({ ok: false, error: 'internal_error' }, 500);
     }
   },
-  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(sendWeeklySubscriptionReminders(env));
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(auditBoosterAccess(env));
+    if (event.cron === '0 15 * * SUN') {
+      ctx.waitUntil(sendWeeklySubscriptionReminders(env));
+    }
   },
 };
 
@@ -166,6 +218,7 @@ async function handleAdminSync(request: Request, env: Env, ctx: ExecutionContext
   if (!isAuthorizedAdmin(request, env)) {
     return json({ ok: false, error: 'unauthorized' }, 401);
   }
+  await ensureAccessSchema(env);
 
   const body = await request.json<{ projects: SyncProject[] }>();
   const projects = Array.isArray(body.projects) ? body.projects : [];
@@ -211,8 +264,17 @@ async function handleAdminSync(request: Request, env: Env, ctx: ExecutionContext
         now,
       ),
     );
+    const channelActivityStatements = project.channels
+      .filter((channel) => channel.lastVideoAt)
+      .map((channel) =>
+        env.DB.prepare(
+          `UPDATE channels
+           SET last_video_at = ?
+           WHERE project_code = ? AND channel_id = ?`,
+        ).bind(channel.lastVideoAt || null, project.code, channel.id),
+      );
 
-    for (const chunk of chunks([...categoryStatements, ...channelStatements], 50)) {
+    for (const chunk of chunks([...categoryStatements, ...channelStatements, ...channelActivityStatements], 50)) {
       await env.DB.batch(chunk);
     }
 
@@ -236,6 +298,7 @@ async function handleAdminNotify(request: Request, env: Env, ctx: ExecutionConte
   if (!isAuthorizedAdmin(request, env)) {
     return json({ ok: false, error: 'unauthorized' }, 401);
   }
+  await ensureAccessSchema(env);
 
   const body = await request.json<{
     projectCode: string;
@@ -259,6 +322,11 @@ async function handleAdminNotify(request: Request, env: Env, ctx: ExecutionConte
            AND (u.access_expires_at IS NULL OR u.access_expires_at = '' OR u.access_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
          )
          OR a.user_id IS NOT NULL
+         OR (
+           COALESCE(u.access_source, '') = 'booster'
+           AND COALESCE(u.boost_count, 0) >= ${boosterMinBoosts(env)}
+           AND (u.boost_expires_at IS NULL OR u.boost_expires_at = '' OR u.boost_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+         )
        )`
     : '';
   const recipients = await env.DB.prepare(
@@ -285,6 +353,7 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
   if (!isAuthorizedAdmin(request, env)) {
     return json({ ok: false, error: 'unauthorized' }, 401);
   }
+  await ensureAccessSchema(env);
 
   if (request.method === 'GET') {
     await ensureWeeklyReminderColumns(env);
@@ -295,7 +364,9 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
          ORDER BY code`,
       ).all<{ code: string; name: string; active: number; updated_at: string }>(),
       env.DB.prepare(
-        `SELECT project_code, user_id, username, first_name, is_paid, is_allowlisted, COALESCE(is_admin, 0) AS is_admin, access_expires_at, created_at, updated_at
+        `SELECT project_code, user_id, username, first_name, is_paid, is_allowlisted, COALESCE(is_admin, 0) AS is_admin, access_expires_at,
+                access_source, payment_method, boost_count, boost_checked_at, boost_expires_at, star_paid_until, hide_inactive_year,
+                created_at, updated_at
          FROM users
          ORDER BY project_code, user_id`,
       ).all(),
@@ -311,7 +382,7 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
          ORDER BY project_code, user_id`,
       ).all(),
       env.DB.prepare(
-        `SELECT project_code, channel_id, title, status, sort_order, updated_at
+        `SELECT project_code, channel_id, title, status, sort_order, last_video_at, updated_at
          FROM channels
          ORDER BY project_code, sort_order, title`,
       ).all(),
@@ -339,7 +410,7 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
   }
 
   const body = await request.json<{
-    users?: Array<{ projectCode: string; userId: string; username?: string; firstName?: string; isPaid?: boolean; isAllowlisted?: boolean; isAdmin?: boolean; accessExpiresAt?: string | null }>;
+    users?: Array<{ projectCode: string; userId: string; username?: string; firstName?: string; isPaid?: boolean; isAllowlisted?: boolean; isAdmin?: boolean; accessExpiresAt?: string | null; accessSource?: string | null; paymentMethod?: string | null; boostCount?: number; boostCheckedAt?: string | null; boostExpiresAt?: string | null; starPaidUntil?: string | null; hideInactiveYear?: boolean }>;
     subscriptions?: Array<{ projectCode: string; userId: string; channelId: string; active?: boolean; delete?: boolean }>;
     allowlist?: Array<{ projectCode: string; userId: string; note?: string; active?: boolean; delete?: boolean }>;
   }>();
@@ -351,8 +422,8 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
       continue;
     }
     statements.push(env.DB.prepare(
-      `INSERT INTO users (project_code, user_id, username, first_name, is_paid, is_allowlisted, is_admin, access_expires_at, weekly_reminders, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO users (project_code, user_id, username, first_name, is_paid, is_allowlisted, is_admin, access_expires_at, access_source, payment_method, boost_count, boost_checked_at, boost_expires_at, star_paid_until, hide_inactive_year, weekly_reminders, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(project_code, user_id) DO UPDATE SET
          username = COALESCE(excluded.username, users.username),
          first_name = COALESCE(excluded.first_name, users.first_name),
@@ -360,6 +431,13 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
          is_allowlisted = excluded.is_allowlisted,
          is_admin = excluded.is_admin,
          access_expires_at = excluded.access_expires_at,
+         access_source = COALESCE(excluded.access_source, users.access_source),
+         payment_method = excluded.payment_method,
+         boost_count = excluded.boost_count,
+         boost_checked_at = excluded.boost_checked_at,
+         boost_expires_at = excluded.boost_expires_at,
+         star_paid_until = excluded.star_paid_until,
+         hide_inactive_year = excluded.hide_inactive_year,
          weekly_reminders = users.weekly_reminders,
          updated_at = excluded.updated_at`,
     ).bind(
@@ -371,6 +449,13 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
       user.isAllowlisted ? 1 : 0,
       user.isAdmin ? 1 : 0,
       user.accessExpiresAt || null,
+      normalizeAccessSource(user.accessSource || (user.isPaid ? 'paid' : user.isAllowlisted ? 'free' : 'none')),
+      user.paymentMethod || null,
+      user.boostCount || 0,
+      user.boostCheckedAt || null,
+      user.boostExpiresAt || null,
+      user.starPaidUntil || null,
+      user.hideInactiveYear ? 1 : 0,
       0,
       now,
       now,
@@ -422,6 +507,7 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
 }
 
 async function handleTelegramWebhook(request: Request, env: Env, projectCode: string, secret: string): Promise<Response> {
+  await ensureAccessSchema(env);
   const project = await getProject(env, projectCode);
   if (!project || project.active !== 1 || !constantTimeEqual(project.webhook_secret, secret)) {
     return json({ ok: false, error: 'not_found' }, 404);
@@ -432,6 +518,12 @@ async function handleTelegramWebhook(request: Request, env: Env, projectCode: st
     await handleMessage(env, project, update.message);
   } else if (update.callback_query) {
     await handleCallback(env, project, update.callback_query);
+  } else if (update.pre_checkout_query) {
+    await handlePreCheckoutQuery(project, update.pre_checkout_query);
+  } else if (update.chat_boost) {
+    await handleChatBoostUpdate(env, project, update.chat_boost);
+  } else if (update.removed_chat_boost) {
+    await handleRemovedChatBoost(env, project, update.removed_chat_boost);
   }
 
   return json({ ok: true });
@@ -448,6 +540,11 @@ async function handleMessage(env: Env, project: Project, message: TelegramMessag
   }
 
   await upsertUser(env, project.code, message.from);
+
+  if (message.successful_payment) {
+    await handleSuccessfulPayment(env, project, message);
+    return;
+  }
 
   if (await handlePendingAdminMessage(env, project, message)) {
     return;
@@ -636,9 +733,34 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
   } else if (action === 'plan') {
     menu = await renderPlan(env, project.code, String(callback.from.id));
     text = 'Статус подписки';
+  } else if (action === 'starsbuy') {
+    await answer(project.bot_token, callback.id);
+    const months = Math.max(1, Number.parseInt(value || '1', 10) || 1);
+    if (message) {
+      await sendStarsInvoice(env, project, message.chat.id, String(callback.from.id), months);
+    }
+    return;
+  } else if (action === 'boostcheck') {
+    const result = await refreshUserBoostAccess(env, project, String(callback.from.id), true);
+    menu = await renderPlan(env, project.code, String(callback.from.id));
+    text = result.ok
+      ? `Бусты подтверждены: ${result.count}/${boosterMinBoosts(env)}. Доступ активен как Booster.`
+      : `Сейчас у нас видно ${result.count}/${boosterMinBoosts(env)} активных бустов от вас. После передачи бустов нажмите проверку ещё раз.`;
+    toast = result.ok ? 'Booster-доступ активен' : 'Бустов пока недостаточно';
   } else if (action === 'reminders') {
     menu = await renderReminderMenu(env, project.code, String(callback.from.id));
     text = REMINDER_SETTINGS_TEXT;
+  } else if (action === 'settings') {
+    menu = await renderSettingsMenu(env, project.code, String(callback.from.id));
+    text = 'Настройки';
+  } else if (action === 'hideold') {
+    const enabled = !await hideInactiveYearEnabled(env, project.code, String(callback.from.id));
+    await setHideInactiveYear(env, project.code, String(callback.from.id), enabled);
+    menu = await renderSettingsMenu(env, project.code, String(callback.from.id));
+    text = enabled
+      ? 'Каналы без публикаций больше года скрыты. Если такой канал внезапно оживёт, он снова появится после обновления списка.'
+      : 'Неактивные больше года каналы снова показываются в списках.';
+    toast = enabled ? 'Скрытие включено' : 'Скрытие отключено';
   } else if (action === 'remtoggle' || action === 'remon' || action === 'remoff') {
     const enabled = action === 'remtoggle'
       ? !await weeklyRemindersEnabled(env, project.code, String(callback.from.id))
@@ -694,12 +816,12 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
     text = 'Мои подписки';
     toast = 'Все подписки отключены';
   } else if (action === 'all' || action === 'none') {
-    const channelIds = await descendantChannelIds(env, project.code, value);
+    const channelIds = await descendantChannelIds(env, project.code, value, String(callback.from.id));
     await setBulkSubscriptions(env, project.code, String(callback.from.id), channelIds, action === 'all');
     categoryId = value;
     toast = action === 'all' ? 'Подписка на все здесь включена' : 'Подписка на все здесь отключена';
   } else if (action === 'allall' || action === 'noneall') {
-    const channels = await allChannels(env, project.code);
+    const channels = await allChannels(env, project.code, String(callback.from.id));
     await setBulkSubscriptions(
       env,
       project.code,
@@ -745,19 +867,25 @@ function renderJoinChannelMenu(channelRef: string): object {
 async function renderMainMenu(env: Env, projectCode: string, userId: string): Promise<object> {
   const [categoryCount, channelCount, subscriptionCount, status, admin] = await Promise.all([
     countChildCategories(env, projectCode, 'root'),
-    countChannels(env, projectCode),
+    countChannels(env, projectCode, userId),
     countSubscriptions(env, projectCode, userId),
     subscriptionStatus(env, projectCode, userId),
     isAdmin(env, projectCode, userId),
   ]);
 
-  const statusLabel = status === 'free' || status === 'trial' ? 'Подписка (free)' : 'Подписка';
+  const statusLabel = status === 'booster'
+    ? 'Подписка (booster)'
+    : status === 'free' || status === 'trial'
+      ? 'Подписка (free)'
+      : status === 'paid'
+        ? 'Подписка (paid)'
+        : 'Подписка';
   const rows: Array<Array<TelegramButton>> = [
     [{ text: `📚 Категории (${categoryCount})`, callback_data: 'cats:root' }],
     [{ text: `✅ Мои подписки (${subscriptionCount}/${channelCount})`, callback_data: 'subs:0' }],
     [{ text: `📺 Все каналы (${channelCount})`, callback_data: 'allch:0' }],
     [{ text: statusLabel, callback_data: 'plan:root' }],
-    [{ text: '🔔 Напоминания', callback_data: 'reminders:root' }],
+    [{ text: '⚙️ Настройки', callback_data: 'settings:root' }],
     [{ text: 'Дополнительно', callback_data: 'extra:root' }],
   ];
   if (admin) {
@@ -851,7 +979,7 @@ function renderWeeklyReminderMessageMenu(): object {
 async function renderMenu(env: Env, projectCode: string, userId: string, categoryId: string, page: number): Promise<object> {
   const [categories, channels, selected] = await Promise.all([
     childCategories(env, projectCode, categoryId),
-    childChannels(env, projectCode, categoryId),
+    childChannels(env, projectCode, categoryId, userId),
     selectedChannels(env, projectCode, userId),
   ]);
 
@@ -867,7 +995,7 @@ async function renderMenu(env: Env, projectCode: string, userId: string, categor
   }
 
   if (categoryId === 'root') {
-    const totalChannels = await countChannels(env, projectCode);
+    const totalChannels = await countChannels(env, projectCode, userId);
     const allPrefix = totalChannels > 0 && selected.size === totalChannels ? `${SELECTED_MARK} 📺` : '📺';
     rows.push([{ text: `${allPrefix} Все каналы (${selected.size}/${totalChannels})`, callback_data: 'allch:0' }]);
     if (rows.length === 1) {
@@ -920,7 +1048,7 @@ async function renderMenu(env: Env, projectCode: string, userId: string, categor
 
 async function renderAllChannels(env: Env, projectCode: string, userId: string, page: number): Promise<object> {
   const [channels, selected] = await Promise.all([
-    allChannels(env, projectCode),
+    allChannels(env, projectCode, userId),
     selectedChannels(env, projectCode, userId),
   ]);
   return renderChannelList(channels, selected, page, 'toggleall', 'allch', true, true);
@@ -948,12 +1076,34 @@ async function renderPlan(env: Env, projectCode: string, userId: string): Promis
     ? 'У вас свободный доступ без срока.'
     : access.status === 'trial'
       ? `У вас free-доступ до ${formatShortDate(access.expiresAt || '')}.`
+      : access.status === 'booster'
+        ? `У вас Booster-доступ: ${access.boostCount || 0}/${boosterMinBoosts(env)} бустов.`
       : access.status === 'paid'
         ? (access.expiresAt ? `У вас paid-доступ до ${formatShortDate(access.expiresAt)}.` : 'У вас paid-доступ без срока.')
         : 'Платная подписка будет подключена позже.';
+  const boostUrl = await boostChannelUrl(env, projectCode);
+  const rows: Array<Array<TelegramButton>> = [
+    [{ text: label, callback_data: 'noop' }],
+    [{ text: 'Проверить статус', callback_data: 'boostcheck:root' }],
+    [{ text: `Поддержать Stars (${starPriceMonthly(env)} XTR/мес.)`, callback_data: 'starsbuy:1' }],
+  ];
+  if (boostUrl) {
+    rows.push([{ text: `Передать ${boosterMinBoosts(env)} буста`, url: boostUrl }]);
+  }
+  rows.push([{ text: '⚙️ Настройки', callback_data: 'settings:root' }]);
+  rows.push([{ text: '🏠 Главное меню', callback_data: 'menu:root' }]);
+  return {
+    inline_keyboard: rows,
+  };
+}
+
+async function renderSettingsMenu(env: Env, projectCode: string, userId: string): Promise<object> {
+  const hideOld = await hideInactiveYearEnabled(env, projectCode, userId);
   return {
     inline_keyboard: [
-      [{ text: label, callback_data: 'noop' }],
+      [{ text: hideOld ? '✅ Неактивные больше года скрыты' : 'Скрыть неактивные больше года', callback_data: 'hideold:root' }],
+      [{ text: '🔔 Напоминания', callback_data: 'reminders:root' }],
+      [{ text: 'Проверить статус доступа', callback_data: 'plan:root' }],
       [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
     ],
   };
@@ -1260,6 +1410,175 @@ function formatShortDate(value: string): string {
   return `${day}.${month}.${date.getUTCFullYear()}`;
 }
 
+async function handlePreCheckoutQuery(project: Project, query: TelegramPreCheckoutQuery): Promise<void> {
+  const payload = parseStarsPayload(query.invoice_payload || '');
+  const ok = query.currency === 'XTR' && payload !== null && payload.projectCode === project.code;
+  await telegram(project.bot_token, 'answerPreCheckoutQuery', {
+    pre_checkout_query_id: query.id,
+    ok,
+    error_message: ok ? undefined : 'Не удалось проверить платёж. Попробуйте открыть оплату заново.',
+  });
+}
+
+async function handleSuccessfulPayment(env: Env, project: Project, message: TelegramMessage): Promise<void> {
+  const payment = message.successful_payment;
+  if (!payment || payment.currency !== 'XTR' || !message.from) {
+    return;
+  }
+  const payload = parseStarsPayload(payment.invoice_payload);
+  if (!payload || payload.projectCode !== project.code || payload.userId !== String(message.from.id)) {
+    await telegram(project.bot_token, 'sendMessage', {
+      chat_id: message.chat.id,
+      text: 'Платёж получен, но не удалось сопоставить его с подпиской. Напишите администратору.',
+    });
+    return;
+  }
+  const expiresAt = addMonths(new Date(), payload.months).toISOString();
+  await setPaidAccess(env, project.code, String(message.from.id), expiresAt, 'stars');
+  await telegram(project.bot_token, 'sendMessage', {
+    chat_id: message.chat.id,
+    text: `Спасибо за поддержку Stars. Paid-доступ активен до ${formatShortDate(expiresAt)}.`,
+    reply_markup: await renderMainMenu(env, project.code, String(message.from.id)),
+  });
+}
+
+async function sendStarsInvoice(env: Env, project: Project, chatId: number, userId: string, months: number): Promise<void> {
+  const amount = starPriceMonthly(env) * months;
+  await telegram(project.bot_token, 'sendInvoice', {
+    chat_id: chatId,
+    title: 'Подписка SciTopus Bot',
+    description: `Доступ к личной ленте на ${months} мес.`,
+    payload: `stars:${project.code}:${months}:${userId}`,
+    provider_token: '',
+    currency: 'XTR',
+    prices: [{ label: `${months} мес.`, amount }],
+  });
+}
+
+function parseStarsPayload(payload: string): { projectCode: string; months: number; userId: string } | null {
+  const match = String(payload || '').match(/^stars:([^:]+):(\d+):(-?\d+)$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    projectCode: match[1],
+    months: Math.max(1, Number.parseInt(match[2], 10) || 1),
+    userId: match[3],
+  };
+}
+
+async function setPaidAccess(env: Env, projectCode: string, userId: string, expiresAt: string | null, paymentMethod: string): Promise<void> {
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO users (project_code, user_id, is_paid, is_allowlisted, access_expires_at, access_source, payment_method, star_paid_until, boost_count, boost_checked_at, boost_expires_at, created_at, updated_at)
+     VALUES (?, ?, 1, 0, ?, 'paid', ?, ?, 0, NULL, NULL, ?, ?)
+     ON CONFLICT(project_code, user_id) DO UPDATE SET
+       is_paid = 1,
+       is_allowlisted = 0,
+       access_expires_at = excluded.access_expires_at,
+       access_source = 'paid',
+       payment_method = excluded.payment_method,
+       star_paid_until = excluded.star_paid_until,
+       boost_count = 0,
+       boost_checked_at = NULL,
+       boost_expires_at = NULL,
+       updated_at = excluded.updated_at`,
+  ).bind(projectCode, userId, expiresAt, paymentMethod, expiresAt, now, now).run();
+  await env.DB.prepare(
+    'DELETE FROM allowlist WHERE project_code = ? AND user_id = ?',
+  ).bind(projectCode, userId).run();
+}
+
+async function handleChatBoostUpdate(env: Env, project: Project, update: TelegramChatBoostUpdated): Promise<void> {
+  const user = update.boost?.source?.user;
+  if (!user) {
+    return;
+  }
+  await upsertUser(env, project.code, user);
+  await refreshUserBoostAccess(env, project, String(user.id), false);
+}
+
+async function handleRemovedChatBoost(env: Env, project: Project, update: TelegramChatBoostRemoved): Promise<void> {
+  const user = update.source?.user;
+  if (!user) {
+    return;
+  }
+  await refreshUserBoostAccess(env, project, String(user.id), false);
+}
+
+async function refreshUserBoostAccess(env: Env, project: Project, userId: string, notifyFailure: boolean): Promise<{ ok: boolean; count: number }> {
+  const requiredChannel = await requiredChannelForProject(env, project.code);
+  if (!requiredChannel) {
+    return { ok: false, count: 0 };
+  }
+  const result = await telegram(project.bot_token, 'getUserChatBoosts', {
+    chat_id: requiredChannel,
+    user_id: userId,
+  }) as { ok?: boolean; result?: { boosts?: TelegramChatBoost[] } } | null;
+  if (!result?.ok) {
+    if (notifyFailure) {
+      console.error(JSON.stringify({ level: 'warn', source: 'boost-check', project: project.code, userId, error: 'getUserChatBoosts failed' }));
+    }
+    return { ok: false, count: 0 };
+  }
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const activeBoosts = (result.result?.boosts || []).filter((boost) => !boost.expiration_date || boost.expiration_date > nowSeconds);
+  const expiresAt = activeBoosts
+    .map((boost) => boost.expiration_date || 0)
+    .filter(Boolean)
+    .sort((a, b) => a - b)[0];
+  await setBoosterAccess(env, project.code, userId, activeBoosts.length, expiresAt ? new Date(expiresAt * 1000).toISOString() : null);
+  return { ok: activeBoosts.length >= boosterMinBoosts(env), count: activeBoosts.length };
+}
+
+async function setBoosterAccess(env: Env, projectCode: string, userId: string, boostCount: number, expiresAt: string | null): Promise<void> {
+  const now = new Date().toISOString();
+  const hasAccess = boostCount >= boosterMinBoosts(env);
+  const current = await env.DB.prepare(
+    'SELECT COALESCE(access_source, "") AS access_source FROM users WHERE project_code = ? AND user_id = ? LIMIT 1',
+  ).bind(projectCode, userId).first<{ access_source: string }>();
+  const shouldRemoveBooster = current?.access_source === 'booster' && !hasAccess;
+  await env.DB.prepare(
+    `INSERT INTO users (project_code, user_id, is_paid, is_allowlisted, access_expires_at, access_source, payment_method, boost_count, boost_checked_at, boost_expires_at, created_at, updated_at)
+     VALUES (?, ?, 0, 0, NULL, ?, 'boost', ?, ?, ?, ?, ?)
+     ON CONFLICT(project_code, user_id) DO UPDATE SET
+       is_paid = CASE WHEN excluded.access_source = 'booster' THEN 0 ELSE users.is_paid END,
+       is_allowlisted = CASE WHEN excluded.access_source = 'booster' THEN 0 ELSE users.is_allowlisted END,
+       access_expires_at = CASE WHEN excluded.access_source = 'booster' THEN NULL ELSE users.access_expires_at END,
+       access_source = CASE WHEN excluded.access_source = 'booster' OR users.access_source = 'booster' THEN excluded.access_source ELSE users.access_source END,
+       payment_method = CASE WHEN excluded.access_source = 'booster' THEN 'boost' ELSE users.payment_method END,
+       boost_count = excluded.boost_count,
+       boost_checked_at = excluded.boost_checked_at,
+       boost_expires_at = excluded.boost_expires_at,
+       updated_at = excluded.updated_at`,
+  ).bind(projectCode, userId, hasAccess ? 'booster' : (shouldRemoveBooster ? 'none' : 'none'), boostCount, now, expiresAt, now, now).run();
+}
+
+async function auditBoosterAccess(env: Env): Promise<void> {
+  await ensureAccessSchema(env);
+  const rows = await env.DB.prepare(
+    `SELECT p.code AS project_code, p.bot_token, u.user_id
+     FROM users u
+     JOIN projects p ON p.code = u.project_code
+     WHERE p.active = 1 AND COALESCE(u.access_source, '') = 'booster'
+     ORDER BY p.code, u.user_id`,
+  ).all<{ project_code: string; bot_token: string; user_id: string }>();
+  for (const row of rows.results || []) {
+    const project = await getProject(env, row.project_code);
+    if (!project) {
+      continue;
+    }
+    const before = await subscriptionAccess(env, row.project_code, row.user_id);
+    const result = await refreshUserBoostAccess(env, project, row.user_id, false);
+    if (before.status === 'booster' && !result.ok) {
+      await telegram(row.bot_token, 'sendMessage', {
+        chat_id: row.user_id,
+        text: `Мы больше не видим ${boosterMinBoosts(env)} активных бустов от вас, поэтому Booster-доступ отключён. Его можно вернуть через меню подписки.`,
+      });
+    }
+  }
+}
+
 async function toggleSubscription(env: Env, projectCode: string, userId: string, channelId: string): Promise<boolean> {
   const existing = await env.DB.prepare(
     'SELECT active FROM user_subscriptions WHERE project_code = ? AND user_id = ? AND channel_id = ?',
@@ -1319,35 +1638,35 @@ async function childCategories(env: Env, projectCode: string, parentId: string):
   return result.results || [];
 }
 
-async function childChannels(env: Env, projectCode: string, categoryId: string): Promise<Channel[]> {
+async function childChannels(env: Env, projectCode: string, categoryId: string, userId = ''): Promise<Channel[]> {
   const result = await env.DB.prepare(
-    `SELECT channel_id, title, status
+    `SELECT channel_id, title, status, last_video_at
      FROM channels
      WHERE project_code = ? AND category_id = ?
      ORDER BY sort_order, title`,
   ).bind(projectCode, categoryId).all<Channel>();
-  return result.results || [];
+  return filterVisibleChannels(result.results || [], await hideInactiveYearEnabled(env, projectCode, userId));
 }
 
-async function allChannels(env: Env, projectCode: string): Promise<Channel[]> {
+async function allChannels(env: Env, projectCode: string, userId = ''): Promise<Channel[]> {
   const result = await env.DB.prepare(
-    `SELECT channel_id, title, status
+    `SELECT channel_id, title, status, last_video_at
      FROM channels
      WHERE project_code = ?
      ORDER BY sort_order, title`,
   ).bind(projectCode).all<Channel>();
-  return result.results || [];
+  return filterVisibleChannels(result.results || [], await hideInactiveYearEnabled(env, projectCode, userId));
 }
 
 async function subscribedChannels(env: Env, projectCode: string, userId: string): Promise<Channel[]> {
   const result = await env.DB.prepare(
-    `SELECT c.channel_id, c.title, c.status
+    `SELECT c.channel_id, c.title, c.status, c.last_video_at
      FROM user_subscriptions s
      JOIN channels c ON c.project_code = s.project_code AND c.channel_id = s.channel_id
      WHERE s.project_code = ? AND s.user_id = ? AND s.active = 1
-     ORDER BY c.sort_order, c.title`,
+    ORDER BY c.sort_order, c.title`,
   ).bind(projectCode, userId).all<Channel>();
-  return result.results || [];
+  return filterVisibleChannels(result.results || [], await hideInactiveYearEnabled(env, projectCode, userId));
 }
 
 async function selectedChannels(env: Env, projectCode: string, userId: string): Promise<Set<string>> {
@@ -1360,7 +1679,7 @@ async function selectedChannels(env: Env, projectCode: string, userId: string): 
 }
 
 async function categoryStats(env: Env, projectCode: string, userId: string, categoryId: string): Promise<{ selected: number; total: number }> {
-  const channelIds = await descendantChannelIds(env, projectCode, categoryId);
+  const channelIds = await descendantChannelIds(env, projectCode, categoryId, userId);
   if (channelIds.length === 0) {
     return { selected: 0, total: 0 };
   }
@@ -1383,7 +1702,10 @@ async function countChildCategories(env: Env, projectCode: string, parentId: str
   return row?.count || 0;
 }
 
-async function countChannels(env: Env, projectCode: string): Promise<number> {
+async function countChannels(env: Env, projectCode: string, userId = ''): Promise<number> {
+  if (await hideInactiveYearEnabled(env, projectCode, userId)) {
+    return (await allChannels(env, projectCode, userId)).length;
+  }
   const row = await env.DB.prepare(
     'SELECT COUNT(*) AS count FROM channels WHERE project_code = ?',
   ).bind(projectCode).first<{ count: number }>();
@@ -1391,6 +1713,9 @@ async function countChannels(env: Env, projectCode: string): Promise<number> {
 }
 
 async function countSubscriptions(env: Env, projectCode: string, userId: string): Promise<number> {
+  if (await hideInactiveYearEnabled(env, projectCode, userId)) {
+    return (await subscribedChannels(env, projectCode, userId)).length;
+  }
   const row = await env.DB.prepare(
     `SELECT COUNT(*) AS count
      FROM user_subscriptions
@@ -1399,7 +1724,7 @@ async function countSubscriptions(env: Env, projectCode: string, userId: string)
   return row?.count || 0;
 }
 
-async function subscriptionStatus(env: Env, projectCode: string, userId: string): Promise<'free' | 'paid' | 'trial' | 'none'> {
+async function subscriptionStatus(env: Env, projectCode: string, userId: string): Promise<SubscriptionAccess['status']> {
   return (await subscriptionAccess(env, projectCode, userId)).status;
 }
 
@@ -1408,13 +1733,23 @@ async function subscriptionAccess(env: Env, projectCode: string, userId: string)
     `SELECT
        COALESCE(u.is_paid, 0) AS is_paid,
        u.access_expires_at AS access_expires_at,
+       COALESCE(u.access_source, '') AS access_source,
+       COALESCE(u.boost_count, 0) AS boost_count,
+       u.boost_expires_at AS boost_expires_at,
        CASE WHEN a.user_id IS NOT NULL OR (COALESCE(u.is_allowlisted, 0) = 1 AND (u.access_expires_at IS NULL OR u.access_expires_at = '')) THEN 1 ELSE 0 END AS is_free,
        CASE WHEN COALESCE(u.is_allowlisted, 0) = 1 AND u.access_expires_at IS NOT NULL AND u.access_expires_at != '' AND u.access_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') THEN 1 ELSE 0 END AS is_trial
      FROM users u
      LEFT JOIN allowlist a ON a.project_code = u.project_code AND a.user_id = u.user_id
      WHERE u.project_code = ? AND u.user_id = ?
      LIMIT 1`,
-  ).bind(projectCode, userId).first<{ is_paid: number; is_free: number; is_trial: number; access_expires_at: string | null }>();
+  ).bind(projectCode, userId).first<{ is_paid: number; is_free: number; is_trial: number; access_source: string; boost_count: number; boost_expires_at: string | null; access_expires_at: string | null }>();
+  if (
+    row?.access_source === 'booster'
+    && row.boost_count >= boosterMinBoosts(env)
+    && (!row.boost_expires_at || row.boost_expires_at > new Date().toISOString())
+  ) {
+    return { status: 'booster', expiresAt: row.boost_expires_at || null, boostCount: row.boost_count };
+  }
   if (row?.is_free === 1) {
     return { status: 'free', expiresAt: null };
   }
@@ -1458,11 +1793,12 @@ async function renderAdminStatsText(env: Env, projectCode: string): Promise<stri
       `SELECT
          SUM(CASE WHEN COALESCE(u.is_paid, 0) = 1 AND (u.access_expires_at IS NULL OR u.access_expires_at = '' OR u.access_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) THEN 1 ELSE 0 END) AS paid,
          SUM(CASE WHEN a.user_id IS NOT NULL OR (COALESCE(u.is_allowlisted, 0) = 1 AND (u.access_expires_at IS NULL OR u.access_expires_at = '')) THEN 1 ELSE 0 END) AS free,
+         SUM(CASE WHEN COALESCE(u.access_source, '') = 'booster' AND COALESCE(u.boost_count, 0) >= ${boosterMinBoosts(env)} AND (u.boost_expires_at IS NULL OR u.boost_expires_at = '' OR u.boost_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) THEN 1 ELSE 0 END) AS booster,
          SUM(CASE WHEN COALESCE(u.is_allowlisted, 0) = 1 AND u.access_expires_at IS NOT NULL AND u.access_expires_at != '' AND u.access_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') THEN 1 ELSE 0 END) AS trial
        FROM users u
        LEFT JOIN allowlist a ON a.project_code = u.project_code AND a.user_id = u.user_id
        WHERE u.project_code = ?`,
-    ).bind(projectCode).first<{ paid: number; free: number; trial: number }>(),
+    ).bind(projectCode).first<{ paid: number; free: number; trial: number; booster: number }>(),
     env.DB.prepare('SELECT COUNT(*) AS count FROM users WHERE project_code = ? AND COALESCE(is_admin, 0) = 1').bind(projectCode).first<{ count: number }>(),
     env.DB.prepare('SELECT COUNT(*) AS count FROM user_subscriptions WHERE project_code = ? AND active = 1').bind(projectCode).first<{ count: number }>(),
     env.DB.prepare('SELECT COUNT(*) AS count FROM channels WHERE project_code = ?').bind(projectCode).first<{ count: number }>(),
@@ -1471,7 +1807,8 @@ async function renderAdminStatsText(env: Env, projectCode: string): Promise<stri
   const freeCount = access?.free || 0;
   const trialCount = access?.trial || 0;
   const paidCount = access?.paid || 0;
-  const noneCount = Math.max(0, userCount - freeCount - trialCount - paidCount);
+  const boosterCount = access?.booster || 0;
+  const noneCount = Math.max(0, userCount - freeCount - trialCount - paidCount - boosterCount);
   return [
     'Статистика бота',
     '',
@@ -1482,6 +1819,7 @@ async function renderAdminStatsText(env: Env, projectCode: string): Promise<stri
     `Free: ${freeCount}`,
     `Free временный: ${trialCount}`,
     `Paid: ${paidCount}`,
+    `Booster: ${boosterCount}`,
     `Без доступа: ${noneCount}`,
     `Активных подписок: ${subscriptions?.count || 0}`,
     `Каналов в базе: ${channels?.count || 0}`,
@@ -1508,10 +1846,10 @@ async function parentCategory(env: Env, projectCode: string, categoryId: string)
   return row?.parent_id || 'root';
 }
 
-async function descendantChannelIds(env: Env, projectCode: string, categoryId: string): Promise<string[]> {
-  const channels = await childChannels(env, projectCode, categoryId);
+async function descendantChannelIds(env: Env, projectCode: string, categoryId: string, userId = ''): Promise<string[]> {
+  const channels = await childChannels(env, projectCode, categoryId, userId);
   const categories = await childCategories(env, projectCode, categoryId);
-  const nested = await Promise.all(categories.map((category) => descendantChannelIds(env, projectCode, category.category_id)));
+  const nested = await Promise.all(categories.map((category) => descendantChannelIds(env, projectCode, category.category_id, userId)));
   return [...channels.map((channel) => channel.channel_id), ...nested.flat()];
 }
 
@@ -1758,6 +2096,95 @@ async function recordCloudflareRequest(env: Env): Promise<void> {
          updated_at = excluded.updated_at`,
     ).bind(usageMonth(), now),
   ]);
+}
+
+async function ensureAccessSchema(env: Env): Promise<void> {
+  const key = 'schema:access-sources:v1';
+  if (await env.CACHE.get(key)) {
+    return;
+  }
+  for (const statement of [
+    "ALTER TABLE users ADD COLUMN access_source TEXT NOT NULL DEFAULT 'none'",
+    'ALTER TABLE users ADD COLUMN payment_method TEXT',
+    'ALTER TABLE users ADD COLUMN boost_count INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE users ADD COLUMN boost_checked_at TEXT',
+    'ALTER TABLE users ADD COLUMN boost_expires_at TEXT',
+    'ALTER TABLE users ADD COLUMN star_paid_until TEXT',
+    'ALTER TABLE users ADD COLUMN hide_inactive_year INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE channels ADD COLUMN last_video_at TEXT',
+  ]) {
+    try {
+      await env.DB.prepare(statement).run();
+    } catch (error) {
+      if (!String(error).toLowerCase().includes('duplicate column')) {
+        throw error;
+      }
+    }
+  }
+  await env.CACHE.put(key, '1');
+}
+
+function boosterMinBoosts(env: Env): number {
+  const value = Number.parseInt(String(env.BOOSTER_MIN_BOOSTS || ''), 10);
+  return Number.isFinite(value) && value > 0 ? value : BOOSTER_MIN_BOOSTS_DEFAULT;
+}
+
+function starPriceMonthly(env: Env): number {
+  const value = Number.parseInt(String(env.STAR_PRICE_MONTHLY || ''), 10);
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_STAR_PRICE_MONTHLY;
+}
+
+function normalizeAccessSource(value: string): string {
+  const text = String(value || '').trim().toLowerCase();
+  return ['free', 'paid', 'booster', 'none'].includes(text) ? text : 'none';
+}
+
+async function hideInactiveYearEnabled(env: Env, projectCode: string, userId: string): Promise<boolean> {
+  if (!userId) {
+    return false;
+  }
+  const row = await env.DB.prepare(
+    'SELECT COALESCE(hide_inactive_year, 0) AS hide_inactive_year FROM users WHERE project_code = ? AND user_id = ? LIMIT 1',
+  ).bind(projectCode, userId).first<{ hide_inactive_year: number }>();
+  return row?.hide_inactive_year === 1;
+}
+
+async function setHideInactiveYear(env: Env, projectCode: string, userId: string, enabled: boolean): Promise<void> {
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO users (project_code, user_id, hide_inactive_year, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(project_code, user_id) DO UPDATE SET
+       hide_inactive_year = excluded.hide_inactive_year,
+       updated_at = excluded.updated_at`,
+  ).bind(projectCode, userId, enabled ? 1 : 0, now, now).run();
+}
+
+function filterVisibleChannels(channels: Channel[], hideInactiveYear: boolean): Channel[] {
+  if (!hideInactiveYear) {
+    return channels;
+  }
+  const cutoff = Date.now() - 365 * 24 * 60 * 60 * 1000;
+  return channels.filter((channel) => {
+    const value = String(channel.last_video_at || '').trim();
+    if (!value) {
+      return true;
+    }
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      return true;
+    }
+    return parsed.getTime() >= cutoff;
+  });
+}
+
+async function boostChannelUrl(env: Env, projectCode: string): Promise<string> {
+  const channel = await requiredChannelForProject(env, projectCode);
+  const normalized = normalizeTelegramChannel(channel);
+  if (normalized.startsWith('@')) {
+    return `https://t.me/boost/${normalized.slice(1)}`;
+  }
+  return telegramChannelUrl(normalized);
 }
 
 async function getCloudflareUsage(env: Env): Promise<{ month: string; limit: number; used: number; remaining: number; updated_at: string }> {
