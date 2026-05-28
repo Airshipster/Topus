@@ -27,9 +27,10 @@ FORMULA = f'''=LET(
   partners;ARRAYFORMULA(IF(IFERROR(FIND("🐙";rawPartners;1)>0;FALSE);"🐙";""));
   lastYears;ARRAYFORMULA(IF(ISNUMBER(rawLast);TO_TEXT(YEAR(rawLast));rawLast));
   createdYears;ARRAYFORMULA(IF(ISNUMBER(rawCreated);TO_TEXT(YEAR(rawCreated));rawCreated));
+  cleanTg;ARRAYFORMULA(IF(REGEXMATCH(TO_TEXT(tg);"^\\s*-");"";tg));
   {{
     "Название"&CHAR(10)&"проекта"\\"Ссылка "&CHAR(10)&"на канал"\\"Партнёр "&CHAR(10)&"SciTopus"\\"Кол."&CHAR(10)&" видео"\\"Год послед."&CHAR(10)&" видео"\\"Год создания"&CHAR(10)&" канала"\\"TG-каналы"&CHAR(10)&" партнёров";
-    names\\links\\partners\\videos\\lastYears\\createdYears\\tg;
+    names\\links\\partners\\videos\\lastYears\\createdYears\\cleanTg;
     {BLANK_ROW};
     {BLANK_ROW};
     {BLANK_ROW};
