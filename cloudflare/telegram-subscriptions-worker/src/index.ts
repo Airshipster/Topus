@@ -123,6 +123,10 @@ type TelegramSuccessfulPayment = {
   total_amount: number;
   invoice_payload: string;
   telegram_payment_charge_id: string;
+  provider_payment_charge_id?: string;
+  subscription_expiration_date?: number;
+  is_recurring?: boolean;
+  is_first_recurring?: boolean;
 };
 
 type TelegramChatBoostUpdated = {
@@ -732,7 +736,7 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
     text = 'Мои подписки';
   } else if (action === 'plan') {
     menu = await renderPlan(env, project.code, String(callback.from.id));
-    text = 'Статус подписки';
+    text = await renderPlanText(env, project.code, String(callback.from.id));
   } else if (action === 'starsbuy') {
     await answer(project.bot_token, callback.id);
     const months = Math.max(1, Number.parseInt(value || '1', 10) || 1);
@@ -743,9 +747,13 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
   } else if (action === 'boostcheck') {
     const result = await refreshUserBoostAccess(env, project, String(callback.from.id), true);
     menu = await renderPlan(env, project.code, String(callback.from.id));
-    text = result.ok
-      ? `Бусты подтверждены: ${result.count}/${boosterMinBoosts(env)}. Доступ активен как Booster.`
-      : `Сейчас у нас видно ${result.count}/${boosterMinBoosts(env)} активных бустов от вас. После передачи бустов нажмите проверку ещё раз.`;
+    text = [
+      result.ok
+        ? `Бусты подтверждены: ${result.count}/${boosterMinBoosts(env)}. Доступ активен как Booster.`
+        : `Сейчас у нас видно ${result.count}/${boosterMinBoosts(env)} активных бустов от вас. После передачи бустов нажмите проверку ещё раз.`,
+      '',
+      await renderPlanText(env, project.code, String(callback.from.id)),
+    ].join('\n');
     toast = result.ok ? 'Booster-доступ активен' : 'Бустов пока недостаточно';
   } else if (action === 'reminders') {
     menu = await renderReminderMenu(env, project.code, String(callback.from.id));
@@ -757,8 +765,9 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
     const enabled = !await hideInactiveYearEnabled(env, project.code, String(callback.from.id));
     await setHideInactiveYear(env, project.code, String(callback.from.id), enabled);
     menu = await renderSettingsMenu(env, project.code, String(callback.from.id));
+    const visibility = await channelVisibilityStats(env, project.code);
     text = enabled
-      ? 'Каналы без публикаций больше года скрыты. Если такой канал внезапно оживёт, он снова появится после обновления списка.'
+      ? `Каналы без публикаций больше года скрыты: ${visibility.hidden}/${visibility.total}. В списках осталось ${visibility.visible}. Если такой канал внезапно оживёт, он снова появится после обновления списка.`
       : 'Неактивные больше года каналы снова показываются в списках.';
     toast = enabled ? 'Скрытие включено' : 'Скрытие отключено';
   } else if (action === 'remtoggle' || action === 'remon' || action === 'remoff') {
@@ -896,6 +905,10 @@ async function renderMainMenu(env: Env, projectCode: string, userId: string): Pr
   return { inline_keyboard: rows };
 }
 
+function countSelectedVisible(channels: Channel[], selected: Set<string>): number {
+  return channels.filter((channel) => selected.has(channel.channel_id)).length;
+}
+
 function renderAdminStatsMenu(): object {
   return {
     inline_keyboard: [
@@ -996,8 +1009,10 @@ async function renderMenu(env: Env, projectCode: string, userId: string, categor
 
   if (categoryId === 'root') {
     const totalChannels = await countChannels(env, projectCode, userId);
-    const allPrefix = totalChannels > 0 && selected.size === totalChannels ? `${SELECTED_MARK} 📺` : '📺';
-    rows.push([{ text: `${allPrefix} Все каналы (${selected.size}/${totalChannels})`, callback_data: 'allch:0' }]);
+    const visibleChannels = await allChannels(env, projectCode, userId);
+    const selectedVisible = countSelectedVisible(visibleChannels, selected);
+    const allPrefix = totalChannels > 0 && selectedVisible === totalChannels ? `${SELECTED_MARK} 📺` : '📺';
+    rows.push([{ text: `${allPrefix} Все каналы (${selectedVisible}/${totalChannels})`, callback_data: 'allch:0' }]);
     if (rows.length === 1) {
       rows.unshift([{ text: 'Категории пока не настроены', callback_data: 'noop' }]);
     }
@@ -1085,7 +1100,7 @@ async function renderPlan(env: Env, projectCode: string, userId: string): Promis
   const rows: Array<Array<TelegramButton>> = [
     [{ text: label, callback_data: 'noop' }],
     [{ text: 'Проверить статус', callback_data: 'boostcheck:root' }],
-    [{ text: `Поддержать Stars (${starPriceMonthly(env)} XTR/мес.)`, callback_data: 'starsbuy:1' }],
+    [{ text: `Оплатить ${starPriceMonthly(env)} звёзд в месяц`, callback_data: 'starsbuy:1' }],
   ];
   if (boostUrl) {
     rows.push([{ text: `Передать ${boosterMinBoosts(env)} буста`, url: boostUrl }]);
@@ -1097,11 +1112,38 @@ async function renderPlan(env: Env, projectCode: string, userId: string): Promis
   };
 }
 
+async function renderPlanText(env: Env, projectCode: string, userId: string): Promise<string> {
+  const access = await subscriptionAccess(env, projectCode, userId);
+  const statusLine = access.status === 'free'
+    ? 'Сейчас у вас free-доступ.'
+    : access.status === 'trial'
+      ? `Сейчас у вас временный free-доступ до ${formatShortDate(access.expiresAt || '')}.`
+      : access.status === 'booster'
+        ? `Сейчас у вас Booster-доступ: ${access.boostCount || 0}/${boosterMinBoosts(env)} бустов.`
+        : access.status === 'paid'
+          ? (access.expiresAt ? `Сейчас у вас paid-доступ до ${formatShortDate(access.expiresAt)}.` : 'Сейчас у вас paid-доступ без срока.')
+          : 'Сейчас платный доступ не активен.';
+
+  return [
+    'Статус подписки',
+    '',
+    statusLine,
+    '',
+    `1. Бусты: передайте ${boosterMinBoosts(env)} буста основному каналу и нажмите «Проверить статус». Пока бусты активны, доступ работает как Booster.`,
+    `2. Telegram Stars: ${starPriceMonthly(env)} звёзд в месяц. Платёж оформляется внутри Telegram; регулярное списание поддерживается Telegram Stars-подписками.`,
+    '3. TON/ручная оплата: можно подключить как ручной paid-доступ через администратора, если нужно принять оплату вне Telegram Stars.',
+  ].join('\n');
+}
+
 async function renderSettingsMenu(env: Env, projectCode: string, userId: string): Promise<object> {
   const hideOld = await hideInactiveYearEnabled(env, projectCode, userId);
+  const visibility = await channelVisibilityStats(env, projectCode);
+  const hideLabel = hideOld
+    ? `✅ Скрыто ${visibility.hidden}/${visibility.total}, видно ${visibility.visible}`
+    : `Скрыть неактивные больше года (${visibility.hidden}/${visibility.total})`;
   return {
     inline_keyboard: [
-      [{ text: hideOld ? '✅ Неактивные больше года скрыты' : 'Скрыть неактивные больше года', callback_data: 'hideold:root' }],
+      [{ text: hideLabel, callback_data: 'hideold:root' }],
       [{ text: '🔔 Напоминания', callback_data: 'reminders:root' }],
       [{ text: 'Проверить статус доступа', callback_data: 'plan:root' }],
       [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
@@ -1433,11 +1475,13 @@ async function handleSuccessfulPayment(env: Env, project: Project, message: Tele
     });
     return;
   }
-  const expiresAt = addMonths(new Date(), payload.months).toISOString();
+  const expiresAt = payment.subscription_expiration_date
+    ? new Date(payment.subscription_expiration_date * 1000).toISOString()
+    : addMonths(new Date(), payload.months).toISOString();
   await setPaidAccess(env, project.code, String(message.from.id), expiresAt, 'stars');
   await telegram(project.bot_token, 'sendMessage', {
     chat_id: message.chat.id,
-    text: `Спасибо за поддержку Stars. Paid-доступ активен до ${formatShortDate(expiresAt)}.`,
+    text: `Спасибо за поддержку звёздами. Paid-доступ активен до ${formatShortDate(expiresAt)}. Если это регулярная подписка, Telegram будет продлевать её автоматически при наличии звёзд на балансе.`,
     reply_markup: await renderMainMenu(env, project.code, String(message.from.id)),
   });
 }
@@ -1447,11 +1491,12 @@ async function sendStarsInvoice(env: Env, project: Project, chatId: number, user
   await telegram(project.bot_token, 'sendInvoice', {
     chat_id: chatId,
     title: 'Подписка SciTopus Bot',
-    description: `Доступ к личной ленте на ${months} мес.`,
+    description: `Доступ к личной ленте за ${amount} звёзд в месяц.`,
     payload: `stars:${project.code}:${months}:${userId}`,
     provider_token: '',
     currency: 'XTR',
     prices: [{ label: `${months} мес.`, amount }],
+    subscription_period: 30 * 24 * 60 * 60,
   });
 }
 
@@ -2164,18 +2209,30 @@ function filterVisibleChannels(channels: Channel[], hideInactiveYear: boolean): 
   if (!hideInactiveYear) {
     return channels;
   }
+  return channels.filter((channel) => !isInactiveMoreThanYear(channel));
+}
+
+function isInactiveMoreThanYear(channel: Channel): boolean {
   const cutoff = Date.now() - 365 * 24 * 60 * 60 * 1000;
-  return channels.filter((channel) => {
-    const value = String(channel.last_video_at || '').trim();
-    if (!value) {
-      return true;
-    }
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) {
-      return true;
-    }
-    return parsed.getTime() >= cutoff;
-  });
+  const value = String(channel.last_video_at || '').trim();
+  if (!value) {
+    return false;
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return false;
+  }
+  return parsed.getTime() < cutoff;
+}
+
+async function channelVisibilityStats(env: Env, projectCode: string): Promise<{ total: number; hidden: number; visible: number }> {
+  const channels = await allChannels(env, projectCode);
+  const hidden = channels.filter(isInactiveMoreThanYear).length;
+  return {
+    total: channels.length,
+    hidden,
+    visible: channels.length - hidden,
+  };
 }
 
 async function boostChannelUrl(env: Env, projectCode: string): Promise<string> {
