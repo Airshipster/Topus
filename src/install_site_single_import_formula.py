@@ -26,8 +26,8 @@ FORMULA = f'''=LET(
   tg;FILTER(INDEX(data;;MATCH("TG-каналы партнёров";headers;0));rowNums>=startRow;rowNums<=endRow);
   links;ARRAYFORMULA(IF(REGEXMATCH(rawLinks;"https://www\\.");REGEXREPLACE(rawLinks;"https://www\\.";"");rawLinks));
   partners;ARRAYFORMULA(IF(IFERROR(FIND("🐙";rawPartners;1)>0;FALSE);"🐙";""));
-  lastDates;ARRAYFORMULA(IF(ISNUMBER(rawLast);TEXT(rawLast;"dd.mm.yyyy");rawLast));
-  createdDates;ARRAYFORMULA(IF(ISNUMBER(rawCreated);TEXT(rawCreated;"dd.mm.yyyy");rawCreated));
+  lastDates;rawLast;
+  createdDates;rawCreated;
   cleanTg;ARRAYFORMULA(IF(REGEXMATCH(TO_TEXT(tg);"^\\s*-");"";tg));
   {{
     "Название"&CHAR(10)&"проекта"\\"Ссылка "&CHAR(10)&"на канал"\\"Партнёр "&CHAR(10)&"SciTopus"\\"Кол."&CHAR(10)&" видео"\\"Год послед."&CHAR(10)&" видео"\\"Год создания"&CHAR(10)&" канала"\\"TG-каналы"&CHAR(10)&" партнёров";
@@ -46,6 +46,12 @@ def main():
     worksheet = spreadsheet.worksheet("Сайт")
     worksheet.batch_clear(["A1:H1000", "A1000"])
     worksheet.update("A1", [[FORMULA]], value_input_option="USER_ENTERED")
+    worksheet.format("E2:F1000", {
+        "numberFormat": {
+            "type": "DATE",
+            "pattern": "dd.mm.yyyy",
+        },
+    })
     print("Installed single live Сайт formula with dynamic blue-marker boundary")
 
 
