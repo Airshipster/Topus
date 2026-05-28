@@ -1933,7 +1933,7 @@ async function sendNotifications(
       text,
       parse_mode: parseMode,
       disable_web_page_preview: false,
-      reply_markup: renderNotificationMenu(channelId, true),
+      reply_markup: renderNotificationMenu(channelId, true, true),
     }) as { ok?: boolean; result?: { message_id?: number } } | null;
     deliveries.push({
       userId: recipient.user_id,
@@ -1971,10 +1971,15 @@ async function sendWeeklySubscriptionReminders(env: Env): Promise<void> {
   }
 }
 
-function renderNotificationMenu(channelId: string, subscribed: boolean): object {
+function renderNotificationMenu(channelId: string, subscribed: boolean, initial = false): object {
+  const text = initial
+    ? 'Вы подписаны'
+    : subscribed
+      ? '✅ Вы подписаны'
+      : '❌ Вы отписались от канала';
   return {
     inline_keyboard: [
-      [{ text: subscribed ? '✅ Вы подписаны' : '❌ Вы отписались от канала', callback_data: `unsub:${channelId}` }],
+      [{ text, callback_data: `unsub:${channelId}` }],
     ],
   };
 }
