@@ -25,8 +25,8 @@ FORMULA = f'''=LET(
   tg;FILTER(INDEX(data;;MATCH("TG-каналы партнёров";headers;0));rowNums>=startRow;rowNums<=endRow);
   links;ARRAYFORMULA(IF(REGEXMATCH(rawLinks;"https://www\\.");REGEXREPLACE(rawLinks;"https://www\\.";"");rawLinks));
   partners;ARRAYFORMULA(IF(IFERROR(FIND("🐙";rawPartners;1)>0;FALSE);"🐙";""));
-  lastYears;ARRAYFORMULA(IF(ISNUMBER(rawLast);YEAR(rawLast);rawLast));
-  createdYears;ARRAYFORMULA(IF(ISNUMBER(rawCreated);YEAR(rawCreated);rawCreated));
+  lastYears;ARRAYFORMULA(IF(ISNUMBER(rawLast);TO_TEXT(YEAR(rawLast));rawLast));
+  createdYears;ARRAYFORMULA(IF(ISNUMBER(rawCreated);TO_TEXT(YEAR(rawCreated));rawCreated));
   {{
     "Название"&CHAR(10)&"проекта"\\"Ссылка "&CHAR(10)&"на канал"\\"Партнёр "&CHAR(10)&"SciTopus"\\"Кол."&CHAR(10)&" видео"\\"Год послед."&CHAR(10)&" видео"\\"Год создания"&CHAR(10)&" канала"\\"TG-каналы"&CHAR(10)&" партнёров";
     names\\links\\partners\\videos\\lastYears\\createdYears\\tg;
