@@ -369,7 +369,7 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
       ).all<{ code: string; name: string; active: number; updated_at: string }>(),
       env.DB.prepare(
         `SELECT project_code, user_id, username, first_name, is_paid, is_allowlisted, COALESCE(is_admin, 0) AS is_admin, access_expires_at,
-                access_source, payment_method, boost_count, boost_checked_at, boost_expires_at, star_paid_until, hide_inactive_year,
+                access_source, payment_method, boost_count, boost_checked_at, boost_expires_at, star_paid_until, access_started_at, access_history, hide_inactive_year,
                 created_at, updated_at
          FROM users
          ORDER BY project_code, user_id`,
@@ -414,7 +414,7 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
   }
 
   const body = await request.json<{
-    users?: Array<{ projectCode: string; userId: string; username?: string; firstName?: string; isPaid?: boolean; isAllowlisted?: boolean; isAdmin?: boolean; accessExpiresAt?: string | null; accessSource?: string | null; paymentMethod?: string | null; boostCount?: number; boostCheckedAt?: string | null; boostExpiresAt?: string | null; starPaidUntil?: string | null; hideInactiveYear?: boolean }>;
+    users?: Array<{ projectCode: string; userId: string; username?: string; firstName?: string; isPaid?: boolean; isAllowlisted?: boolean; isAdmin?: boolean; accessExpiresAt?: string | null; accessSource?: string | null; paymentMethod?: string | null; boostCount?: number; boostCheckedAt?: string | null; boostExpiresAt?: string | null; starPaidUntil?: string | null; accessStartedAt?: string | null; accessHistory?: string | null; hideInactiveYear?: boolean }>;
     subscriptions?: Array<{ projectCode: string; userId: string; channelId: string; active?: boolean; delete?: boolean }>;
     allowlist?: Array<{ projectCode: string; userId: string; note?: string; active?: boolean; delete?: boolean }>;
   }>();
@@ -426,8 +426,8 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
       continue;
     }
     statements.push(env.DB.prepare(
-      `INSERT INTO users (project_code, user_id, username, first_name, is_paid, is_allowlisted, is_admin, access_expires_at, access_source, payment_method, boost_count, boost_checked_at, boost_expires_at, star_paid_until, hide_inactive_year, weekly_reminders, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO users (project_code, user_id, username, first_name, is_paid, is_allowlisted, is_admin, access_expires_at, access_source, payment_method, boost_count, boost_checked_at, boost_expires_at, star_paid_until, access_started_at, access_history, hide_inactive_year, weekly_reminders, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(project_code, user_id) DO UPDATE SET
          username = COALESCE(excluded.username, users.username),
          first_name = COALESCE(excluded.first_name, users.first_name),
@@ -441,6 +441,8 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
          boost_checked_at = excluded.boost_checked_at,
          boost_expires_at = excluded.boost_expires_at,
          star_paid_until = excluded.star_paid_until,
+         access_started_at = COALESCE(users.access_started_at, excluded.access_started_at),
+         access_history = COALESCE(excluded.access_history, users.access_history),
          hide_inactive_year = excluded.hide_inactive_year,
          weekly_reminders = users.weekly_reminders,
          updated_at = excluded.updated_at`,
@@ -459,6 +461,8 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
       user.boostCheckedAt || null,
       user.boostExpiresAt || null,
       user.starPaidUntil || null,
+      user.accessStartedAt || now,
+      user.accessHistory || null,
       user.hideInactiveYear ? 1 : 0,
       0,
       now,
@@ -564,6 +568,17 @@ async function handleMessage(env: Env, project: Project, message: TelegramMessag
       chat_id: message.chat.id,
       text: 'Чтобы пользоваться подписками, подпишитесь на основной канал проекта.',
       reply_markup: renderJoinChannelMenu(requiredChannel),
+    });
+    return;
+  }
+
+  if (!await hasFullBotAccess(env, project.code, String(message.from.id))) {
+    await telegram(project.bot_token, 'sendMessage', {
+      chat_id: message.chat.id,
+      text: await renderPlanText(env, project.code, String(message.from.id)),
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      reply_markup: await renderPlan(env, project.code, String(message.from.id)),
     });
     return;
   }
@@ -712,6 +727,12 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
     menu = renderJoinChannelMenu(requiredChannel);
     text = 'Чтобы пользоваться подписками, подпишитесь на основной канал проекта.';
     toast = 'Сначала подпишитесь на канал';
+  } else
+
+  if (!await canRunCallbackAction(env, project.code, String(callback.from.id), action)) {
+    menu = await renderPlan(env, project.code, String(callback.from.id));
+    text = await renderPlanText(env, project.code, String(callback.from.id));
+    toast = 'Нужен доступ';
   } else
 
   if (action === 'menu') {
@@ -874,6 +895,15 @@ function renderJoinChannelMenu(channelRef: string): object {
 }
 
 async function renderMainMenu(env: Env, projectCode: string, userId: string): Promise<object> {
+  if (!await hasFullBotAccess(env, projectCode, userId)) {
+    return {
+      inline_keyboard: [
+        [{ text: 'Подписка / доступ', callback_data: 'plan:root' }],
+        [{ text: 'Дополнительно', callback_data: 'extra:root' }],
+      ],
+    };
+  }
+
   const [categoryCount, channelCount, subscriptionCount, status, admin] = await Promise.all([
     countChildCategories(env, projectCode, 'root'),
     countChannels(env, projectCode, userId),
@@ -1142,7 +1172,7 @@ async function renderPlanText(env: Env, projectCode: string, userId: string): Pr
         ? `Сейчас у вас Booster-доступ: ${access.boostCount || 0}/${boosterMinBoosts(env)} бустов.`
         : access.status === 'paid'
           ? (access.expiresAt ? `Сейчас у вас paid-доступ до ${formatShortDate(access.expiresAt)}.` : 'Сейчас у вас paid-доступ без срока.')
-          : 'Сейчас платный доступ не активен.';
+          : 'Сейчас полный доступ не активен. Чтобы пользоваться настройкой каналов и личной лентой, выберите один из способов ниже.';
 
   return [
     'Статус подписки',
@@ -1358,14 +1388,29 @@ async function grantFreeAccess(env: Env, projectCode: string, targetUserId: stri
   const keepPaid = Boolean(expiresAt && existingPaid);
   const statements = [
     env.DB.prepare(
-      `INSERT INTO users (project_code, user_id, is_paid, is_allowlisted, is_admin, access_expires_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+      `INSERT INTO users (project_code, user_id, is_paid, is_allowlisted, is_admin, access_expires_at, access_source, payment_method, access_started_at, access_history, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 0, ?, ?, 'manual', ?, ?, ?, ?)
        ON CONFLICT(project_code, user_id) DO UPDATE SET
          is_paid = excluded.is_paid,
          is_allowlisted = excluded.is_allowlisted,
          access_expires_at = excluded.access_expires_at,
+         access_source = excluded.access_source,
+         payment_method = excluded.payment_method,
+         access_started_at = COALESCE(users.access_started_at, excluded.access_started_at),
+         access_history = excluded.access_history,
          updated_at = excluded.updated_at`,
-    ).bind(projectCode, targetUserId, keepPaid ? 1 : 0, keepPaid ? 0 : 1, expiresAt, now, now),
+    ).bind(
+      projectCode,
+      targetUserId,
+      keepPaid ? 1 : 0,
+      keepPaid ? 0 : 1,
+      expiresAt,
+      keepPaid ? 'paid' : 'free',
+      now,
+      accessHistoryEntry(keepPaid ? 'paid' : 'free', 'manual', now, expiresAt, `admin=${adminUserId}`),
+      now,
+      now,
+    ),
   ];
   if (expiresAt || keepPaid) {
     statements.push(env.DB.prepare(
@@ -1544,9 +1589,10 @@ function parseStarsPayload(payload: string): { projectCode: string; months: numb
 
 async function setPaidAccess(env: Env, projectCode: string, userId: string, expiresAt: string | null, paymentMethod: string): Promise<void> {
   const now = new Date().toISOString();
+  const history = accessHistoryEntry('paid', paymentMethod, now, expiresAt);
   await env.DB.prepare(
-    `INSERT INTO users (project_code, user_id, is_paid, is_allowlisted, access_expires_at, access_source, payment_method, star_paid_until, boost_count, boost_checked_at, boost_expires_at, created_at, updated_at)
-     VALUES (?, ?, 1, 0, ?, 'paid', ?, ?, 0, NULL, NULL, ?, ?)
+    `INSERT INTO users (project_code, user_id, is_paid, is_allowlisted, access_expires_at, access_source, payment_method, star_paid_until, boost_count, boost_checked_at, boost_expires_at, access_started_at, access_history, created_at, updated_at)
+     VALUES (?, ?, 1, 0, ?, 'paid', ?, ?, 0, NULL, NULL, ?, ?, ?, ?)
      ON CONFLICT(project_code, user_id) DO UPDATE SET
        is_paid = 1,
        is_allowlisted = 0,
@@ -1557,8 +1603,10 @@ async function setPaidAccess(env: Env, projectCode: string, userId: string, expi
        boost_count = 0,
        boost_checked_at = NULL,
        boost_expires_at = NULL,
+       access_started_at = COALESCE(users.access_started_at, excluded.access_started_at),
+       access_history = excluded.access_history,
        updated_at = excluded.updated_at`,
-  ).bind(projectCode, userId, expiresAt, paymentMethod, expiresAt, now, now).run();
+  ).bind(projectCode, userId, expiresAt, paymentMethod, expiresAt, now, history, now, now).run();
   await env.DB.prepare(
     'DELETE FROM allowlist WHERE project_code = ? AND user_id = ?',
   ).bind(projectCode, userId).run();
@@ -1613,9 +1661,11 @@ async function setBoosterAccess(env: Env, projectCode: string, userId: string, b
     'SELECT COALESCE(access_source, "") AS access_source FROM users WHERE project_code = ? AND user_id = ? LIMIT 1',
   ).bind(projectCode, userId).first<{ access_source: string }>();
   const shouldRemoveBooster = current?.access_source === 'booster' && !hasAccess;
+  const accessSource = hasAccess ? 'booster' : (shouldRemoveBooster ? 'none' : 'none');
+  const history = accessHistoryEntry(accessSource, 'boost', now, expiresAt, `boosts=${boostCount}`);
   await env.DB.prepare(
-    `INSERT INTO users (project_code, user_id, is_paid, is_allowlisted, access_expires_at, access_source, payment_method, boost_count, boost_checked_at, boost_expires_at, created_at, updated_at)
-     VALUES (?, ?, 0, 0, NULL, ?, 'boost', ?, ?, ?, ?, ?)
+    `INSERT INTO users (project_code, user_id, is_paid, is_allowlisted, access_expires_at, access_source, payment_method, boost_count, boost_checked_at, boost_expires_at, access_started_at, access_history, created_at, updated_at)
+     VALUES (?, ?, 0, 0, NULL, ?, 'boost', ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(project_code, user_id) DO UPDATE SET
        is_paid = CASE WHEN excluded.access_source = 'booster' THEN 0 ELSE users.is_paid END,
        is_allowlisted = CASE WHEN excluded.access_source = 'booster' THEN 0 ELSE users.is_allowlisted END,
@@ -1625,8 +1675,20 @@ async function setBoosterAccess(env: Env, projectCode: string, userId: string, b
        boost_count = excluded.boost_count,
        boost_checked_at = excluded.boost_checked_at,
        boost_expires_at = excluded.boost_expires_at,
+       access_started_at = CASE WHEN excluded.access_source = 'booster' THEN COALESCE(users.access_started_at, excluded.access_started_at) ELSE users.access_started_at END,
+       access_history = excluded.access_history,
        updated_at = excluded.updated_at`,
-  ).bind(projectCode, userId, hasAccess ? 'booster' : (shouldRemoveBooster ? 'none' : 'none'), boostCount, now, expiresAt, now, now).run();
+  ).bind(projectCode, userId, accessSource, boostCount, now, expiresAt, now, history, now, now).run();
+}
+
+function accessHistoryEntry(access: string, method: string, at: string, until?: string | null, details = ''): string {
+  return [
+    `access=${access}`,
+    `method=${method}`,
+    `from=${at}`,
+    until ? `until=${until}` : '',
+    details,
+  ].filter(Boolean).join(' ');
 }
 
 async function auditBoosterAccess(env: Env): Promise<void> {
@@ -1801,6 +1863,21 @@ async function countSubscriptions(env: Env, projectCode: string, userId: string)
 
 async function subscriptionStatus(env: Env, projectCode: string, userId: string): Promise<SubscriptionAccess['status']> {
   return (await subscriptionAccess(env, projectCode, userId)).status;
+}
+
+async function hasFullBotAccess(env: Env, projectCode: string, userId: string): Promise<boolean> {
+  if (await isAdmin(env, projectCode, userId)) {
+    return true;
+  }
+  return (await subscriptionAccess(env, projectCode, userId)).status !== 'none';
+}
+
+async function canRunCallbackAction(env: Env, projectCode: string, userId: string, action: string): Promise<boolean> {
+  const publicActions = new Set(['menu', 'plan', 'starsbuy', 'boostcheck', 'settings', 'extra', 'checkjoin', 'noop']);
+  if (publicActions.has(action)) {
+    return true;
+  }
+  return hasFullBotAccess(env, projectCode, userId);
 }
 
 async function subscriptionAccess(env: Env, projectCode: string, userId: string): Promise<SubscriptionAccess> {
@@ -2190,6 +2267,8 @@ async function ensureAccessSchema(env: Env): Promise<void> {
     'ALTER TABLE users ADD COLUMN boost_checked_at TEXT',
     'ALTER TABLE users ADD COLUMN boost_expires_at TEXT',
     'ALTER TABLE users ADD COLUMN star_paid_until TEXT',
+    'ALTER TABLE users ADD COLUMN access_started_at TEXT',
+    'ALTER TABLE users ADD COLUMN access_history TEXT',
     'ALTER TABLE users ADD COLUMN hide_inactive_year INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE channels ADD COLUMN last_video_at TEXT',
   ]) {

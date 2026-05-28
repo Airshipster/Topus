@@ -32,6 +32,7 @@ HEADERS = [
     'Username',
     'First Name',
     'Access',
+    'Access From GMT+4',
     'Access Until GMT+4',
     'Role',
     'Subscription Mode',
@@ -43,12 +44,16 @@ HEADERS = [
     'Cloudflare Updated At',
     'Sheet Synced At',
     'Sync Action',
+    'Access History',
+]
+
+DEPRECATED_HEADERS = {
     'Payment Method',
     'Boost Count',
     'Boost Checked At GMT+4',
     'Boost Expires At GMT+4',
     'Hide Inactive >1y',
-]
+}
 
 TRUE_VALUES = {'1', 'true', 'yes', 'y', 'да', 'истина', '✅', 'on', 'active', 'free', 'paid'}
 FALSE_VALUES = {'0', 'false', 'no', 'n', 'нет', 'ложь', '❌', 'off', 'inactive', 'none'}
@@ -274,6 +279,9 @@ def ensure_bot_worksheet(sheet):
     ensure_bot_row_count(sheet, worksheet)
     values = get_values_with_quota_retry(worksheet, '1:1')
     current_headers = [str(cell).strip() for cell in values[0]] if values else []
+    worksheet = delete_deprecated_bot_columns(sheet, worksheet, current_headers)
+    values = get_values_with_quota_retry(worksheet, '1:1')
+    current_headers = [str(cell).strip() for cell in values[0]] if values else []
     previous_headers = current_headers[:]
     if current_headers != HEADERS:
         worksheet.update(range_name='A1', values=[HEADERS], value_input_option='USER_ENTERED')
@@ -282,6 +290,31 @@ def ensure_bot_worksheet(sheet):
             column = a1_column(index)
             worksheet.batch_clear([f'{column}1:{column}{worksheet.row_count}'])
     return worksheet
+
+
+def delete_deprecated_bot_columns(sheet, worksheet, headers):
+    indexes = [
+        index + 1
+        for index, header in enumerate(headers)
+        if str(header).strip() in DEPRECATED_HEADERS
+    ]
+    if not indexes:
+        return worksheet
+    requests = []
+    for column_index in sorted(indexes, reverse=True):
+        requests.append({
+            'deleteDimension': {
+                'range': {
+                    'sheetId': worksheet.id,
+                    'dimension': 'COLUMNS',
+                    'startIndex': column_index - 1,
+                    'endIndex': column_index,
+                }
+            }
+        })
+    sheet.batch_update({'requests': requests})
+    print(f"  🧹 Removed deprecated bot columns: {len(indexes)}")
+    return sheet.worksheet(SHEET_NAME)
 
 
 def ensure_bot_row_count(sheet, worksheet):
@@ -467,6 +500,8 @@ def build_state(state):
             'boost_checked_at': user.get('boost_checked_at') or '',
             'boost_expires_at': user.get('boost_expires_at') or '',
             'star_paid_until': user.get('star_paid_until') or '',
+            'access_started_at': user.get('access_started_at') or '',
+            'access_history': user.get('access_history') or '',
             'hide_inactive_year': worker_bool(user, 'hide_inactive_year'),
             'updated_at': user.get('updated_at') or user.get('created_at') or '',
         }
@@ -502,6 +537,8 @@ def build_state(state):
             'is_allowlisted': False,
             'is_admin': False,
             'access_expires_at': '',
+            'access_started_at': '',
+            'access_history': '',
             'updated_at': '',
         })
 
@@ -537,14 +574,14 @@ def read_sheet_rows(worksheet):
             'username': str(get_cell(raw_row, headers, 'Username') or '').strip(),
             'first_name': str(get_cell(raw_row, headers, 'First Name') or '').strip(),
             'access': str(get_cell(raw_row, headers, 'Access') or '').strip().lower(),
-            'payment_method': str(get_cell(raw_row, headers, 'Payment Method') or '').strip().lower(),
+            'access_from': str(get_first_cell(raw_row, headers, ['Access From GMT+4', 'Access From']) or '').strip(),
             'access_until': str(get_first_cell(raw_row, headers, ['Access Until GMT+4', 'Access Until']) or '').strip(),
-            'hide_inactive_year': bool_from_sheet(get_cell(raw_row, headers, 'Hide Inactive >1y'), default=False),
             'role': str(get_first_cell(raw_row, headers, ['Role', 'Status']) or '').strip().lower(),
             'mode': str(get_cell(raw_row, headers, 'Subscription Mode') or '').strip().lower(),
             'included': get_cell(raw_row, headers, 'Included Channel IDs'),
             'excluded': get_cell(raw_row, headers, 'Excluded Channel IDs'),
             'free_note': str(get_cell(raw_row, headers, 'Free Note') or '').strip(),
+            'access_history': str(get_cell(raw_row, headers, 'Access History') or '').strip(),
             'action': str(get_cell(raw_row, headers, 'Sync Action') or '').strip().lower(),
         }
         rows.append(row)
@@ -567,7 +604,6 @@ def read_action_rows(sheet_rows, compact_state):
         existing_access = user_access(users.get(key, {}), allowlist.get(key))
         existing_access_kind = access_kind(existing_access)
         existing_role = user_role(users.get(key, {}))
-        existing_hide_inactive = bool(users.get(key, {}).get('hide_inactive_year'))
         existing_expiry = str(users.get(key, {}).get('access_expires_at') or '').strip()
         requested_access, requested_expiry = parse_access_spec(access, row.get('access_until'), existing_expiry)
         requested_role = normalize_role(row.get('role'))
@@ -575,10 +611,9 @@ def read_action_rows(sheet_rows, compact_state):
         access_changed = requested_access in ACCESS_VALUES and requested_access != existing_access_kind
         expiry_changed = requested_access == 'free' and requested_expiry != existing_expiry
         role_changed = requested_role != existing_role
-        hide_changed = bool(row.get('hide_inactive_year')) != existing_hide_inactive
-        if action not in {'push', 'delete'} and not is_new_free_user and not access_changed and not expiry_changed and not role_changed and not hide_changed:
+        if action not in {'push', 'delete'} and not is_new_free_user and not access_changed and not expiry_changed and not role_changed:
             continue
-        if (is_new_free_user or access_changed or expiry_changed or role_changed or hide_changed) and action not in {'push', 'delete'}:
+        if (is_new_free_user or access_changed or expiry_changed or role_changed) and action not in {'push', 'delete'}:
             action = 'push'
         action_row = dict(row)
         action_row['action'] = action
@@ -648,12 +683,14 @@ def collect_changes(action_rows, compact_state):
             'isAdmin': is_admin,
             'accessExpiresAt': access_expires_at,
             'accessSource': requested_access if requested_access in {'free', 'paid', 'booster', 'none'} else None,
-            'paymentMethod': row.get('payment_method') or ('boost' if requested_access == 'booster' else 'manual' if requested_access in {'free', 'paid'} else None),
+            'paymentMethod': existing_user.get('payment_method') or ('boost' if requested_access == 'booster' else 'manual' if requested_access in {'free', 'paid'} else None),
             'boostCount': 0 if requested_access != 'booster' else int(existing_user.get('boost_count') or 0),
             'boostCheckedAt': existing_user.get('boost_checked_at') or None,
             'boostExpiresAt': existing_user.get('boost_expires_at') or None,
-            'starPaidUntil': access_expires_at if requested_access == 'paid' and (row.get('payment_method') == 'stars') else existing_user.get('star_paid_until') or None,
-            'hideInactiveYear': row.get('hide_inactive_year', False),
+            'starPaidUntil': existing_user.get('star_paid_until') or None,
+            'accessStartedAt': existing_user.get('access_started_at') or None,
+            'accessHistory': row.get('access_history') or existing_user.get('access_history') or None,
+            'hideInactiveYear': bool(existing_user.get('hide_inactive_year')),
         })
 
         current = {channel_id for channel_id, active in current_sub_rows.get(key, {}).items() if active}
@@ -719,6 +756,31 @@ def compact_subscription_cells(all_channel_ids, current_subscriptions):
     return 'custom', join_ids(selected), '', len(selected), len(all_channels)
 
 
+def compact_access_history(user, allowlist_entry, existing_row):
+    existing = str(existing_row.get('access_history') or '').strip()
+    entries = []
+    source = str(user.get('access_source') or '').strip()
+    method = str(user.get('payment_method') or '').strip()
+    boost_count = int(user.get('boost_count') or 0)
+    boost_checked = display_timestamp(user.get('boost_checked_at') or '')
+    boost_expires = display_timestamp(user.get('boost_expires_at') or '')
+    star_until = display_timestamp(user.get('star_paid_until') or '')
+    if source or method:
+        entries.append(f'access={source or user_access(user, allowlist_entry)} method={method or "manual"}')
+    if boost_count or boost_checked or boost_expires:
+        entries.append(f'boosts={boost_count} checked={boost_checked or "-"} expires={boost_expires or "-"}')
+    if star_until:
+        entries.append(f'stars_until={star_until}')
+    if allowlist_entry and allowlist_entry.get('note'):
+        entries.append(f'free_note={allowlist_entry.get("note")}')
+    summary = ' | '.join(item for item in entries if item)
+    if not existing:
+        return summary
+    if not summary or summary in existing:
+        return existing[-500:]
+    return f'{summary}\n{existing}'[-500:]
+
+
 def write_rows(worksheet, rows):
     existing_values = get_values_with_quota_retry(worksheet)
     payload = [HEADERS] + rows
@@ -757,6 +819,8 @@ def write_single_sheet(worksheet, compact_state, sheet_rows):
             'is_allowlisted': False,
             'is_admin': False,
             'access_expires_at': '',
+            'access_started_at': '',
+            'access_history': '',
             'updated_at': '',
         })
         allowlist_entry = allowlist.get(key)
@@ -776,6 +840,7 @@ def write_single_sheet(worksheet, compact_state, sheet_rows):
             user.get('username') or existing_row.get('username', ''),
             user.get('first_name') or existing_row.get('first_name', ''),
             user_access(user, allowlist_entry),
+            display_timestamp(user.get('access_started_at') or existing_row.get('access_from', '')),
             display_access_until(user.get('access_expires_at') or ''),
             user_role(user),
             mode,
@@ -787,11 +852,7 @@ def write_single_sheet(worksheet, compact_state, sheet_rows):
             display_timestamp(updated_at),
             sync_time,
             '',
-            user.get('payment_method') or existing_row.get('payment_method', ''),
-            user.get('boost_count') or '',
-            display_timestamp(user.get('boost_checked_at') or ''),
-            display_timestamp(user.get('boost_expires_at') or ''),
-            bool_to_sheet(user.get('hide_inactive_year')),
+            compact_access_history(user, allowlist_entry, existing_row),
         ])
 
     write_rows(worksheet, rows)
