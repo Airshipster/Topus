@@ -686,6 +686,19 @@ def desired_subscriptions(row, all_channel_ids):
     return included & all_channels
 
 
+def should_sync_subscriptions_from_sheet(row, current_subscriptions):
+    if row.get('action') != 'push':
+        return False
+    mode = str(row.get('mode') or '').strip().lower()
+    included = str(row.get('included') or '').strip()
+    excluded = str(row.get('excluded') or '').strip()
+    if mode in {'all', 'все', 'всё'}:
+        return True
+    if included or excluded:
+        return True
+    return not any(current_subscriptions.values())
+
+
 def collect_changes(action_rows, compact_state):
     payload = {'users': [], 'subscriptions': [], 'allowlist': []}
     users = compact_state['users']
@@ -698,6 +711,7 @@ def collect_changes(action_rows, compact_state):
         user_id = row['user_id']
         key = row_key(project_code, user_id)
         existing_user = users.get(key, {})
+        current = {channel_id for channel_id, active in current_sub_rows.get(key, {}).items() if active}
 
         if row['action'] == 'delete':
             desired = set()
@@ -725,6 +739,8 @@ def collect_changes(action_rows, compact_state):
                 })
             elif key in allowlist:
                 payload['allowlist'].append({'projectCode': project_code, 'userId': user_id, 'delete': True})
+            if not should_sync_subscriptions_from_sheet(row, current_sub_rows.get(key, {})):
+                desired = current
 
         payload['users'].append({
             'projectCode': project_code,
@@ -746,7 +762,6 @@ def collect_changes(action_rows, compact_state):
             'hideInactiveYear': bool(existing_user.get('hide_inactive_year')),
         })
 
-        current = {channel_id for channel_id, active in current_sub_rows.get(key, {}).items() if active}
         for channel_id in sorted(current | desired):
             if (channel_id in current) == (channel_id in desired):
                 continue
