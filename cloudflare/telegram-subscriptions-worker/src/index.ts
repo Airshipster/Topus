@@ -1151,6 +1151,7 @@ async function renderPlan(env: Env, projectCode: string, userId: string): Promis
     [{ text: label, callback_data: 'noop' }],
     [{ text: 'Проверить статус', callback_data: 'boostcheck:root' }],
     [{ text: `Оплатить ${starPriceMonthly(env)} Telegram Stars в месяц`, callback_data: 'starsbuy:1' }],
+    [{ text: 'Поддержать в TON (скоро)', callback_data: 'noop' }],
   ];
   if (boostUrl) {
     rows.push([{ text: `Передать ${boosterMinBoosts(env)} буста`, url: boostUrl }]);
@@ -1183,7 +1184,7 @@ async function renderPlanText(env: Env, projectCode: string, userId: string): Pr
     '',
     `1. Бусты: передайте ${boosterMinBoosts(env)} буста основному каналу и нажмите «Проверить статус». Пока бусты активны, доступ работает как Booster.`,
     `2. Telegram Stars: ${starPriceMonthly(env)} Telegram Stars в месяц. Платёж оформляется внутри Telegram; регулярное списание поддерживается Telegram Stars-подписками.`,
-    '3. TON/ручная оплата: можно подключить как ручной paid-доступ через администратора, если нужно принять оплату вне Telegram Stars.',
+    '3. TON: скоро добавим как отдельный способ добровольно поддержать проект. Сейчас он не выдаёт доступ автоматически.',
   ].join('\n');
 }
 
