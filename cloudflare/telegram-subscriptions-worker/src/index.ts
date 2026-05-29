@@ -2111,11 +2111,28 @@ async function enforceSmallChatLimit(project: Project, chat: TelegramChat): Prom
   return false;
 }
 
-async function telegram(botToken: string, method: string, payload: object): Promise<unknown> {
+type TelegramPayload = Record<string, unknown>;
+
+function shouldSilenceTelegramMessage(method: string, payload: TelegramPayload): boolean {
+  if (method !== 'sendMessage') {
+    return false;
+  }
+
+  const text = String(payload.text || '').toLowerCase();
+  return text.includes('новое сканирование')
+    && text.includes('не обнаружило изменений')
+    && text.includes('составе участников');
+}
+
+async function telegram(botToken: string, method: string, payload: TelegramPayload): Promise<unknown> {
+  const requestPayload = shouldSilenceTelegramMessage(method, payload)
+    ? { ...payload, disable_notification: true }
+    : payload;
+
   const response = await fetch(`https://api.telegram.org/bot${botToken}/${method}`, {
     method: 'POST',
     headers: jsonHeaders,
-    body: JSON.stringify(payload),
+    body: JSON.stringify(requestPayload),
   });
   if (!response.ok) {
     console.error(JSON.stringify({ level: 'warn', method, status: response.status, body: await response.text() }));
