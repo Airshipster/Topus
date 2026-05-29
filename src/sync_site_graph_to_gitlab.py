@@ -16,10 +16,6 @@ from sync_site_channels_to_gitlab import (
     run,
 )
 
-
-SPREADSHEET_ID = "1m67OLnwzOLCjnLCj_xZG_eT6R90yXwLWLXOxkTrjDuY"
-
-
 def parse_year(value: object) -> int | None:
     text = str(clean_sheet_value(value) or "")
     for token in text.replace("-", ".").replace("/", ".").split("."):
@@ -51,7 +47,10 @@ def parse_source_updated(value: object) -> str:
 
 
 def read_graph_payload(now: datetime | None = None) -> dict:
-    spreadsheet_id = optional_env("TOPUS_MASTER_SPREADSHEET_ID", SPREADSHEET_ID)
+    spreadsheet_id = optional_env("TOPUS_MASTER_SPREADSHEET_ID", "")
+    if not spreadsheet_id:
+        raise RuntimeError("TOPUS_MASTER_SPREADSHEET_ID secret is required for site graph sync.")
+
     client = authenticate_google_sheets()
     spreadsheet = client.open_by_key(spreadsheet_id)
 
