@@ -283,20 +283,22 @@ def ensure_bot_worksheet(sheet):
     delete_extra_sheets(sheet)
     ensure_bot_row_count(sheet, worksheet)
     values = get_values_with_quota_retry(worksheet, '1:1')
-    current_headers = [str(cell).strip() for cell in values[0]] if values else []
-    if current_headers != HEADERS:
-        migrate_bot_sheet_columns(worksheet, current_headers)
+    full_headers = [str(cell).strip() for cell in values[0]] if values else []
+    data_headers = full_headers[:len(HEADERS)]
+    if data_headers != HEADERS:
+        migrate_bot_sheet_columns(worksheet)
         values = get_values_with_quota_retry(worksheet, '1:1')
-        current_headers = [str(cell).strip() for cell in values[0]] if values else []
-    worksheet = delete_deprecated_bot_columns(sheet, worksheet, current_headers)
+        full_headers = [str(cell).strip() for cell in values[0]] if values else []
+    worksheet = delete_deprecated_bot_columns(sheet, worksheet, full_headers)
     values = get_values_with_quota_retry(worksheet, '1:1')
-    current_headers = [str(cell).strip() for cell in values[0]] if values else []
-    if current_headers != HEADERS:
-        migrate_bot_sheet_columns(worksheet, current_headers)
+    full_headers = [str(cell).strip() for cell in values[0]] if values else []
+    data_headers = full_headers[:len(HEADERS)]
+    if data_headers != HEADERS:
+        migrate_bot_sheet_columns(worksheet)
     return worksheet
 
 
-def migrate_bot_sheet_columns(worksheet, current_headers):
+def migrate_bot_sheet_columns(worksheet):
     values = get_values_with_quota_retry(worksheet)
     if not values:
         worksheet.update(range_name='A1', values=[HEADERS], value_input_option='USER_ENTERED')
@@ -327,8 +329,6 @@ def migrate_bot_sheet_columns(worksheet, current_headers):
         values=payload,
         value_input_option='USER_ENTERED',
     )
-    if worksheet.col_count > len(HEADERS):
-        worksheet.batch_clear([f'{a1_column(len(HEADERS) + 1)}1:{a1_column(worksheet.col_count)}{worksheet.row_count}'])
     print('  🧭 Migrated bot sheet columns by header names')
 
 
