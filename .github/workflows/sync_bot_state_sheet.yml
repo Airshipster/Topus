@@ -13,6 +13,14 @@ on:
         description: 'RFC3339 timestamp for old revision lookup'
         required: false
         default: '2026-05-28T23:50:00Z'
+      inspect_d1_bookmark:
+        description: 'Read-only inspect D1 user_subscriptions at timestamp'
+        required: false
+        default: 'false'
+      d1_timestamp:
+        description: 'RFC3339 timestamp for D1 Time Travel lookup'
+        required: false
+        default: '2026-05-28T23:50:00Z'
 
 jobs:
   sync-bot-cloudflare:
@@ -42,8 +50,11 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: '8460cfa72309d5c869775d6c38ca41dd'
           CLOUDFLARE_WORKER_SCRIPT_NAME: 'topus-telegram-subscriptions'
           TOPUS_REVISION_BEFORE: ${{ github.event.inputs.revision_before }}
+          TOPUS_D1_TIMESTAMP: ${{ github.event.inputs.d1_timestamp }}
         run: |
-          if [ "${{ github.event.inputs.inspect_revision }}" = "true" ]; then
+          if [ "${{ github.event.inputs.inspect_d1_bookmark }}" = "true" ]; then
+            python src/inspect_d1_subscription_bookmark.py
+          elif [ "${{ github.event.inputs.inspect_revision }}" = "true" ]; then
             python src/inspect_bot_sheet_revision.py
           else
             python src/sync_bot_state_sheet.py
