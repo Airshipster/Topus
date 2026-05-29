@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '0 6 * * *'
   workflow_dispatch:
+    inputs:
+      diagnose_only:
+        description: 'Read-only bot sheet diagnostics'
+        required: false
+        default: 'false'
 
 jobs:
   sync-bot-cloudflare:
@@ -33,4 +38,8 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: '8460cfa72309d5c869775d6c38ca41dd'
           CLOUDFLARE_WORKER_SCRIPT_NAME: 'topus-telegram-subscriptions'
         run: |
-          python src/sync_bot_state_sheet.py
+          if [ "${{ github.event.inputs.diagnose_only }}" = "true" ]; then
+            python src/diagnose_bot_sheet.py
+          else
+            python src/sync_bot_state_sheet.py
+          fi
