@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: '0 6 * * *'
   workflow_dispatch:
+    inputs:
+      inspect_revision:
+        description: 'Read-only inspect old bot sheet revision'
+        required: false
+        default: 'false'
+      revision_before:
+        description: 'RFC3339 timestamp for old revision lookup'
+        required: false
+        default: '2026-05-28T23:50:00Z'
 
 jobs:
   sync-bot-cloudflare:
@@ -32,5 +41,10 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: '8460cfa72309d5c869775d6c38ca41dd'
           CLOUDFLARE_WORKER_SCRIPT_NAME: 'topus-telegram-subscriptions'
+          TOPUS_REVISION_BEFORE: ${{ github.event.inputs.revision_before }}
         run: |
-          python src/sync_bot_state_sheet.py
+          if [ "${{ github.event.inputs.inspect_revision }}" = "true" ]; then
+            python src/inspect_bot_sheet_revision.py
+          else
+            python src/sync_bot_state_sheet.py
+          fi
