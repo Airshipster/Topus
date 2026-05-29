@@ -121,6 +121,33 @@ def should_skip_sync(output_path: Path, now: datetime) -> bool:
     return False
 
 
+def with_embedded_initial_graph_data(index_html: str, payload: dict) -> str:
+    json_payload = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("</script", "<\\/script")
+    script = f'<script id="initialGraphData" type="application/json">{json_payload}</script>'
+    pattern = r'\s*<script id="initialGraphData" type="application/json">.*?</script>\s*'
+    if re.search(pattern, index_html, flags=re.S):
+        return re.sub(pattern, f"\n    {script}\n", index_html, count=1, flags=re.S)
+    return re.sub(
+        r'(\s*)<script src="scitopus-graph\.js"></script>',
+        rf'\1{script}\n\1<script src="scitopus-graph.js"></script>',
+        index_html,
+        count=1,
+    )
+
+
+def write_graph_payload(repo_dir: Path, graph_data_path: Path, payload: dict) -> None:
+    output_path = repo_dir / graph_data_path
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    index_path = output_path.parent / "index.html"
+    if index_path.exists():
+        index_path.write_text(
+            with_embedded_initial_graph_data(index_path.read_text(encoding="utf-8"), payload),
+            encoding="utf-8",
+        )
+
+
 def main() -> int:
     gitlab_repo_url = optional_env("GITLAB_REPO_URL", "git@gitlab.com:scitopus/scitopus-site.git")
     gitlab_token = optional_env("GITLAB_TOKEN", "")
@@ -141,8 +168,7 @@ def main() -> int:
             return 0
 
         payload = read_graph_payload(now)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        write_graph_payload(repo_dir, graph_data_path, payload)
 
         status = run(["git", "status", "--porcelain"], cwd=repo_dir)
         if not status:
