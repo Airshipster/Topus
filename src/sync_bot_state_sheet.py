@@ -519,6 +519,10 @@ def build_state(state):
         channel_id = str(channel.get('channel_id') or '').strip()
         if project_code and channel_id:
             channels_by_project[project_code].append(channel_id)
+    channel_sets = {
+        project_code: set(channel_ids)
+        for project_code, channel_ids in channels_by_project.items()
+    }
 
     for user in state.get('users') or []:
         project_code = str(user.get('project_code') or '').strip()
@@ -561,6 +565,8 @@ def build_state(state):
         user_id = str(subscription.get('user_id') or '').strip()
         channel_id = str(subscription.get('channel_id') or '').strip()
         if not project_code or not user_id or not channel_id:
+            continue
+        if channel_id not in channel_sets.get(project_code, set()):
             continue
         key = row_key(project_code, user_id)
         subscription_rows[key][channel_id] = worker_bool(subscription, 'active')

@@ -377,7 +377,7 @@ async function handleAdminSheetState(request: Request, env: Env): Promise<Respon
       env.DB.prepare(
         `SELECT s.project_code, s.user_id, s.channel_id, c.title AS channel_title, s.active, s.created_at, s.updated_at
          FROM user_subscriptions s
-         LEFT JOIN channels c ON c.project_code = s.project_code AND c.channel_id = s.channel_id
+         JOIN channels c ON c.project_code = s.project_code AND c.channel_id = s.channel_id
          ORDER BY s.project_code, s.user_id, c.sort_order, c.title`,
       ).all(),
       env.DB.prepare(
