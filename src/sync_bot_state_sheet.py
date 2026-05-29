@@ -860,6 +860,51 @@ def write_rows(worksheet, rows):
     )
     if len(existing_values) > len(payload):
         worksheet.batch_clear([f'A{len(payload) + 1}:{last_col}{len(existing_values)}'])
+    format_bot_sheet_data_columns(worksheet)
+
+
+def format_bot_sheet_data_columns(worksheet):
+    worksheet.spreadsheet.batch_update({
+        'requests': [
+            {
+                'repeatCell': {
+                    'range': {
+                        'sheetId': worksheet.id,
+                        'startRowIndex': 1,
+                        'startColumnIndex': 12,
+                        'endColumnIndex': 14,
+                    },
+                    'cell': {
+                        'userEnteredFormat': {
+                            'numberFormat': {
+                                'type': 'NUMBER',
+                                'pattern': '0',
+                            }
+                        }
+                    },
+                    'fields': 'userEnteredFormat.numberFormat',
+                }
+            },
+            {
+                'repeatCell': {
+                    'range': {
+                        'sheetId': worksheet.id,
+                        'startRowIndex': 1,
+                        'startColumnIndex': 10,
+                        'endColumnIndex': 12,
+                    },
+                    'cell': {
+                        'userEnteredFormat': {
+                            'numberFormat': {
+                                'type': 'TEXT',
+                            }
+                        }
+                    },
+                    'fields': 'userEnteredFormat.numberFormat',
+                }
+            },
+        ]
+    })
 
 
 def write_single_sheet(worksheet, compact_state, sheet_rows):
