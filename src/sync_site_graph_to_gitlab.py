@@ -86,7 +86,6 @@ def read_graph_payload(now: datetime | None = None) -> dict:
         "brand": "SciTopus",
         "lastUpdated": now.isoformat(),
         "sourceUpdated": source_updated,
-        "source": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit?gid=1303884430#gid=1303884430",
         "years": [
             {
                 "year": year,
