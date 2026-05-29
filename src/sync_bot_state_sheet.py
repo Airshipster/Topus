@@ -55,6 +55,9 @@ DEPRECATED_HEADERS = {
     'Hide Inactive >1y',
 }
 
+ROLE_VALUES = {'admin', 'user'}
+SUBSCRIPTION_MODE_VALUES = {'all', 'custom', 'все', 'всё'}
+INVALID_ACCESS_UNTIL_VALUES = ROLE_VALUES | SUBSCRIPTION_MODE_VALUES
 TRUE_VALUES = {'1', 'true', 'yes', 'y', 'да', 'истина', '✅', 'on', 'active', 'free', 'paid'}
 FALSE_VALUES = {'0', 'false', 'no', 'n', 'нет', 'ложь', '❌', 'off', 'inactive', 'none'}
 ACCESS_VALUES = {'free', 'paid', 'none', 'trial', 'booster'}
@@ -131,6 +134,8 @@ def add_months(start, months):
 def parse_access_until(value, existing_value=''):
     text = str(clean_sheet_value(value) or '').strip()
     if not text:
+        return existing_value or ''
+    if text.lower() in INVALID_ACCESS_UNTIL_VALUES:
         return existing_value or ''
     if text.lower() in {'forever', 'permanent', 'навсегда', 'вечный', 'вечно'}:
         return ''
@@ -279,17 +284,52 @@ def ensure_bot_worksheet(sheet):
     ensure_bot_row_count(sheet, worksheet)
     values = get_values_with_quota_retry(worksheet, '1:1')
     current_headers = [str(cell).strip() for cell in values[0]] if values else []
+    if current_headers != HEADERS:
+        migrate_bot_sheet_columns(worksheet, current_headers)
+        values = get_values_with_quota_retry(worksheet, '1:1')
+        current_headers = [str(cell).strip() for cell in values[0]] if values else []
     worksheet = delete_deprecated_bot_columns(sheet, worksheet, current_headers)
     values = get_values_with_quota_retry(worksheet, '1:1')
     current_headers = [str(cell).strip() for cell in values[0]] if values else []
-    previous_headers = current_headers[:]
     if current_headers != HEADERS:
-        worksheet.update(range_name='A1', values=[HEADERS], value_input_option='USER_ENTERED')
-    for index in range(len(previous_headers), len(HEADERS), -1):
-        if previous_headers[index - 1] in {'Status', 'Role'}:
-            column = a1_column(index)
-            worksheet.batch_clear([f'{column}1:{column}{worksheet.row_count}'])
+        migrate_bot_sheet_columns(worksheet, current_headers)
     return worksheet
+
+
+def migrate_bot_sheet_columns(worksheet, current_headers):
+    values = get_values_with_quota_retry(worksheet)
+    if not values:
+        worksheet.update(range_name='A1', values=[HEADERS], value_input_option='USER_ENTERED')
+        return
+
+    source_headers = [str(cell).strip() for cell in values[0]]
+    source_indexes = {
+        header: index
+        for index, header in enumerate(source_headers)
+        if header
+    }
+    source_indexes.setdefault('Role', source_indexes.get('Status'))
+    source_indexes.setdefault('Access Until GMT+4', source_indexes.get('Access Until'))
+
+    migrated_rows = []
+    for raw_row in values[1:]:
+        migrated_rows.append([
+            clean_sheet_value(raw_row[source_indexes[header]])
+            if header in source_indexes and source_indexes[header] is not None and source_indexes[header] < len(raw_row)
+            else ''
+            for header in HEADERS
+        ])
+
+    payload = [HEADERS] + migrated_rows
+    last_col = a1_column(len(HEADERS))
+    worksheet.update(
+        range_name=f'A1:{last_col}{len(payload)}',
+        values=payload,
+        value_input_option='USER_ENTERED',
+    )
+    if worksheet.col_count > len(HEADERS):
+        worksheet.batch_clear([f'{a1_column(len(HEADERS) + 1)}1:{a1_column(worksheet.col_count)}{worksheet.row_count}'])
+    print('  🧭 Migrated bot sheet columns by header names')
 
 
 def delete_deprecated_bot_columns(sheet, worksheet, headers):
@@ -591,6 +631,19 @@ def read_sheet_rows(worksheet):
     return {'rows': rows, 'order': order, 'by_key': by_key}
 
 
+def bot_sheet_rows_look_corrupted(sheet_rows):
+    suspicious = 0
+    for row in sheet_rows['rows']:
+        access_until = str(row.get('access_until') or '').strip().lower()
+        role = str(row.get('role') or '').strip().lower()
+        mode = str(row.get('mode') or '').strip().lower()
+        if access_until in ROLE_VALUES or role in SUBSCRIPTION_MODE_VALUES or mode.startswith('uc'):
+            suspicious += 1
+        if suspicious >= 3:
+            return True
+    return False
+
+
 def read_action_rows(sheet_rows, compact_state):
     users = compact_state['users']
     allowlist = compact_state['allowlist']
@@ -876,7 +929,11 @@ def main():
     state = fetch_worker_state(worker_url, admin_secret)
     compact_state = build_state(state)
     sheet_rows = read_sheet_rows(worksheet)
-    changes = collect_changes(read_action_rows(sheet_rows, compact_state), compact_state)
+    if bot_sheet_rows_look_corrupted(sheet_rows):
+        print('  ⚠️  Bot sheet rows look column-shifted; skipping sheet-to-Worker writes and rewriting from Worker state')
+        changes = {}
+    else:
+        changes = collect_changes(read_action_rows(sheet_rows, compact_state), compact_state)
 
     applied_count = 0
     if changes:
