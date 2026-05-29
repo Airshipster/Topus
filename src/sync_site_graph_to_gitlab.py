@@ -50,7 +50,7 @@ def parse_source_updated(value: object) -> str:
     ).isoformat()
 
 
-def read_graph_payload() -> dict:
+def read_graph_payload(now: datetime | None = None) -> dict:
     spreadsheet_id = optional_env("TOPUS_MASTER_SPREADSHEET_ID", SPREADSHEET_ID)
     client = authenticate_google_sheets()
     spreadsheet = client.open_by_key(spreadsheet_id)
@@ -78,7 +78,7 @@ def read_graph_payload() -> dict:
         value_render_option="FORMATTED_VALUE",
     )
     source_updated = parse_source_updated(source_update[0][0] if source_update and source_update[0] else "")
-    now = datetime.now(ZoneInfo("Asia/Baku")).replace(microsecond=0)
+    now = now or datetime.now(ZoneInfo("Asia/Baku")).replace(microsecond=0)
 
     return {
         "title": "Количество русскоязычных научпоп-видео\nпо годам",
@@ -98,13 +98,36 @@ def read_graph_payload() -> dict:
     }
 
 
+def current_month_was_synced(output_path: Path, now: datetime) -> bool:
+    try:
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+        updated_at = datetime.fromisoformat(str(payload.get("lastUpdated", "")))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+
+    return updated_at.year == now.year and updated_at.month == now.month
+
+
+def should_skip_sync(output_path: Path, now: datetime) -> bool:
+    event_name = optional_env("GITHUB_EVENT_NAME", "")
+    force_sync = optional_env("FORCE_SITE_GRAPH_SYNC", "").lower() in {"1", "true", "yes"}
+    if force_sync or event_name == "workflow_dispatch":
+        return False
+
+    if event_name == "schedule" and current_month_was_synced(output_path, now):
+        print(f"Graph data already synced for {now:%Y-%m}; skipping scheduled retry.")
+        return True
+
+    return False
+
+
 def main() -> int:
     gitlab_repo_url = optional_env("GITLAB_REPO_URL", "git@gitlab.com:scitopus/scitopus-site.git")
     gitlab_token = optional_env("GITLAB_TOKEN", "")
     gitlab_username = optional_env("GITLAB_USERNAME", "oauth2")
     branch = optional_env("GITLAB_BRANCH", "main")
     graph_data_path = Path(optional_env("GRAPH_DATA_PATH", "public/scitopus-graph/data.json"))
-    payload = read_graph_payload()
+    now = datetime.now(ZoneInfo("Asia/Baku")).replace(microsecond=0)
 
     import tempfile
 
@@ -114,6 +137,10 @@ def main() -> int:
         configure_git(repo_dir)
 
         output_path = repo_dir / graph_data_path
+        if should_skip_sync(output_path, now):
+            return 0
+
+        payload = read_graph_payload(now)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 

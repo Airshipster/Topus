@@ -2,7 +2,7 @@ name: Sync Site Graph
 
 on:
   schedule:
-    - cron: "20 6 1 * *"
+    - cron: "0 1 * * *"
   workflow_dispatch:
 
 permissions:
