@@ -66,6 +66,10 @@ def read_graph_payload() -> dict:
         year = parse_year(row[0] if row else "")
         if year:
             counts[year] += 1
+    if len(counts) < 5:
+        raise RuntimeError(
+            "Graph source returned too few yearly buckets; refusing to overwrite site graph data."
+        )
 
     source_update = get_values_with_quota_retry(
         spreadsheet.worksheet("Стат. Каналы"),
