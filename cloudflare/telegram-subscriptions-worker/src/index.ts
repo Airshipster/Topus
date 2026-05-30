@@ -212,6 +212,7 @@ export default {
   },
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(auditBoosterAccess(env));
+    ctx.waitUntil(sendPaidExpiryReminders(env));
     if (event.cron === '0 15 * * SUN') {
       ctx.waitUntil(sendWeeklySubscriptionReminders(env));
     }
@@ -1210,7 +1211,8 @@ function renderStarsText(env: Env): string {
     `Цена: ${starPriceMonthly(env)} Telegram Stars за месяц.`,
     'Выберите срок кнопками 1-12 или введите большее количество месяцев цифрами.',
     '',
-    'Оплата на 1 месяц оформляется как регулярная Telegram Stars-подписка; оплата на несколько месяцев оформляется как предоплата на выбранный срок.',
+    'Оплата на 1 месяц оформляется как регулярная Telegram Stars-подписка.',
+    'Оплата на 2+ месяца оформляется как разовая предоплата на выбранный срок.',
     '',
     'P.S. Для рекуррентных платежей используется сумма последнего платежа.',
   ].join('\n');
@@ -1236,7 +1238,7 @@ async function renderPlanText(env: Env, projectCode: string, userId: string): Pr
     'Все варианты ниже дают одинаковый полный доступ к личной ленте бота. Отличается только способ поддержки проекта.',
     '',
     `1. Бусты: передайте ${boosterMinBoosts(env)} буста основному каналу и нажмите «Проверить статус». Пока бусты активны, доступ работает как Booster.`,
-    `2. Telegram Stars: ${starPriceMonthly(env)} Telegram Stars в месяц. Можно выбрать 1-12 месяцев кнопками или ввести большее количество месяцев цифрами. Оплата на 1 месяц оформляется как регулярная Telegram Stars-подписка; оплата на несколько месяцев оформляется как предоплата на выбранный срок.`,
+    `2. Telegram Stars: ${starPriceMonthly(env)} Telegram Stars в месяц. Можно выбрать 1-12 месяцев кнопками или ввести большее количество месяцев цифрами. Оплата на 1 месяц рекуррентная; оплата на 2+ месяца разовая, на выбранный срок.`,
     '3. TON: скоро добавим как отдельный способ добровольно поддержать проект. Сейчас он не выдаёт доступ автоматически.',
     '',
     'P.S. Для рекуррентных платежей используется сумма последнего платежа.',
@@ -2148,6 +2150,48 @@ async function sendWeeklySubscriptionReminders(env: Env): Promise<void> {
   }
 }
 
+async function sendPaidExpiryReminders(env: Env): Promise<void> {
+  const rows = await env.DB.prepare(
+    `SELECT p.code AS project_code, p.bot_token, u.user_id, u.access_expires_at
+     FROM users u
+     JOIN projects p ON p.code = u.project_code
+     WHERE p.active = 1
+       AND COALESCE(u.is_paid, 0) = 1
+       AND COALESCE(u.access_source, '') = 'paid'
+       AND u.access_expires_at IS NOT NULL
+       AND u.access_expires_at != ''
+       AND u.access_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       AND u.access_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+3 days')
+     ORDER BY u.access_expires_at, p.code, u.user_id`,
+  ).all<{ project_code: string; bot_token: string; user_id: string; access_expires_at: string }>();
+
+  for (const row of rows.results || []) {
+    const reminderKey = paidExpiryReminderKey(row.project_code, row.user_id, row.access_expires_at);
+    if (await env.CACHE.get(reminderKey)) {
+      continue;
+    }
+    try {
+      await telegram(row.bot_token, 'sendMessage', {
+        chat_id: row.user_id,
+        text: [
+          `Paid-доступ заканчивается ${formatShortDate(row.access_expires_at)}.`,
+          '',
+          'Чтобы личная лента продолжила работать без перерыва, продлите доступ в меню подписки.',
+        ].join('\n'),
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: 'Продлить доступ', callback_data: 'plan:root' }],
+            [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
+          ],
+        },
+      });
+      await env.CACHE.put(reminderKey, '1', { expirationTtl: 45 * 24 * 60 * 60 });
+    } catch (error) {
+      console.error(JSON.stringify({ level: 'warn', source: 'paid-expiry-reminder', project: row.project_code, userId: row.user_id, error: String(error) }));
+    }
+  }
+}
+
 function renderNotificationMenu(channelId: string, subscribed: boolean, initial = false): object {
   const text = initial
     ? 'Вы подписаны'
@@ -2282,6 +2326,10 @@ function pendingAdminActionKey(projectCode: string, userId: string): string {
 
 function pendingStarsMonthsKey(projectCode: string, userId: string): string {
   return `pending-stars-months:${projectCode}:${userId}`;
+}
+
+function paidExpiryReminderKey(projectCode: string, userId: string, expiresAt: string): string {
+  return `paid-expiry-reminder:${projectCode}:${userId}:${expiresAt.slice(0, 10)}`;
 }
 
 function normalizeTelegramChannel(value: string): string {
