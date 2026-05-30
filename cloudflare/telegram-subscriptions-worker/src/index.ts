@@ -762,6 +762,9 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
   } else if (action === 'plan') {
     menu = await renderPlan(env, project.code, String(callback.from.id));
     text = await renderPlanText(env, project.code, String(callback.from.id));
+  } else if (action === 'stars') {
+    menu = renderStarsMenu(env);
+    text = renderStarsText(env);
   } else if (action === 'starsbuy') {
     await answer(project.bot_token, callback.id);
     const months = Math.max(1, Number.parseInt(value || '1', 10) || 1);
@@ -1171,15 +1174,7 @@ async function renderPlan(env: Env, projectCode: string, userId: string): Promis
   const rows: Array<Array<TelegramButton>> = [
     [{ text: label, callback_data: 'noop' }],
     [{ text: 'Проверить статус', callback_data: 'boostcheck:root' }],
-    [{ text: `Telegram Stars: ${starPriceMonthly(env)} за месяц`, callback_data: 'noop' }],
-    ...chunks(
-      Array.from({ length: 12 }, (_, index) => {
-        const months = index + 1;
-        return { text: String(months), callback_data: `starsbuy:${months}` };
-      }),
-      4,
-    ),
-    [{ text: 'Больше 12 месяцев: ввести числом', callback_data: 'starscustom:root' }],
+    [{ text: `Telegram Stars: ${starPriceMonthly(env)} за месяц`, callback_data: 'stars:root' }],
     [{ text: 'Поддержать в TON (скоро)', callback_data: 'noop' }],
   ];
   if (boostUrl) {
@@ -1190,6 +1185,35 @@ async function renderPlan(env: Env, projectCode: string, userId: string): Promis
   return {
     inline_keyboard: rows,
   };
+}
+
+function renderStarsMenu(env: Env): object {
+  const rows: Array<Array<TelegramButton>> = [
+    ...chunks(
+      Array.from({ length: 12 }, (_, index) => {
+        const months = index + 1;
+        return { text: String(months), callback_data: `starsbuy:${months}` };
+      }),
+      4,
+    ),
+    [{ text: 'Больше 12 месяцев: ввести числом', callback_data: 'starscustom:root' }],
+    [{ text: '← Назад к подписке', callback_data: 'plan:root' }],
+    [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
+  ];
+  return { inline_keyboard: rows };
+}
+
+function renderStarsText(env: Env): string {
+  return [
+    'Telegram Stars',
+    '',
+    `Цена: ${starPriceMonthly(env)} Telegram Stars за месяц.`,
+    'Выберите срок кнопками 1-12 или введите большее количество месяцев цифрами.',
+    '',
+    'Оплата на 1 месяц оформляется как регулярная Telegram Stars-подписка; оплата на несколько месяцев оформляется как предоплата на выбранный срок.',
+    '',
+    'P.S. Рекуррентный платёж идёт по последней оплаченной вами сумме.',
+  ].join('\n');
 }
 
 async function renderPlanText(env: Env, projectCode: string, userId: string): Promise<string> {
@@ -1940,7 +1964,7 @@ async function hasFullBotAccess(env: Env, projectCode: string, userId: string): 
 }
 
 async function canRunCallbackAction(env: Env, projectCode: string, userId: string, action: string): Promise<boolean> {
-  const publicActions = new Set(['menu', 'plan', 'starsbuy', 'starscustom', 'boostcheck', 'settings', 'extra', 'checkjoin', 'noop']);
+  const publicActions = new Set(['menu', 'plan', 'stars', 'starsbuy', 'starscustom', 'boostcheck', 'settings', 'extra', 'checkjoin', 'noop']);
   if (publicActions.has(action)) {
     return true;
   }
