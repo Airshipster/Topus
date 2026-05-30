@@ -558,6 +558,10 @@ async function handleMessage(env: Env, project: Project, message: TelegramMessag
     return;
   }
 
+  if (await handlePendingStarsMonthsMessage(env, project, message)) {
+    return;
+  }
+
   if (!['/start', '/menu', 'меню', '/channels', '/subscriptions', 'каналы', 'подписки'].includes(text)) {
     return;
   }
@@ -763,6 +767,23 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
     const months = Math.max(1, Number.parseInt(value || '1', 10) || 1);
     if (message) {
       await sendStarsInvoice(env, project, message.chat.id, String(callback.from.id), months);
+    }
+    return;
+  } else if (action === 'starscustom') {
+    await env.CACHE.put(pendingStarsMonthsKey(project.code, String(callback.from.id)), '1', { expirationTtl: 600 });
+    await answer(project.bot_token, callback.id);
+    if (message) {
+      await telegram(project.bot_token, 'editMessageText', {
+        chat_id: message.chat.id,
+        message_id: message.message_id,
+        text: [
+          'Введите количество месяцев цифрами.',
+          '',
+          `Цена: ${starPriceMonthly(env)} Telegram Stars за месяц.`,
+          `Максимум для одного платежа: ${maxStarsMonths(env)} месяцев.`,
+        ].join('\n'),
+        reply_markup: renderAdminCancelMenu(),
+      });
     }
     return;
   } else if (action === 'boostcheck') {
@@ -1150,7 +1171,15 @@ async function renderPlan(env: Env, projectCode: string, userId: string): Promis
   const rows: Array<Array<TelegramButton>> = [
     [{ text: label, callback_data: 'noop' }],
     [{ text: 'Проверить статус', callback_data: 'boostcheck:root' }],
-    [{ text: `Оплатить ${starPriceMonthly(env)} Telegram Stars в месяц`, callback_data: 'starsbuy:1' }],
+    [{ text: `Telegram Stars: ${starPriceMonthly(env)} за месяц`, callback_data: 'noop' }],
+    ...chunks(
+      Array.from({ length: 12 }, (_, index) => {
+        const months = index + 1;
+        return { text: String(months), callback_data: `starsbuy:${months}` };
+      }),
+      4,
+    ),
+    [{ text: 'Больше 12 месяцев: ввести числом', callback_data: 'starscustom:root' }],
     [{ text: 'Поддержать в TON (скоро)', callback_data: 'noop' }],
   ];
   if (boostUrl) {
@@ -1183,7 +1212,7 @@ async function renderPlanText(env: Env, projectCode: string, userId: string): Pr
     'Все варианты ниже дают одинаковый полный доступ к личной ленте бота. Отличается только способ поддержки проекта.',
     '',
     `1. Бусты: передайте ${boosterMinBoosts(env)} буста основному каналу и нажмите «Проверить статус». Пока бусты активны, доступ работает как Booster.`,
-    `2. Telegram Stars: ${starPriceMonthly(env)} Telegram Stars в месяц. Платёж оформляется внутри Telegram; регулярное списание поддерживается Telegram Stars-подписками.`,
+    `2. Telegram Stars: ${starPriceMonthly(env)} Telegram Stars в месяц. Можно выбрать 1-12 месяцев кнопками или ввести большее количество месяцев цифрами. Оплата на 1 месяц оформляется как регулярная Telegram Stars-подписка; оплата на несколько месяцев оформляется как предоплата на выбранный срок.`,
     '3. TON: скоро добавим как отдельный способ добровольно поддержать проект. Сейчас он не выдаёт доступ автоматически.',
   ].join('\n');
 }
@@ -1379,6 +1408,31 @@ async function handlePendingAdminMessage(env: Env, project: Project, message: Te
   return true;
 }
 
+async function handlePendingStarsMonthsMessage(env: Env, project: Project, message: TelegramMessage): Promise<boolean> {
+  const userId = String(message.from?.id || '');
+  if (!userId) {
+    return false;
+  }
+  const key = pendingStarsMonthsKey(project.code, userId);
+  if (!await env.CACHE.get(key)) {
+    return false;
+  }
+
+  const months = Number.parseInt((message.text || '').trim(), 10);
+  if (!Number.isFinite(months) || months <= 0 || months > maxStarsMonths(env)) {
+    await telegram(project.bot_token, 'sendMessage', {
+      chat_id: message.chat.id,
+      text: `Введите число от 1 до ${maxStarsMonths(env)}.`,
+      reply_markup: renderAdminCancelMenu(),
+    });
+    return true;
+  }
+
+  await env.CACHE.delete(key);
+  await sendStarsInvoice(env, project, message.chat.id, userId, months);
+  return true;
+}
+
 async function grantFreeAccess(env: Env, projectCode: string, targetUserId: string, adminUserId: string, grant: AccessGrant): Promise<{ statusLabel: string }> {
   const now = new Date().toISOString();
   const existing = await env.DB.prepare(
@@ -1555,25 +1609,35 @@ async function handleSuccessfulPayment(env: Env, project: Project, message: Tele
     ? new Date(payment.subscription_expiration_date * 1000).toISOString()
     : addMonths(new Date(), payload.months).toISOString();
   await setPaidAccess(env, project.code, String(message.from.id), expiresAt, 'stars');
+  const renewalText = payment.is_recurring
+    ? ' Если это регулярная подписка, Telegram будет продлевать её автоматически при наличии звёзд на балансе.'
+    : '';
   await telegram(project.bot_token, 'sendMessage', {
     chat_id: message.chat.id,
-    text: `Спасибо за поддержку звёздами. Paid-доступ активен до ${formatShortDate(expiresAt)}. Если это регулярная подписка, Telegram будет продлевать её автоматически при наличии звёзд на балансе.`,
+    text: `Спасибо за поддержку звёздами. Paid-доступ активен до ${formatShortDate(expiresAt)}.${renewalText}`,
     reply_markup: await renderMainMenu(env, project.code, String(message.from.id)),
   });
 }
 
 async function sendStarsInvoice(env: Env, project: Project, chatId: number, userId: string, months: number): Promise<void> {
-  const amount = starPriceMonthly(env) * months;
-  await telegram(project.bot_token, 'sendInvoice', {
+  const normalizedMonths = Math.min(Math.max(1, months), maxStarsMonths(env));
+  const amount = starPriceMonthly(env) * normalizedMonths;
+  const recurring = normalizedMonths === 1;
+  const payload: TelegramPayload = {
     chat_id: chatId,
     title: 'Подписка SciTopus Bot',
-    description: `Доступ к личной ленте за ${amount} звёзд в месяц.`,
-    payload: `stars:${project.code}:${months}:${userId}`,
+    description: recurring
+      ? `Доступ к личной ленте за ${amount} звёзд в месяц. Telegram будет продлевать подписку автоматически.`
+      : `Доступ к личной ленте на ${normalizedMonths} мес. за ${amount} звёзд. После срока можно продлить снова.`,
+    payload: `stars:${project.code}:${normalizedMonths}:${userId}`,
     provider_token: '',
     currency: 'XTR',
-    prices: [{ label: `${months} мес.`, amount }],
-    subscription_period: 30 * 24 * 60 * 60,
-  });
+    prices: [{ label: `${normalizedMonths} мес.`, amount }],
+  };
+  if (recurring) {
+    payload.subscription_period = 30 * 24 * 60 * 60;
+  }
+  await telegram(project.bot_token, 'sendInvoice', payload);
 }
 
 function parseStarsPayload(payload: string): { projectCode: string; months: number; userId: string } | null {
@@ -1874,7 +1938,7 @@ async function hasFullBotAccess(env: Env, projectCode: string, userId: string): 
 }
 
 async function canRunCallbackAction(env: Env, projectCode: string, userId: string, action: string): Promise<boolean> {
-  const publicActions = new Set(['menu', 'plan', 'starsbuy', 'boostcheck', 'settings', 'extra', 'checkjoin', 'noop']);
+  const publicActions = new Set(['menu', 'plan', 'starsbuy', 'starscustom', 'boostcheck', 'settings', 'extra', 'checkjoin', 'noop']);
   if (publicActions.has(action)) {
     return true;
   }
@@ -2190,6 +2254,10 @@ function pendingAdminActionKey(projectCode: string, userId: string): string {
   return `pending-admin:${projectCode}:${userId}`;
 }
 
+function pendingStarsMonthsKey(projectCode: string, userId: string): string {
+  return `pending-stars-months:${projectCode}:${userId}`;
+}
+
 function normalizeTelegramChannel(value: string): string {
   const text = String(value || '').trim();
   if (!text) {
@@ -2309,6 +2377,10 @@ function boosterMinBoosts(env: Env): number {
 function starPriceMonthly(env: Env): number {
   const value = Number.parseInt(String(env.STAR_PRICE_MONTHLY || ''), 10);
   return Number.isFinite(value) && value > 0 ? value : DEFAULT_STAR_PRICE_MONTHLY;
+}
+
+function maxStarsMonths(env: Env): number {
+  return Math.max(1, Math.floor(10000 / starPriceMonthly(env)));
 }
 
 function normalizeAccessSource(value: string): string {
