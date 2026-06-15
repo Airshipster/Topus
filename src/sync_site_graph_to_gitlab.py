@@ -18,10 +18,9 @@ from sync_site_channels_to_gitlab import (
 
 def parse_year(value: object) -> int | None:
     text = str(clean_sheet_value(value) or "")
-    for token in text.replace("-", ".").replace("/", ".").split("."):
-        token = token.strip()
-        if len(token) == 4 and token.isdigit() and token.startswith(("19", "20")):
-            return int(token)
+    match = re.search(r"\b(19|20)\d{2}\b", text)
+    if match:
+        return int(match.group(0))
     return None
 
 
