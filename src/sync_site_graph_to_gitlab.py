@@ -172,7 +172,11 @@ def main() -> int:
             print("No graph data changes detected.")
             return 0
 
-        run(["git", "add", str(graph_data_path)], cwd=repo_dir)
+        git_add_paths = [str(graph_data_path)]
+        index_path = graph_data_path.parent / "index.html"
+        if (repo_dir / index_path).exists():
+            git_add_paths.append(str(index_path))
+        run(["git", "add", *git_add_paths], cwd=repo_dir)
         updated_at = payload["lastUpdated"]
         run(["git", "commit", "-m", f"chore: sync graph data {updated_at}"], cwd=repo_dir)
         push_repo(gitlab_repo_url, gitlab_username, gitlab_token, branch, repo_dir)
