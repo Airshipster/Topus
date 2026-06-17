@@ -55,7 +55,7 @@ jobs:
       - name: Sync graph data to website repo
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          TOPUS_MASTER_SPREADSHEET_ID: ${{ secrets.TOPUS_MASTER_SPREADSHEET_ID }}
+          TOPUS_GRAPH_SPREADSHEET_ID: ${{ secrets.TOPUS_GRAPH_SPREADSHEET_ID }}
           GITLAB_REPO_URL: ${{ secrets.GITLAB_REPO_URL }}
           GITLAB_BRANCH: ${{ secrets.GITLAB_BRANCH }}
           GRAPH_DATA_PATH: public/scitopus-graph/data.json
