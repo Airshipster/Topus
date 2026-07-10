@@ -14,6 +14,7 @@ from sheets import (
     get_all_active_channels,
     get_values_with_quota_retry,
     is_sheets_quota_error,
+    last_used_row,
     parse_datetime_value,
     sheet_datetime_value,
     update_setting_value,
@@ -259,20 +260,25 @@ def update_subscription_status_header(worksheet, values=None):
 
 
 def ensure_subscription_row_count(sheet, worksheet):
-    if worksheet.row_count == SUBSCRIPTIONS_TARGET_ROWS:
+    try:
+        used_rows = last_used_row(get_values_with_quota_retry(worksheet))
+    except Exception:
+        used_rows = worksheet.row_count
+    target_rows = max(SUBSCRIPTIONS_TARGET_ROWS, used_rows)
+    if worksheet.row_count == target_rows:
         return
     sheet.batch_update({
         'requests': [{
             'updateSheetProperties': {
                 'properties': {
                     'sheetId': worksheet.id,
-                    'gridProperties': {'rowCount': SUBSCRIPTIONS_TARGET_ROWS},
+                    'gridProperties': {'rowCount': target_rows},
                 },
                 'fields': 'gridProperties.rowCount',
             }
         }]
     })
-    print(f"  📐 Restored subscriptions row count: {SUBSCRIPTIONS_TARGET_ROWS}")
+    print(f"  📐 Restored subscriptions row count: {target_rows}")
 
 
 def normalize_subscriptions_columns(sheet, worksheet, headers, values=None):

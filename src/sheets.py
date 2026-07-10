@@ -1763,7 +1763,25 @@ def ensure_workbook_row_counts(sheet):
 
 
 def ensure_non_settings_sheet_row_counts(sheet):
-    return 0
+    requests = []
+    for worksheet in sheet.worksheets():
+        if worksheet.title == config.SHEET_NAME_SETTINGS:
+            continue
+        try:
+            used_rows = last_used_row(get_values_with_quota_retry(worksheet))
+        except Exception:
+            used_rows = worksheet.row_count
+        requests.extend(sheet_row_count_requests(worksheet, max(TARGET_WORKSHEET_ROWS, used_rows)))
+
+    for i in range(0, len(requests), config.BATCH_SIZE):
+        sheet.batch_update({'requests': requests[i:i + config.BATCH_SIZE]})
+        time.sleep(0.2)
+
+    if requests:
+        print(f"  📐 Normalized non-settings row counts: {len(requests)}")
+        extend_conditional_format_ranges(sheet)
+
+    return len(requests)
 
 
 def format_push_events_sheet(sheet, clean_rows=False):
