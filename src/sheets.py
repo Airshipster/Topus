@@ -1668,17 +1668,15 @@ def sheet_row_count_requests(worksheet, target_rows):
         return []
 
     if current_rows < target_rows:
-        insert_count = target_rows - current_rows
-        start_index = max(1, current_rows - ROW_INSERT_INHERIT_BUFFER)
         return [{
-            'insertDimension': {
-                'range': {
+            'updateSheetProperties': {
+                'properties': {
                     'sheetId': worksheet.id,
-                    'dimension': 'ROWS',
-                    'startIndex': start_index,
-                    'endIndex': start_index + insert_count,
+                    'gridProperties': {
+                        'rowCount': target_rows,
+                    },
                 },
-                'inheritFromBefore': True,
+                'fields': 'gridProperties.rowCount',
             }
         }]
 
@@ -1856,6 +1854,11 @@ def format_push_events_sheet(sheet, clean_rows=False):
             if rows_to_delete:
                 deleted = delete_rows_batch(sheet, worksheet, rows_to_delete)
                 print(f"  🧹 Removed invalid push event rows: {deleted}")
+                worksheet = sheet.worksheet(config.SHEET_NAME_PUSH_EVENTS)
+                used_rows = last_used_row(get_values_with_quota_retry(worksheet))
+                requests = sheet_row_count_requests(worksheet, row_count_target(worksheet, used_rows))
+                if requests:
+                    sheet.batch_update({'requests': requests})
 
     except Exception as e:
         print(f"  ⚠️  Error normalizing push events: {e}")
@@ -1864,7 +1867,7 @@ def format_push_events_sheet(sheet, clean_rows=False):
 def maintain_workbook_layout(sheet):
     ensure_videos_worksheet(sheet)
     ensure_logs_worksheet(sheet)
-    format_push_events_sheet(sheet)
+    format_push_events_sheet(sheet, clean_rows=True)
 
 
 def update_video_project_links(sheet, projects):

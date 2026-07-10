@@ -122,9 +122,8 @@ function pushEventTimestampMs_(value) {
 function ensureSheetRows_(sheet, targetRows) {
   var currentRows = sheet.getMaxRows();
   var desiredRows = Math.max(targetRows, sheet.getLastRow());
-  if (currentRows < targetRows) {
-    var insertBefore = Math.max(2, currentRows - 1);
-    sheet.insertRowsBefore(insertBefore, desiredRows - currentRows);
+  if (currentRows < desiredRows) {
+    sheet.insertRowsAfter(currentRows, desiredRows - currentRows);
   } else if (currentRows > desiredRows) {
     sheet.deleteRows(desiredRows + 1, currentRows - desiredRows);
   }
