@@ -497,6 +497,10 @@ def sheet_datetime_value(value):
     return sheets_datetime_serial(parsed)
 
 
+def is_sheet_datetime_serial(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def sheet_numeric_value(value):
     cleaned = clean_sheet_value(value)
     text = str(cleaned or '').strip()
@@ -1813,6 +1817,7 @@ def format_push_events_sheet(sheet, clean_rows=False):
                             })
             if clean_rows:
                 values = get_values_with_quota_retry(worksheet)
+                raw_values = get_values_with_quota_retry(worksheet, value_render_option='UNFORMATTED_VALUE')
                 headers = [str(value).strip() for value in values[0]] if values else []
                 timestamp_col = find_column_index(headers, ['Timestamp GMT+4', 'Timestamp'])
                 video_col = find_column_index(headers, ['Video ID'])
@@ -1836,8 +1841,13 @@ def format_push_events_sheet(sheet, clean_rows=False):
                             'values': [[normalized_channel]],
                         })
                     timestamp = cell_value(cleaned, timestamp_col)
+                    raw_row = raw_values[row_index - 1] if raw_values and row_index - 1 < len(raw_values) else []
+                    raw_timestamp = cell_value(raw_row, timestamp_col)
                     normalized_timestamp = normalize_timestamp(timestamp)
-                    if normalized_timestamp and normalized_timestamp != timestamp:
+                    if normalized_timestamp and (
+                        normalized_timestamp != timestamp
+                        or not is_sheet_datetime_serial(raw_timestamp)
+                    ):
                         timestamp_updates.append({
                             'range': gspread.utils.rowcol_to_a1(row_index, timestamp_col + 1),
                             'values': [[sheet_datetime_value(normalized_timestamp)]],
@@ -2516,6 +2526,7 @@ def get_push_events(sheet):
         channel_col = indexes.get('Ссылка на канал')
         status_col = indexes.get('Обработано')
         projects_col = indexes.get('Проекты')
+        timestamp_col = indexes.get('Timestamp GMT+4') or indexes.get('Timestamp')
         if video_col is None or channel_col is None or status_col is None:
             print("❌ Push events headers missing required columns")
             return []
@@ -2533,6 +2544,7 @@ def get_push_events(sheet):
                         'row_index': i,
                         'video_id': video_id,
                         'channel_id': channel_id,
+                        'timestamp': row[timestamp_col] if timestamp_col is not None and len(row) > timestamp_col else '',
                         'projects': row[projects_col] if projects_col is not None and len(row) > projects_col else '',
                     })
         
@@ -2579,6 +2591,7 @@ def mark_push_events_processed_batch(sheet, tracked_events):
         indexes = {header: index + 1 for index, header in enumerate(header_row)}
         status_col = indexes.get('Обработано')
         projects_col = indexes.get('Проекты')
+        timestamp_col = indexes.get('Timestamp GMT+4') or indexes.get('Timestamp')
         if not status_col or not projects_col:
             raise ValueError('Push events headers missing Обработано/Проекты')
         updates = []
@@ -2597,6 +2610,12 @@ def mark_push_events_processed_batch(sheet, tracked_events):
                 {'range': gspread.utils.rowcol_to_a1(row_index, status_col), 'values': [['✅']]},
                 {'range': gspread.utils.rowcol_to_a1(row_index, projects_col), 'values': [[new_projects]]},
             ])
+            timestamp = normalize_timestamp(tracked.get('timestamp', ''))
+            if timestamp_col and timestamp:
+                updates.append({
+                    'range': gspread.utils.rowcol_to_a1(row_index, timestamp_col),
+                    'values': [[sheet_datetime_value(timestamp)]],
+                })
 
         for i in range(0, len(updates), 100):
             worksheet.batch_update(updates[i:i + 100], value_input_option='USER_ENTERED')

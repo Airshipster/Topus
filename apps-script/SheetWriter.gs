@@ -70,7 +70,11 @@ function setPushEventCell_(sheet, rowIndex, columns, headerName, value) {
   if (!column) {
     throw new Error('Push events header not found: ' + headerName);
   }
-  sheet.getRange(rowIndex, column).setValue(value);
+  var range = sheet.getRange(rowIndex, column);
+  range.setValue(value);
+  if (headerName === 'Timestamp GMT+4') {
+    range.setNumberFormat('dd.mm.yyyy h:mm:ss');
+  }
 }
 
 function hasRecentPushEvent_(sheet, columns, videoId, channelId, timestamp) {
