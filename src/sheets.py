@@ -65,7 +65,8 @@ VIDEO_HEADERS = [
     'Системный статус',
 ]
 
-LOG_HEADERS = ['Проект', 'Timestamp GMT+4', 'Video ID', 'Событие']
+LOG_HEADERS = ['Проект', 'Timestamp GMT+4', 'Video ID', 'Channel ID', 'Событие']
+LOG_EVENT_HEADER_FORMULA = '="Событие"&CHAR(10)&"Push: "&COUNTIF(OFFSET(INDEX(A:ZZ;ROW()+1;COLUMN());0;0;10000;1);"*Push:*")&", RSS: "&COUNTIF(OFFSET(INDEX(A:ZZ;ROW()+1;COLUMN());0;0;10000;1);"*RSS:*")'
 
 _LOCK_ROW_INFO = None
 _RUN_STATUS_ROW = None
@@ -1605,14 +1606,52 @@ def merge_log_event(event, details, status=''):
     return event or details or status
 
 
-def migrate_log_row(headers, row):
+def build_video_channel_lookup(sheet):
+    lookup = {}
+    try:
+        worksheet = sheet.worksheet(config.SHEET_NAME_VIDEOS)
+        values = get_values_with_quota_retry(worksheet)
+    except Exception:
+        return lookup
+    if not values:
+        return lookup
+
+    headers = [str(value).strip() for value in values[0]]
+    for row in values[1:]:
+        data = row_as_dict(headers, row)
+        video_id = video_id_from_url(first_value(data, ['Ссылка на видео', 'Video ID']))
+        channel_id = channel_id_from_link(first_value(data, ['Ссылка на канал', 'Channel ID']))
+        project_name = project_name_from_cell(first_value(data, ['Проект']))
+        if not video_id or not channel_id:
+            continue
+        lookup[(video_id, project_name)] = channel_id
+        lookup[(video_id, '')] = channel_id
+    return lookup
+
+
+def migrate_log_row(headers, row, channel_lookup=None):
     data = row_as_dict(headers, row)
+    video_id = first_value(data, ['Video ID'])
+    project_name = project_name_from_cell(first_value(data, ['Проект']))
+    channel_id = channel_id_from_link(first_value(data, ['Channel ID', 'Ссылка на канал']))
+    if not channel_id and channel_lookup:
+        channel_id = channel_lookup.get((video_id, project_name)) or channel_lookup.get((video_id, '')) or ''
     return clean_row([
-        first_value(data, ['Проект']),
+        project_name,
         normalize_timestamp(first_value(data, ['Timestamp GMT+4', 'Timestamp'])),
-        first_value(data, ['Video ID']),
+        video_id,
+        channel_id,
         merge_log_event(first_value(data, ['Событие']), first_value(data, ['Детали']), first_value(data, ['Статус'])),
     ])
+
+
+def apply_log_header_formula(worksheet):
+    event_col = LOG_HEADERS.index('Событие') + 1
+    worksheet.update(
+        range_name=gspread.utils.rowcol_to_a1(1, event_col),
+        values=[[LOG_EVENT_HEADER_FORMULA]],
+        value_input_option='USER_ENTERED',
+    )
 
 
 def ensure_logs_worksheet(sheet):
@@ -1621,11 +1660,13 @@ def ensure_logs_worksheet(sheet):
     except gspread.exceptions.WorksheetNotFound:
         worksheet = sheet.add_worksheet('Логи', rows=10000, cols=len(LOG_HEADERS))
         worksheet.append_row(LOG_HEADERS, value_input_option='USER_ENTERED')
+        apply_log_header_formula(worksheet)
         return worksheet
 
     header_values = get_values_with_quota_retry(worksheet, '1:1')
     if not header_values:
         worksheet.append_row(LOG_HEADERS, value_input_option='USER_ENTERED')
+        apply_log_header_formula(worksheet)
         return worksheet
 
     headers = [str(value).strip() for value in header_values[0]]
@@ -1634,9 +1675,11 @@ def ensure_logs_worksheet(sheet):
         return worksheet
 
     values = get_values_with_quota_retry(worksheet)
-    migrated_rows = [migrate_log_row(headers, row) for row in values[1:] if any(str(cell).strip() for cell in row)]
+    channel_lookup = build_video_channel_lookup(sheet)
+    migrated_rows = [migrate_log_row(headers, row, channel_lookup) for row in values[1:] if any(str(cell).strip() for cell in row)]
     worksheet.clear()
     worksheet.update(range_name='A1', values=[LOG_HEADERS] + migrated_rows, value_input_option='USER_ENTERED')
+    apply_log_header_formula(worksheet)
     if worksheet.col_count > len(LOG_HEADERS):
         sheet.batch_update({
             'requests': [{
@@ -1916,17 +1959,22 @@ def update_video_project_links(sheet, projects):
 
 
 def normalize_log_entry(entry):
+    if len(entry) >= 8:
+        timestamp = normalize_timestamp(entry[0])
+        method = str(clean_sheet_value(entry[7]) or '').strip()
+        event = f'{method}: {entry[2]}' if method and not re.match(r'^(Push|RSS):', str(entry[2]), flags=re.IGNORECASE) else entry[2]
+        return clean_row([entry[1], sheet_datetime_value(timestamp), entry[3], channel_id_from_link(entry[4]) or entry[4], merge_log_event(event, entry[5], entry[6])])
     if len(entry) >= 7:
         timestamp = normalize_timestamp(entry[0])
         method = str(clean_sheet_value(entry[6]) or '').strip()
         event = f'{method}: {entry[2]}' if method and not re.match(r'^(Push|RSS):', str(entry[2]), flags=re.IGNORECASE) else entry[2]
-        return clean_row([entry[1], sheet_datetime_value(timestamp), entry[3], merge_log_event(event, entry[4], entry[5])])
+        return clean_row([entry[1], sheet_datetime_value(timestamp), entry[3], '', merge_log_event(event, entry[4], entry[5])])
     if len(entry) >= 6:
         timestamp = normalize_timestamp(entry[0])
-        return clean_row([entry[1], sheet_datetime_value(timestamp), entry[3], merge_log_event(entry[2], entry[4], entry[5])])
+        return clean_row([entry[1], sheet_datetime_value(timestamp), entry[3], '', merge_log_event(entry[2], entry[4], entry[5])])
     if len(entry) == 4:
         timestamp = normalize_timestamp(entry[0])
-        return clean_row([entry[1], sheet_datetime_value(timestamp), entry[2], entry[3]])
+        return clean_row([entry[1], sheet_datetime_value(timestamp), entry[2], '', entry[3]])
     return clean_row((entry + [''] * len(LOG_HEADERS))[:len(LOG_HEADERS)])
 
 def log_events_batch(sheet, log_entries):
