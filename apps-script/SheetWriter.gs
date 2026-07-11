@@ -75,16 +75,6 @@ function setPushEventCell_(sheet, rowIndex, columns, headerName, value) {
   if (headerName === 'Timestamp GMT+4') {
     range.setNumberFormat('dd.mm.yyyy h:mm:ss');
   }
-  if (headerName === 'Обработано') {
-    range
-      .setHorizontalAlignment('center')
-      .setVerticalAlignment('middle');
-    if (value === '✅') {
-      range.setBackground('#b7e1cd');
-    } else if (value === '❌') {
-      range.setBackground('#f4c7c3');
-    }
-  }
 }
 
 function hasRecentPushEvent_(sheet, columns, videoId, channelId, timestamp) {
