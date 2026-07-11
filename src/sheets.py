@@ -74,6 +74,8 @@ TARGET_WORKSHEET_ROWS = 10000
 TARGET_SETTINGS_ROWS = 300
 ROW_INSERT_INHERIT_BUFFER = 2
 PUSH_EVENT_ROW_HEIGHT_PIXELS = 21
+PUSH_STATUS_OK_BACKGROUND = {'red': 0.7176471, 'green': 0.88235295, 'blue': 0.8039216}
+PUSH_STATUS_ERROR_BACKGROUND = {'red': 0.95686275, 'green': 0.78039217, 'blue': 0.7647059}
 SETTINGS_READ_RANGE = 'A1:ZZ300'
 PROJECTS_READ_RANGE = 'A1:ZZ500'
 PENDING_RETRY_WINDOW_HOURS = 24
@@ -719,6 +721,37 @@ def ensure_master_timestamp_formats(sheet):
 
     if requests:
         print(f"  🕒 Applied timestamp number formats: {len(requests)} columns")
+
+
+def push_event_status_format_request(worksheet, row_index, status_col, status):
+    color = None
+    if status == '✅':
+        color = PUSH_STATUS_OK_BACKGROUND
+    elif status == '❌':
+        color = PUSH_STATUS_ERROR_BACKGROUND
+    if not color:
+        return None
+
+    return {
+        'repeatCell': {
+            'range': {
+                'sheetId': worksheet.id,
+                'startRowIndex': row_index - 1,
+                'endRowIndex': row_index,
+                'startColumnIndex': status_col - 1,
+                'endColumnIndex': status_col,
+            },
+            'cell': {
+                'userEnteredFormat': {
+                    'backgroundColor': color,
+                    'horizontalAlignment': 'CENTER',
+                    'verticalAlignment': 'MIDDLE',
+                    'wrapStrategy': 'CLIP',
+                }
+            },
+            'fields': 'userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment,wrapStrategy)',
+        }
+    }
 
 
 def update_project_statuses(worksheet, headers, status_updates):
@@ -2573,6 +2606,9 @@ def mark_push_event_processed(sheet, row_index, project_name, current_projects='
             {'range': gspread.utils.rowcol_to_a1(row_index, status_col), 'values': [['✅']]},
             {'range': gspread.utils.rowcol_to_a1(row_index, projects_col), 'values': [[new_projects]]},
         ], value_input_option='USER_ENTERED')
+        format_request = push_event_status_format_request(worksheet, row_index, status_col, '✅')
+        if format_request:
+            sheet.batch_update({'requests': [format_request]})
         return new_projects
     except Exception as e:
         print(f"  ⚠️  Error marking event: {e}")
@@ -2595,6 +2631,7 @@ def mark_push_events_processed_batch(sheet, tracked_events):
         if not status_col or not projects_col:
             raise ValueError('Push events headers missing Обработано/Проекты')
         updates = []
+        format_requests = []
         for tracked in tracked_events:
             current_projects = clean_sheet_value(tracked.get('projects', ''))
             project_names = tracked.get('project_names') or []
@@ -2606,10 +2643,13 @@ def mark_push_events_processed_batch(sheet, tracked_events):
             project_set.update(str(value).strip() for value in project_names if str(value).strip())
             new_projects = ', '.join(sorted(project_set))
             row_index = tracked['row_index']
+            format_request = push_event_status_format_request(worksheet, row_index, status_col, '✅')
             updates.extend([
                 {'range': gspread.utils.rowcol_to_a1(row_index, status_col), 'values': [['✅']]},
                 {'range': gspread.utils.rowcol_to_a1(row_index, projects_col), 'values': [[new_projects]]},
             ])
+            if format_request:
+                format_requests.append(format_request)
             timestamp = normalize_timestamp(tracked.get('timestamp', ''))
             if timestamp_col and timestamp:
                 updates.append({
@@ -2619,6 +2659,9 @@ def mark_push_events_processed_batch(sheet, tracked_events):
 
         for i in range(0, len(updates), 100):
             worksheet.batch_update(updates[i:i + 100], value_input_option='USER_ENTERED')
+            time.sleep(0.2)
+        for i in range(0, len(format_requests), config.BATCH_SIZE):
+            sheet.batch_update({'requests': format_requests[i:i + config.BATCH_SIZE]})
             time.sleep(0.2)
     except Exception as e:
         print(f"  ⚠️  Error marking push events batch: {e}")
