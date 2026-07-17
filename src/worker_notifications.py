@@ -36,6 +36,7 @@ def notify_worker_subscribers(project, video, message):
             json={
                 'projectCode': project_code,
                 'channelId': channel_id,
+                'videoId': str(video.get('video_id') or video.get('videoId') or '').strip(),
                 'text': message,
                 'parseMode': 'HTML',
             },

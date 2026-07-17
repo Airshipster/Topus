@@ -319,6 +319,7 @@ async function handleAdminNotify(request: Request, env: Env, ctx: ExecutionConte
   const body = await request.json<{
     projectCode: string;
     channelId: string;
+    videoId?: string;
     text: string;
     parseMode?: string;
   }>();
@@ -346,7 +347,7 @@ async function handleAdminNotify(request: Request, env: Env, ctx: ExecutionConte
        )`
     : '';
   const recipients = await env.DB.prepare(
-    `SELECT s.user_id
+    `SELECT s.user_id, COALESCE(u.is_admin, 0) AS is_admin
      FROM user_subscriptions s
      LEFT JOIN users u ON u.project_code = s.project_code AND u.user_id = s.user_id
      LEFT JOIN allowlist a ON a.project_code = s.project_code AND a.user_id = s.user_id
@@ -354,9 +355,10 @@ async function handleAdminNotify(request: Request, env: Env, ctx: ExecutionConte
        AND s.channel_id = ?
        AND s.active = 1
        ${paymentCondition}`,
-  ).bind(body.projectCode, body.channelId).all<{ user_id: string }>();
+  ).bind(body.projectCode, body.channelId).all<{ user_id: string; is_admin: number }>();
 
-  const deliveries = await sendNotifications(project, recipients.results || [], body.text, body.parseMode || 'HTML', body.channelId);
+  const notificationVideoId = body.videoId || extractYoutubeVideoIds(body.text)[0] || '';
+  const deliveries = await sendNotifications(project, recipients.results || [], body.text, body.parseMode || 'HTML', body.channelId, notificationVideoId);
   return json({
     ok: true,
     queued: recipients.results?.length || 0,
@@ -624,7 +626,9 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
     return;
   }
 
-  const [action, value = 'root'] = data.split(':', 2);
+  const separator = data.indexOf(':');
+  const action = separator >= 0 ? data.slice(0, separator) : data;
+  const value = separator >= 0 ? data.slice(separator + 1) : 'root';
   let categoryId = value || 'root';
   let page = 0;
   let toast = '';
@@ -632,7 +636,8 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
   let text: string | null = null;
 
   if (action === 'unsub') {
-    const channel = await getChannel(env, project.code, value);
+    const [channelId, videoId = ''] = value.split(':', 2);
+    const channel = await getChannel(env, project.code, channelId);
     let subscribed = false;
     if (channel) {
       subscribed = await toggleSubscription(env, project.code, String(callback.from.id), channel.channel_id);
@@ -642,7 +647,35 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
       await telegram(project.bot_token, 'editMessageReplyMarkup', {
         chat_id: message.chat.id,
         message_id: message.message_id,
-        reply_markup: renderNotificationMenu(channel.channel_id, subscribed),
+        reply_markup: renderNotificationMenu(channel.channel_id, subscribed, false, await isAdmin(env, project.code, String(callback.from.id)), videoId),
+      });
+    }
+    return;
+  }
+
+  if (action === 'hidepost') {
+    const [videoId, channelId = ''] = value.split(':', 2);
+    if (!await isAdmin(env, project.code, String(callback.from.id))) {
+      await answer(project.bot_token, callback.id, 'Недостаточно прав');
+      return;
+    }
+    if (!/^[A-Za-z0-9_-]{11}$/.test(videoId) || !await siteKnowsVideo(videoId)) {
+      await answer(project.bot_token, callback.id, 'Видео не найдено на сайте');
+      return;
+    }
+    await ensureManualHiddenVideosSchema(env);
+    const now = new Date().toISOString();
+    await env.DB.prepare(
+      `INSERT INTO manual_hidden_videos (video_id, project_code, hidden_by, hidden_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(video_id) DO UPDATE SET project_code=excluded.project_code, hidden_by=excluded.hidden_by, hidden_at=excluded.hidden_at`,
+    ).bind(videoId, project.code, String(callback.from.id), now).run();
+    await answer(project.bot_token, callback.id, 'Видео скрыто с сайта');
+    if (message) {
+      await telegram(project.bot_token, 'editMessageReplyMarkup', {
+        chat_id: message.chat.id,
+        message_id: message.message_id,
+        reply_markup: renderNotificationMenu(channelId, true, true, true, videoId, true),
       });
     }
     return;
@@ -663,9 +696,9 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
           chat_id: message.chat.id,
           message_id: message.message_id,
           text: [
-            'Отправьте ссылку на видео или перешлите сообщение с ней.',
+            'Отправьте ID, ссылку на YouTube, ссылку на видео на сайте или перешлите сообщение с ней.',
             '',
-            'Чтобы вернуть видео, поставьте дефис или тире непосредственно перед ссылкой.',
+            'Чтобы вернуть видео, поставьте дефис или тире непосредственно перед ID или ссылкой.',
           ].join('\n'),
           reply_markup: renderAdminCancelMenu(),
         });
@@ -1418,14 +1451,14 @@ async function handlePendingAdminMessage(env: Env, project: Project, message: Te
       .map(entity => entity.url || '')
       .filter(Boolean);
     const input = `${message.text || ''}\n${message.caption || ''}\n${entityUrls.join('\n')}`.trim();
-    const operation = /(?:^|\s)[-\u2010\u2011\u2012\u2013\u2014\u2212](?=\s*(?:https?:\/\/|www\.|youtu(?:\.be|be\.com)))/i.test(input)
+    const operation = /(?:^|\s)[-\u2010\u2011\u2012\u2013\u2014\u2212](?=\s*(?:https?:\/\/|www\.|[A-Za-z0-9_-]{11}(?:\s|$)))/i.test(input)
       ? 'show'
       : 'hide';
     const videoIds = extractYoutubeVideoIds(input);
     if (!videoIds.length) {
       await telegram(project.bot_token, 'sendMessage', {
         chat_id: message.chat.id,
-        text: 'Не удалось найти ID YouTube-видео. Нажмите кнопку ещё раз и отправьте ссылку или пересланный пост с ней.',
+        text: 'Не удалось найти ID YouTube-видео. Нажмите кнопку ещё раз и отправьте ID, ссылку на YouTube, ссылку на видео на сайте или пересланный пост.',
         reply_markup: await renderSettingsMenu(env, project.code, userId),
       });
       return true;
@@ -2181,10 +2214,11 @@ async function descendantChannelIds(env: Env, projectCode: string, categoryId: s
 
 async function sendNotifications(
   project: Project,
-  recipients: Array<{ user_id: string }>,
+  recipients: Array<{ user_id: string; is_admin: number }>,
   text: string,
   parseMode: string,
   channelId: string,
+  videoId: string,
 ): Promise<Array<{ userId: string; messageId: number | null }>> {
   const deliveries: Array<{ userId: string; messageId: number | null }> = [];
   for (const recipient of recipients) {
@@ -2193,7 +2227,7 @@ async function sendNotifications(
       text,
       parse_mode: parseMode,
       disable_web_page_preview: false,
-      reply_markup: renderNotificationMenu(channelId, true, true),
+      reply_markup: renderNotificationMenu(channelId, true, true, recipient.is_admin === 1, videoId),
     }) as { ok?: boolean; result?: { message_id?: number } } | null;
     deliveries.push({
       userId: recipient.user_id,
@@ -2253,13 +2287,29 @@ async function siteKnowsVideo(videoId: string): Promise<boolean> {
 
 function extractYoutubeVideoIds(value: string): string[] {
   const text = String(value || '');
-  const matches = [
+  const matches: string[] = [
     ...text.matchAll(/(?:youtube\.com\/(?:watch\?[^\s#]*?v=|shorts\/|embed\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/gi),
   ].map(match => match[1]);
-  if (!matches.length && /^[\s\-\u2010-\u2014\u2212]*[A-Za-z0-9_-]{11}[\s]*$/.test(text)) {
-    const rawId = text.match(/[A-Za-z0-9_-]{11}/)?.[0];
-    if (rawId) matches.push(rawId);
+
+  for (const rawUrl of text.match(/https?:\/\/[^\s<>]+/gi) || []) {
+    try {
+      const url = new URL(rawUrl.replace(/[),.;!?]+$/, ''));
+      for (const key of ['v', 'video', 'videoId', 'id']) {
+        const candidate = url.searchParams.get(key) || '';
+        if (/^[A-Za-z0-9_-]{11}$/.test(candidate)) matches.push(candidate);
+      }
+      for (const segment of url.pathname.split('/')) {
+        if (/^[A-Za-z0-9_-]{11}$/.test(segment)) matches.push(segment);
+      }
+    }
+    catch {
+      // Invalid links are ignored; standalone IDs below can still be accepted.
+    }
   }
+
+  for (const match of text.matchAll(/(?:^|[^A-Za-z0-9_-])([A-Za-z0-9_-]{11})(?=$|[^A-Za-z0-9_-])/g))
+    matches.push(match[1]);
+
   return [...new Set(matches)];
 }
 
@@ -2305,17 +2355,21 @@ async function sendPaidExpiryReminders(env: Env): Promise<void> {
   }
 }
 
-function renderNotificationMenu(channelId: string, subscribed: boolean, initial = false): object {
+function renderNotificationMenu(channelId: string, subscribed: boolean, initial = false, admin = false, videoId = '', hidden = false): object {
   const text = initial
     ? 'Вы подписаны'
     : subscribed
       ? '✅ Вы подписаны'
       : '❌ Вы отписались от канала';
-  return {
-    inline_keyboard: [
-      [{ text, callback_data: `unsub:${channelId}` }],
-    ],
-  };
+  const rows: Array<Array<TelegramButton>> = [
+    [{ text, callback_data: `unsub:${channelId}${videoId ? `:${videoId}` : ''}` }],
+  ];
+  if (admin && /^[A-Za-z0-9_-]{11}$/.test(videoId)) {
+    rows.push([hidden
+      ? { text: 'Скрыто с сайта', callback_data: 'noop' }
+      : { text: 'Скрыть с сайта', callback_data: `hidepost:${videoId}:${channelId}` }]);
+  }
+  return { inline_keyboard: rows };
 }
 
 async function requiredChannelForProject(env: Env, projectCode: string): Promise<string> {
