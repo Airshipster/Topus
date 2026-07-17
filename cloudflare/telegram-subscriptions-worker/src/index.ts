@@ -21,10 +21,17 @@ type TelegramChat = {
 type TelegramMessage = {
   message_id: number;
   text?: string;
+  caption?: string;
+  entities?: TelegramMessageEntity[];
+  caption_entities?: TelegramMessageEntity[];
   chat: TelegramChat;
   from?: TelegramUser;
   new_chat_members?: TelegramUser[];
   successful_payment?: TelegramSuccessfulPayment;
+};
+
+type TelegramMessageEntity = {
+  url?: string;
 };
 
 type TelegramCallbackQuery = {
@@ -186,6 +193,10 @@ export default {
     try {
       if (request.method === 'GET' && path.length === 0) {
         return json({ ok: true, service: 'topus-telegram-subscriptions' });
+      }
+
+      if (request.method === 'GET' && path[0] === 'site' && path[1] === 'video-hides') {
+        return handleSiteVideoHides(env);
       }
 
       if (request.method === 'POST' && path[0] === 'admin' && path[1] === 'sync') {
@@ -637,10 +648,28 @@ async function handleCallback(env: Env, project: Project, callback: TelegramCall
     return;
   }
 
-  if (action === 'adminstats' || action === 'grantfree' || action === 'adminsyncinfo') {
+  if (action === 'adminstats' || action === 'grantfree' || action === 'adminsyncinfo' || action === 'hidevideo') {
     const admin = await isAdmin(env, project.code, String(callback.from.id));
     if (!admin) {
       await answer(project.bot_token, callback.id, 'Недостаточно прав');
+      return;
+    }
+    if (action === 'hidevideo') {
+      await ensureManualHiddenVideosSchema(env);
+      await env.CACHE.put(pendingAdminActionKey(project.code, String(callback.from.id)), 'hidevideo:input', { expirationTtl: 600 });
+      await answer(project.bot_token, callback.id);
+      if (message) {
+        await telegram(project.bot_token, 'editMessageText', {
+          chat_id: message.chat.id,
+          message_id: message.message_id,
+          text: [
+            'Отправьте ссылку на видео или перешлите сообщение с ней.',
+            '',
+            'Чтобы вернуть видео, поставьте дефис или тире непосредственно перед ссылкой.',
+          ].join('\n'),
+          reply_markup: renderAdminCancelMenu(),
+        });
+      }
       return;
     }
     if (action === 'adminsyncinfo') {
@@ -1251,14 +1280,15 @@ async function renderSettingsMenu(env: Env, projectCode: string, userId: string)
   const hideLabel = hideOld
     ? `✅ Скрыто ${visibility.hidden}/${visibility.total}, видно ${visibility.visible}`
     : `Скрыть неактивные больше года (${visibility.hidden}/${visibility.total})`;
-  return {
-    inline_keyboard: [
+  const rows: Array<Array<TelegramButton>> = [
       [{ text: hideLabel, callback_data: 'hideold:root' }],
       [{ text: '🔔 Напоминания', callback_data: 'reminders:root' }],
       [{ text: 'Проверить статус доступа', callback_data: 'plan:root' }],
-      [{ text: '🏠 Главное меню', callback_data: 'menu:root' }],
-    ],
-  };
+  ];
+  if (await isAdmin(env, projectCode, userId))
+    rows.push([{ text: 'Скрыть видео на сайте', callback_data: 'hidevideo:root' }]);
+  rows.push([{ text: '🏠 Главное меню', callback_data: 'menu:root' }]);
+  return { inline_keyboard: rows };
 }
 
 function renderChannelList(
@@ -1381,6 +1411,57 @@ async function handlePendingAdminMessage(env: Env, project: Project, message: Te
   }
   const key = pendingAdminActionKey(project.code, userId);
   const action = await env.CACHE.get(key);
+  if (action === 'hidevideo:input') {
+    await env.CACHE.delete(key);
+    await ensureManualHiddenVideosSchema(env);
+    const entityUrls = [...(message.entities || []), ...(message.caption_entities || [])]
+      .map(entity => entity.url || '')
+      .filter(Boolean);
+    const input = `${message.text || ''}\n${message.caption || ''}\n${entityUrls.join('\n')}`.trim();
+    const operation = /(?:^|\s)[-\u2010\u2011\u2012\u2013\u2014\u2212](?=\s*(?:https?:\/\/|www\.|youtu(?:\.be|be\.com)))/i.test(input)
+      ? 'show'
+      : 'hide';
+    const videoIds = extractYoutubeVideoIds(input);
+    if (!videoIds.length) {
+      await telegram(project.bot_token, 'sendMessage', {
+        chat_id: message.chat.id,
+        text: 'Не удалось найти ID YouTube-видео. Нажмите кнопку ещё раз и отправьте ссылку или пересланный пост с ней.',
+        reply_markup: await renderSettingsMenu(env, project.code, userId),
+      });
+      return true;
+    }
+
+    const changed: string[] = [];
+    const rejected: string[] = [];
+    const now = new Date().toISOString();
+    for (const videoId of videoIds) {
+      if (operation === 'show') {
+        const result = await env.DB.prepare('DELETE FROM manual_hidden_videos WHERE video_id = ?').bind(videoId).run();
+        ((result.meta?.changes || 0) > 0 ? changed : rejected).push(videoId);
+        continue;
+      }
+      if (!await siteKnowsVideo(videoId)) {
+        rejected.push(videoId);
+        continue;
+      }
+      await env.DB.prepare(
+        `INSERT INTO manual_hidden_videos (video_id, project_code, hidden_by, hidden_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(video_id) DO UPDATE SET project_code=excluded.project_code, hidden_by=excluded.hidden_by, hidden_at=excluded.hidden_at`,
+      ).bind(videoId, project.code, userId, now).run();
+      changed.push(videoId);
+    }
+    const verb = operation === 'hide' ? 'Скрыты с сайта' : 'Возвращены на сайт';
+    await telegram(project.bot_token, 'sendMessage', {
+      chat_id: message.chat.id,
+      text: [
+        changed.length ? `${verb}: ${changed.join(', ')}` : 'Изменений нет.',
+        rejected.length ? `Не найдены в базе или уже обработаны: ${rejected.join(', ')}` : '',
+      ].filter(Boolean).join('\n'),
+      reply_markup: await renderSettingsMenu(env, project.code, userId),
+    });
+    return true;
+  }
   if (!action?.startsWith('grantfree')) {
     return false;
   }
@@ -2150,6 +2231,38 @@ async function sendWeeklySubscriptionReminders(env: Env): Promise<void> {
   }
 }
 
+async function handleSiteVideoHides(env: Env): Promise<Response> {
+  await ensureManualHiddenVideosSchema(env);
+  const result = await env.DB.prepare('SELECT video_id FROM manual_hidden_videos ORDER BY video_id').all<{ video_id: string }>();
+  return json({ videoIds: (result.results || []).map(row => row.video_id) }, 200, {
+    'cache-control': 'public, max-age=15, s-maxage=15',
+  });
+}
+
+async function siteKnowsVideo(videoId: string): Promise<boolean> {
+  try {
+    const response = await fetch(`https://scitopus.com/api/youtube-live/video-known?id=${encodeURIComponent(videoId)}`);
+    if (!response.ok)
+      return false;
+    return Boolean((await response.json<{ known?: boolean }>()).known);
+  }
+  catch {
+    return false;
+  }
+}
+
+function extractYoutubeVideoIds(value: string): string[] {
+  const text = String(value || '');
+  const matches = [
+    ...text.matchAll(/(?:youtube\.com\/(?:watch\?[^\s#]*?v=|shorts\/|embed\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/gi),
+  ].map(match => match[1]);
+  if (!matches.length && /^[\s\-\u2010-\u2014\u2212]*[A-Za-z0-9_-]{11}[\s]*$/.test(text)) {
+    const rawId = text.match(/[A-Za-z0-9_-]{11}/)?.[0];
+    if (rawId) matches.push(rawId);
+  }
+  return [...new Set(matches)];
+}
+
 async function sendPaidExpiryReminders(env: Env): Promise<void> {
   const rows = await env.DB.prepare(
     `SELECT p.code AS project_code, p.bot_token, u.user_id, u.access_expires_at
@@ -2443,6 +2556,21 @@ async function ensureAccessSchema(env: Env): Promise<void> {
   await env.CACHE.put(key, '1');
 }
 
+async function ensureManualHiddenVideosSchema(env: Env): Promise<void> {
+  const key = 'schema:manual-hidden-videos:v1';
+  if (await env.CACHE.get(key))
+    return;
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS manual_hidden_videos (
+       video_id TEXT PRIMARY KEY,
+       project_code TEXT NOT NULL,
+       hidden_by TEXT NOT NULL,
+       hidden_at TEXT NOT NULL
+     )`,
+  ).run();
+  await env.CACHE.put(key, '1');
+}
+
 function boosterMinBoosts(env: Env): number {
   const value = Number.parseInt(String(env.BOOSTER_MIN_BOOSTS || ''), 10);
   return Number.isFinite(value) && value > 0 ? value : BOOSTER_MIN_BOOSTS_DEFAULT;
@@ -2568,9 +2696,9 @@ async function getCloudflareUsage(env: Env): Promise<{ month: string; limit: num
   };
 }
 
-function json(body: object, status = 200): Response {
+function json(body: object, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: jsonHeaders,
+    headers: { ...jsonHeaders, ...headers },
   });
 }
