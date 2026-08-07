@@ -832,6 +832,7 @@ def compact_subscription_cells(all_channel_ids, current_subscriptions):
 
 def compact_access_history(user, allowlist_entry, existing_row):
     existing = str(existing_row.get('access_history') or '').strip()
+    worker_history = str(user.get('access_history') or '').strip()
     entries = []
     source = str(user.get('access_source') or '').strip()
     method = str(user.get('payment_method') or '').strip()
@@ -848,11 +849,13 @@ def compact_access_history(user, allowlist_entry, existing_row):
     if allowlist_entry and allowlist_entry.get('note'):
         entries.append(f'free_note={allowlist_entry.get("note")}')
     summary = ' | '.join(item for item in entries if item)
-    if not existing:
-        return summary
-    if not summary or summary in existing:
-        return existing[-500:]
-    return f'{summary}\n{existing}'[-500:]
+    # D1 is canonical for the chronological event log. Keep every event on its
+    # own line in the same Google Sheets cell. Existing sheet content is only a
+    # fallback for rows created before Worker-side history was introduced.
+    history = worker_history or existing
+    if not summary or summary in history:
+        return history
+    return f'{history}\n{summary}'.strip()
 
 
 def write_rows(worksheet, rows):
