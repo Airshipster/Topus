@@ -1,3 +1,5 @@
+import re
+
 import config
 
 
@@ -5,7 +7,15 @@ def normalize_stop_text(value):
     return str(value or '').casefold().replace('ё', 'е')
 
 
-def should_filter_video(video_info, project):
+def contains_whole_word(text, word):
+    normalized_text = normalize_stop_text(text)
+    normalized_word = normalize_stop_text(word).strip()
+    if not normalized_word:
+        return False
+    return re.search(rf'(?<!\w){re.escape(normalized_word)}(?!\w)', normalized_text) is not None
+
+
+def should_filter_video(video_info, project, channel_info=None):
     """Проверка нужно ли фильтровать видео"""
     if not video_info:
         return False, ""
@@ -26,5 +36,12 @@ def should_filter_video(video_info, project):
             normalized_stop_word = normalize_stop_text(stop_word).strip()
             if normalized_stop_word and normalized_stop_word in title_text:
                 return True, f"Stop word: {stop_word}"
+
+    category = str((channel_info or {}).get('category') or '').strip()
+    category_rules = project.get('category_stop_words') or {}
+    category_words = category_rules.get(normalize_stop_text(category).strip(), [])
+    for stop_word in category_words:
+        if contains_whole_word(video_info.get('title', ''), stop_word):
+            return True, f"Category stop word ({category}): {stop_word}"
     
     return False, ""

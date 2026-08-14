@@ -475,6 +475,20 @@ def parse_list_setting(value):
     ]
 
 
+def parse_category_stop_words(value):
+    """Parse visible rules written as ``Category: word, word`` per line."""
+    rules = {}
+    for raw_rule in re.split(r'[;\n\r]+', str(value or '')):
+        category, separator, words_text = raw_rule.partition(':')
+        category_key = category.strip().casefold().replace('ё', 'е')
+        if not separator or not category_key:
+            continue
+        words = parse_list_setting(words_text)
+        if words:
+            rules[category_key] = words
+    return rules
+
+
 def format_timestamp(dt=None):
     if dt is None:
         dt = datetime.now(ZoneInfo(timezone_name()))
@@ -2293,6 +2307,7 @@ def load_projects(sheet, update_status=True):
 
             stop_words_str = str(row.get('Стоп-слова (через запятую)', '')).strip()
             stop_words = [w.lower() for w in parse_list_setting(stop_words_str)]
+            category_stop_words = parse_category_stop_words(row.get('Категорийные стоп-слова', ''))
             shorts_value = str(row.get('Шортсы', '')).strip()
             allow_shorts = shorts_value == '🟢'
             allow_streams = is_enabled_marker(row.get('Стримы'), default=False)
@@ -2329,6 +2344,7 @@ def load_projects(sheet, update_status=True):
                 'tg_channel': tg_channel,
                 'default_template': row.get('Шаблон по умолчанию', config.DEFAULT_MESSAGE_TEMPLATE),
                 'stop_words': stop_words,
+                'category_stop_words': category_stop_words,
                 'allow_shorts': allow_shorts,
                 'allow_streams': allow_streams,
                 'allow_premieres': allow_premieres,
@@ -2416,6 +2432,7 @@ def parse_youtube_channels_worksheet(worksheet, project, include_disabled=False)
         tg_col_text = tg_col + 1 if tg_col is not None else 'not found'
         print(f"  📌 Channel columns: template={template_col_text}, tg_partner={tg_col_text}")
         channels = {}
+        current_category = ''
         enabled_channel_ids = set()
         disabled_channel_ids = set()
         for i, row in enumerate(values):
@@ -2428,6 +2445,13 @@ def parse_youtube_channels_worksheet(worksheet, project, include_disabled=False)
 
             if any(cell == '🔵' for cell in normalized):
                 break
+
+            if '🟡' in normalized:
+                current_category = (
+                    get_row_value(normalized, header_indexes, 'Название')
+                    or infer_channel_name(normalized, '')
+                ).strip()
+                continue
 
             channel_id = get_row_value(normalized, header_indexes, 'ID') or extract_youtube_channel_id_from_row(normalized)
             is_disabled = '🔴' in normalized
@@ -2457,6 +2481,7 @@ def parse_youtube_channels_worksheet(worksheet, project, include_disabled=False)
                 'tg_channel': tg_channel,
                 'status': 'red' if is_disabled else 'green',
                 'bot_only': bool(is_disabled),
+                'category': current_category,
             }
 
         project['disabled_channel_count'] = len(disabled_channel_ids)

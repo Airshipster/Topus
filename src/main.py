@@ -599,7 +599,7 @@ def main():
                         published_videos.add(key)
                         continue
                 
-                    should_filter, filter_reason = should_filter_video(video_info_api, project)
+                    should_filter, filter_reason = should_filter_video(video_info_api, project, channel_info)
                     if should_filter:
                         print(f"  🚫 Filtered: {video['title'][:50]} ({filter_reason})")
                         timestamp = format_timestamp()
@@ -667,7 +667,7 @@ def main():
                         published_videos.add(key)
                         continue
                     
-                    should_filter, filter_reason = should_filter_video(video_info_api, project)
+                    should_filter, filter_reason = should_filter_video(video_info_api, project, channel_info)
                     
                     if should_filter:
                         print(f"    🚫 Filtered (RSS): {video['title'][:50]} ({filter_reason})")

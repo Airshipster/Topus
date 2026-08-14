@@ -3,7 +3,7 @@ name: Check YouTube Videos
 on:
   schedule:
     - cron: '*/5 * * * *'
-    - cron: '7,37 * * * *'
+    - cron: '7 * * * *'
     - cron: '17 2 * * *'
   repository_dispatch:
     types: [topus-push]
@@ -36,7 +36,11 @@ on:
         default: 'false'
 
 concurrency:
-  group: topus-publisher
+  # Push events live in the persistent "Push события" sheet. GitHub runs are
+  # merely drain signals, so repeated fast signals may safely coalesce. Keep the
+  # hourly RSS fallback in a separate queue so a stream of push signals cannot
+  # starve it; the shared sheet lock still serializes all actual writes.
+  group: topus-${{ (github.event_name == 'repository_dispatch' || github.event.schedule == '*/5 * * * *') && 'push-drain' || 'full-maintenance' }}
   cancel-in-progress: false
 
 jobs:
