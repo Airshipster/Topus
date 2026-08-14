@@ -16,7 +16,7 @@ class CategoryFilterTests(unittest.TestCase):
             'allow_premieres': True,
             'stop_words': [],
             'category_stop_words': {
-                'научные институты и курсы': ['класс'],
+                'научные институты и курсы': ['класс', 'егэ', 'огэ', 'введение'],
             },
         }
 
@@ -44,6 +44,26 @@ class CategoryFilterTests(unittest.TestCase):
             {'category': 'Научные институты и курсы'},
         )
         self.assertFalse(filtered)
+
+    def test_filters_each_added_word_as_a_whole_word(self):
+        for word in ('ЕГЭ', 'ОГЭ', 'введение'):
+            with self.subTest(word=word):
+                filtered, _ = should_filter_video(
+                    {'title': f'Курс: {word} в физике'},
+                    self.project,
+                    {'category': 'Научные институты и курсы'},
+                )
+                self.assertTrue(filtered)
+
+    def test_does_not_match_added_word_fragments(self):
+        for title in ('введениевкурс', 'огэшник', 'егэшный разбор'):
+            with self.subTest(title=title):
+                filtered, _ = should_filter_video(
+                    {'title': title},
+                    self.project,
+                    {'category': 'Научные институты и курсы'},
+                )
+                self.assertFalse(filtered)
 
 
 if __name__ == '__main__':
