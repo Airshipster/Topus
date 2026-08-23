@@ -12,6 +12,11 @@ def contains_whole_word(text, word):
     normalized_word = normalize_stop_text(word).strip()
     if not normalized_word:
         return False
+    if normalized_word.endswith('*'):
+        prefix = normalized_word[:-1].strip()
+        if not prefix:
+            return False
+        return re.search(rf'(?<!\w){re.escape(prefix)}\w*', normalized_text) is not None
     return re.search(rf'(?<!\w){re.escape(normalized_word)}(?!\w)', normalized_text) is not None
 
 
