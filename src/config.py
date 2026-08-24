@@ -27,6 +27,12 @@ RSS_FALLBACK_AGE_HOURS = 24
 RSS_WORKERS = 12
 ACTIVITY_RETENTION_DAYS = 7
 
+# A serialized Actions queue normally prevents lock contention. These bounded
+# retries cover a manual run or a lock release race without turning Push into
+# a second long-running worker or repeatedly hammering Google Sheets.
+PUSH_LOCK_RETRY_ATTEMPTS = 4
+PUSH_LOCK_RETRY_SECONDS = 15
+
 # Filters
 FILTER_SHORTS = True
 FILTER_LIVE = True

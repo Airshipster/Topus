@@ -172,7 +172,21 @@ def acquire_lock_with_wait(master_sheet):
         return acquire_lock(master_sheet, stale_after_seconds=120)
 
     if push_only_mode():
-        return acquire_lock(master_sheet)
+        for attempt in range(1, config.PUSH_LOCK_RETRY_ATTEMPTS + 1):
+            if acquire_lock(master_sheet):
+                return True
+
+            if attempt < config.PUSH_LOCK_RETRY_ATTEMPTS:
+                wait_seconds = config.PUSH_LOCK_RETRY_SECONDS
+                print(
+                    "  ⏳ Push drain deferred by the publisher lock; "
+                    f"waiting {wait_seconds}s before retry "
+                    f"{attempt}/{config.PUSH_LOCK_RETRY_ATTEMPTS - 1}..."
+                )
+                time.sleep(wait_seconds)
+
+        print("  ⚠️  Push drain left pending for the next serialized run")
+        return False
 
     for attempt in range(1, 21):
         if acquire_lock(master_sheet):
