@@ -1,10 +1,18 @@
 import re
+import unicodedata
 
 import config
 
 
 def normalize_stop_text(value):
     return str(value or '').casefold().replace('ё', 'е')
+
+
+def contains_cyrillic_letter(value):
+    for character in str(value or ''):
+        if unicodedata.category(character).startswith('L') and 'CYRILLIC' in unicodedata.name(character, ''):
+            return True
+    return False
 
 
 def contains_whole_word(text, word):
@@ -34,6 +42,9 @@ def should_filter_video(video_info, project, channel_info=None):
     
     if video_info.get('is_upcoming') and not project.get('allow_premieres'):
         return True, "Upcoming/Premiere"
+
+    if not contains_cyrillic_letter(video_info.get('title')):
+        return True, "Title has no Cyrillic letters"
     
     if project.get('stop_words'):
         title_text = normalize_stop_text(video_info['title'])
