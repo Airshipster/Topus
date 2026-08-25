@@ -19,21 +19,23 @@ function appendPushEvent_(timestamp, videoId, channelId, rawXml) {
   if (nextRow > sheet.getMaxRows()) {
     sheet.insertRowsAfter(sheet.getMaxRows(), nextRow - sheet.getMaxRows());
   }
-  setPushEventCell_(sheet, nextRow, columns, 'Timestamp GMT+4', timestamp);
-  setPushEventCell_(sheet, nextRow, columns, 'Video ID', stripLeadingApostrophe_(videoId));
-  setPushEventCell_(sheet, nextRow, columns, 'Ссылка на канал', channelLink_(channelId));
-  setPushEventCell_(sheet, nextRow, columns, 'Обработано', '❌');
-  setPushEventCell_(sheet, nextRow, columns, 'Проекты', '');
-  setPushEventCell_(sheet, nextRow, columns, 'Raw XML', stripLeadingApostrophe_(rawXml));
-
-  sheet.getRange(nextRow, 1, 1, Math.max(sheet.getLastColumn(), PUSH_EVENTS_HEADERS.length))
-    .setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
+  var width = Math.max(sheet.getLastColumn(), PUSH_EVENTS_HEADERS.length);
+  var row = new Array(width).fill('');
+  row[columns['Timestamp GMT+4'] - 1] = timestamp;
+  row[columns['Video ID'] - 1] = stripLeadingApostrophe_(videoId);
+  row[columns['Ссылка на канал'] - 1] = channelLink_(channelId);
+  row[columns['Обработано'] - 1] = '❌';
+  row[columns['Проекты'] - 1] = '';
+  row[columns['Raw XML'] - 1] = stripLeadingApostrophe_(rawXml);
+  sheet.getRange(nextRow, 1, 1, width).setValues([row]);
+  sheet.getRange(nextRow, columns['Timestamp GMT+4']).setNumberFormat('dd.mm.yyyy h:mm:ss');
+  sheet.getRange(nextRow, 1, 1, width).setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
   sheet.setRowHeightsForced(nextRow, 1, 21);
+  rememberRecentPushEvent_(videoId, channelId);
   return true;
 }
 
 function ensurePushEventsHeader_(sheet) {
-  ensureSheetRows_(sheet, 10000);
   var headerWidth = Math.max(sheet.getLastColumn(), PUSH_EVENTS_HEADERS.length);
   var current = sheet.getRange(1, 1, 1, headerWidth).getValues()[0];
   var hasHeader = current.some(function(value) {
@@ -42,14 +44,10 @@ function ensurePushEventsHeader_(sheet) {
 
   if (!hasHeader) {
     sheet.getRange(1, 1, 1, PUSH_EVENTS_HEADERS.length).setValues([PUSH_EVENTS_HEADERS]);
+    sheet.getRange(1, 1, 1, PUSH_EVENTS_HEADERS.length)
+      .setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
+    sheet.setFrozenRows(1);
   }
-
-  sheet.getRange(1, 1, Math.max(sheet.getMaxRows(), 1), Math.max(sheet.getLastColumn(), PUSH_EVENTS_HEADERS.length))
-    .setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
-  if (sheet.getLastRow() > 1) {
-    sheet.setRowHeightsForced(2, sheet.getLastRow() - 1, 21);
-  }
-  sheet.setFrozenRows(1);
 }
 
 function pushEventsHeaderMap_(sheet) {
@@ -85,6 +83,11 @@ function hasRecentPushEvent_(sheet, columns, videoId, channelId, timestamp) {
     return false;
   }
 
+  var cache = CacheService.getScriptCache();
+  if (cache.get(pushEventCacheKey_(videoId, channelId))) {
+    return true;
+  }
+
   var lastRow = sheet.getLastRow();
   if (lastRow <= 1) {
     return false;
@@ -92,24 +95,40 @@ function hasRecentPushEvent_(sheet, columns, videoId, channelId, timestamp) {
 
   var cutoffMs = timestamp.getTime() - PUSH_EVENT_DEDUP_DAYS * 24 * 60 * 60 * 1000;
   var channelValue = channelLink_(channelId);
-  var width = Math.max(sheet.getLastColumn(), PUSH_EVENTS_HEADERS.length);
-  var rows = sheet.getRange(2, 1, lastRow - 1, width).getValues();
-  for (var index = rows.length - 1; index >= 0; index--) {
-    var row = rows[index];
-    var rowTimestamp = pushEventTimestampMs_(row[timestampCol - 1]);
-    if (rowTimestamp && rowTimestamp < cutoffMs) {
-      break;
-    }
-    var rowVideoId = stripLeadingApostrophe_(row[videoCol - 1]);
-    var rowChannelId = channelIdFromLink_(row[channelCol - 1]) || stripLeadingApostrophe_(row[channelCol - 1]);
-    if (rowVideoId === videoId && rowChannelId === channelId) {
-      return true;
-    }
-    if (rowVideoId === videoId && stripLeadingApostrophe_(row[channelCol - 1]) === channelValue) {
-      return true;
+  var firstColumn = Math.min(timestampCol, videoCol, channelCol);
+  var lastColumn = Math.max(timestampCol, videoCol, channelCol);
+  var chunkSize = 250;
+
+  for (var endRow = lastRow; endRow >= 2; endRow -= chunkSize) {
+    var startRow = Math.max(2, endRow - chunkSize + 1);
+    var rows = sheet.getRange(startRow, firstColumn, endRow - startRow + 1, lastColumn - firstColumn + 1).getValues();
+    for (var index = rows.length - 1; index >= 0; index--) {
+      var row = rows[index];
+      var rowTimestamp = pushEventTimestampMs_(row[timestampCol - firstColumn]);
+      if (rowTimestamp && rowTimestamp < cutoffMs) {
+        return false;
+      }
+      var rowVideoId = stripLeadingApostrophe_(row[videoCol - firstColumn]);
+      var rowChannelId = channelIdFromLink_(row[channelCol - firstColumn]) || stripLeadingApostrophe_(row[channelCol - firstColumn]);
+      if (rowVideoId === videoId && rowChannelId === channelId) {
+        return true;
+      }
+      if (rowVideoId === videoId && stripLeadingApostrophe_(row[channelCol - firstColumn]) === channelValue) {
+        return true;
+      }
     }
   }
   return false;
+}
+
+function pushEventCacheKey_(videoId, channelId) {
+  return 'topus-push-event:' + videoId + ':' + channelId;
+}
+
+function rememberRecentPushEvent_(videoId, channelId) {
+  // Cache is only a fast-path for retried WebSub deliveries. The Sheet keeps
+  // the seven-day durable deduplication window above.
+  CacheService.getScriptCache().put(pushEventCacheKey_(videoId, channelId), '1', 21600);
 }
 
 function pushEventTimestampMs_(value) {
