@@ -2,7 +2,11 @@ function doPost(e) {
   var startedAt = Date.now();
   var timestamp = new Date();
   var rawXml = e && e.postData && e.postData.contents ? e.postData.contents : '';
+  // Logged before parsing and Sheets access so a missing YouTube delivery can
+  // be distinguished from a callback that reached us and failed later.
+  console.log('WebSub callback received: bytes=' + rawXml.length);
   var payload = parsePushPayload_(rawXml);
+  console.log('WebSub callback parsed: video=' + (payload.videoId || 'missing') + ', channel=' + (payload.channelId || 'missing'));
 
   var lock = LockService.getScriptLock();
   // A slow callback causes YouTube to retry and turns one burst into hundreds
@@ -30,7 +34,12 @@ function doPost(e) {
   // The durable Sheet row is now committed. Do not make the WebSub callback
   // wait for an outbound GitHub request while it owns the queue lock.
   if (accepted) {
-    triggerPushPublisher_(payload.videoId, payload.channelId);
+    var dispatch = triggerPushPublisher_(payload.videoId, payload.channelId);
+    if (!dispatch.ok) {
+      console.error('GitHub dispatch failed after durable queue write: status=' + dispatch.status);
+    } else {
+      console.log('GitHub dispatch result: status=' + dispatch.status + ', message=' + dispatch.message);
+    }
     console.log('Push event accepted in ' + (Date.now() - startedAt) + 'ms: ' + payload.videoId);
   }
 

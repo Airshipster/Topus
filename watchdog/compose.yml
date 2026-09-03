@@ -1,0 +1,52 @@
+services:
+  watchdog:
+    build:
+      context: ..
+      dockerfile: watchdog/Dockerfile
+    image: topus-publication-watchdog:local
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TOPUS_WATCHDOG_ACTIVE: "true"
+      TOPUS_WATCHDOG_STALE_SECONDS: "1200"
+      TOPUS_WATCHDOG_FALLBACK_COOLDOWN_SECONDS: "1800"
+      TOPUS_WATCHDOG_RSS_RECOVERY_HOURS: "72"
+      GOOGLE_SERVICE_ACCOUNT_JSON_FILE: /run/host-secrets/google-service-account.json
+      TOPUS_WATCHDOG_DB: /data/topus-watchdog.sqlite3
+      PORT: "8090"
+    volumes:
+      - ./data:/data
+      - /root/scitopus-secrets/scitopus-google-service-account.json:/run/host-secrets/google-service-account.json:ro
+    expose:
+      - "8090"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    mem_limit: 256m
+    cpus: 0.50
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    networks:
+      - default
+      - traefik
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.topus-watchdog.rule: "Host(`scitopus.com`) && PathPrefix(`/topus-watchdog`)"
+      traefik.http.routers.topus-watchdog.entrypoints: websecure
+      traefik.http.routers.topus-watchdog.tls.certresolver: letsencrypt
+      traefik.http.routers.topus-watchdog.priority: "210"
+      traefik.http.routers.topus-watchdog.middlewares: topus-watchdog-strip
+      traefik.http.middlewares.topus-watchdog-strip.stripprefix.prefixes: /topus-watchdog
+      traefik.http.services.topus-watchdog.loadbalancer.server.port: "8090"
+
+networks:
+  traefik:
+    external: true
+    name: traefik
