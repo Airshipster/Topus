@@ -10,6 +10,7 @@ COPY watchdog/entrypoint.sh /app/entrypoint.sh
 RUN useradd --system --uid 10001 topus \
     && mkdir -p /data /run/topus-secrets \
     && chown -R topus:topus /data /app /run/topus-secrets \
+    && sed -i 's/\r$//' /app/entrypoint.sh \
     && chmod 0755 /app/entrypoint.sh
 
 ENV PYTHONUNBUFFERED=1
