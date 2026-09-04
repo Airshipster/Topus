@@ -59,6 +59,37 @@ function triggerPublisher_(videoId, channelId, options) {
   });
 }
 
+function triggerPushPublisher_(videoId, channelId) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(250)) {
+    // Another accepted callback is already scheduling the same queue. The
+    // durable row above remains pending and will be picked up by that run or
+    // by the five-minute push-only guard.
+    return {ok: true, status: 0, message: 'Push dispatch already being scheduled'};
+  }
+
+  try {
+    var properties = PropertiesService.getScriptProperties();
+    var now = Date.now();
+    var lastDispatch = Number(properties.getProperty('TOPUS_LAST_PUSH_DISPATCH_MS') || 0);
+    if (lastDispatch && now - lastDispatch < 60000) {
+      return {ok: true, status: 0, message: 'GitHub dispatch skipped: recent push dispatch already queued'};
+    }
+    properties.setProperty('TOPUS_LAST_PUSH_DISPATCH_MS', String(now));
+  } finally {
+    lock.releaseLock();
+  }
+
+  return triggerRepositoryDispatch_(GITHUB_DISPATCH_EVENT_TYPE, {
+    video_id: videoId || '',
+    channel_id: channelId || '',
+    force_subscription_sync: 'false',
+    sync_only: 'false',
+    sync_bot_state: 'false',
+    deploy_site: 'false'
+  });
+}
+
 function triggerRepositoryDispatch_(eventType, clientPayload) {
   var token = PropertiesService.getScriptProperties().getProperty('GITHUB_DISPATCH_TOKEN');
 

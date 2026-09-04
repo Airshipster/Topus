@@ -94,3 +94,16 @@ jobs:
         TOPUS_PUSH_ONLY: ${{ github.event.schedule == '*/5 * * * *' || (github.event_name == 'repository_dispatch' && github.event.client_payload.video_id != '' && github.event.client_payload.channel_id != '') }}
       run: |
         python src/main.py
+
+    - name: Report publisher heartbeat
+      if: ${{ always() }}
+      env:
+        TOPUS_WATCHDOG_TOKEN: ${{ secrets.TOPUS_WORKER_ADMIN_SECRET }}
+        RUN_STATUS: ${{ job.status }}
+      run: |
+        curl --fail --silent --show-error --max-time 10 \
+          -X POST "https://scitopus.com/topus-watchdog/heartbeat" \
+          -H "Authorization: Bearer ${TOPUS_WATCHDOG_TOKEN}" \
+          -H "Content-Type: application/json" \
+          --data "{\"status\":\"${RUN_STATUS}\",\"run_id\":\"${GITHUB_RUN_ID}\",\"event\":\"${GITHUB_EVENT_NAME}\",\"sha\":\"${GITHUB_SHA}\"}" \
+          || true

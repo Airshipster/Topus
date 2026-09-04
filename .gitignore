@@ -45,6 +45,8 @@ service-account.json
 
 # Logs
 *.log
+watchdog/data/
+watchdog/*.sqlite3
 
 # OS
 .DS_Store

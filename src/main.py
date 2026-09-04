@@ -53,8 +53,9 @@ def get_stale_reason(published_at, project=None, video=None):
     if not published:
         return ''
 
-    limit_hours = config.MAX_PUBLISH_AGE_HOURS
-    if project:
+    emergency_limit = os.environ.get('TOPUS_MAX_PUBLISH_AGE_HOURS_OVERRIDE', '').strip()
+    limit_hours = int(emergency_limit) if emergency_limit else config.MAX_PUBLISH_AGE_HOURS
+    if project and not emergency_limit:
         limit_hours = project.get('max_publish_age_hours') or limit_hours
 
     age_hours = (current_local_datetime() - published).total_seconds() / 3600
@@ -147,6 +148,9 @@ def run_status_details():
     event = os.environ.get('GITHUB_EVENT_NAME', 'local')
     sha = os.environ.get('GITHUB_SHA', '')[:7]
     bits = [f'mode={run_mode_name()}', f'event={event}', f'run={run_id}']
+    source = os.environ.get('TOPUS_RUN_SOURCE', '').strip()
+    if source:
+        bits.append(f'source={source}')
     if sha:
         bits.append(f'sha={sha}')
     return ', '.join(bits)
@@ -161,6 +165,13 @@ def print_detection_latency_note():
         f"(avg {push_fallback_avg_minutes:g}m), RSS feed ≈0-30m "
         f"(avg {rss_avg_minutes:g}m). Push API reduces waiting by ~{push_wait_reduction}% vs RSS-only."
     )
+
+
+def apply_runtime_overrides():
+    rss_age = os.environ.get('TOPUS_RSS_FALLBACK_AGE_HOURS_OVERRIDE', '').strip()
+    if rss_age:
+        config.RSS_FALLBACK_AGE_HOURS = max(1, int(rss_age))
+        print(f"  Emergency RSS recovery window: {config.RSS_FALLBACK_AGE_HOURS}h")
 
 
 def publication_key(video_id, project):
@@ -413,6 +424,7 @@ def main():
         
         print("\n⚙️  Loading settings...")
         settings = load_settings(master_sheet)
+        apply_runtime_overrides()
         print_detection_latency_note()
         if push_only_mode():
             print("  ⚡ Push-only mode: skipping workbook maintenance")
