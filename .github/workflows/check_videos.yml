@@ -2,108 +2,59 @@ name: Check YouTube Videos
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
     - cron: '7,37 * * * *'
-    - cron: '17 2 * * *'
   repository_dispatch:
     types: [topus-push]
-
   workflow_dispatch:
     inputs:
-      maintenance_only:
-        description: 'Only repair workbook layout/formatting; do not sync or publish'
-        required: false
-        default: 'false'
-      unlock_only:
-        description: 'Only clear publisher lock; do not sync or publish'
-        required: false
-        default: 'false'
-      sync_only:
-        description: 'Only sync subscriptions; do not publish'
-        required: false
-        default: 'false'
-      repair_pending_only:
-        description: 'Only reconcile rows that were published but stayed pending'
-        required: false
-        default: 'false'
-      force_subscription_sync:
-        description: 'Force subscription sync during this run'
-        required: false
-        default: 'false'
       sync_bot_state:
-        description: 'Only sync bot users/subscriptions with Cloudflare'
+        description: 'Only sync bot users/subscriptions; do not signal publication'
         required: false
         default: 'false'
 
+permissions:
+  contents: read
+
 concurrency:
-  # Push events live in the persistent "Push события" sheet. GitHub runs are
-  # merely drain signals, so repeated signals may safely coalesce. Every run,
-  # including an RSS recovery pass, writes through the same sheet lock; keep
-  # them in one Actions queue so a Push drain is not rejected by that lock.
-  group: topus-publisher
+  group: topus-publisher-signal
   cancel-in-progress: false
 
 jobs:
-  check-and-publish:
+  signal-server:
+    if: ${{ github.event.inputs.sync_bot_state != 'true' && github.event.client_payload.sync_bot_state != 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    timeout-minutes: 2
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
+      - name: Signal the single durable publisher
+        env:
+          TOPUS_TOKEN: ${{ secrets.TOPUS_WORKER_ADMIN_SECRET }}
+        run: |
+          curl --fail --silent --show-error --max-time 15 --retry 2 \
+            -X POST 'https://scitopus.com/topus-watchdog/run' \
+            -H "Authorization: Bearer ${TOPUS_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            --data '{"source":"github"}'
+      - name: Check publication readiness, not just HTTP liveness
+        run: |
+          curl --fail --silent --show-error --max-time 15 \
+            'https://scitopus.com/topus-watchdog/status'
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-
-    - name: Wake Apps Script callback
-      if: ${{ !((github.event_name == 'workflow_dispatch' && github.event.inputs.sync_bot_state == 'true') || (github.event_name == 'repository_dispatch' && github.event.client_payload.sync_bot_state == 'true')) }}
-      run: |
-        curl -fsSL "https://script.google.com/macros/s/AKfycbwqySnqlEYAMTTQNkcUy9RU-B6UkikW9o-v5lzLxtthnpOE_52XRZThoe2b1xjIj1Zm/exec" -o /dev/null || true
-
-    - name: Sync bot state with Cloudflare
-      if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.sync_bot_state == 'true') || (github.event_name == 'repository_dispatch' && github.event.client_payload.sync_bot_state == 'true') }}
-      env:
-        GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-        TOPUS_WORKER_URL: ${{ secrets.TOPUS_WORKER_URL }}
-        TOPUS_WORKER_ADMIN_SECRET: ${{ secrets.TOPUS_WORKER_ADMIN_SECRET }}
-        CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        CLOUDFLARE_ACCOUNT_ID: '8460cfa72309d5c869775d6c38ca41dd'
-        CLOUDFLARE_WORKER_SCRIPT_NAME: 'topus-telegram-subscriptions'
-      run: |
-        python src/sync_bot_state_sheet.py
-
-    - name: Run main script
-      if: ${{ !((github.event_name == 'workflow_dispatch' && github.event.inputs.sync_bot_state == 'true') || (github.event_name == 'repository_dispatch' && github.event.client_payload.sync_bot_state == 'true')) }}
-      env:
-        GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-        TOPUS_WORKER_URL: ${{ secrets.TOPUS_WORKER_URL }}
-        TOPUS_WORKER_ADMIN_SECRET: ${{ secrets.TOPUS_WORKER_ADMIN_SECRET }}
-        PYTHONUNBUFFERED: '1'
-        TOPUS_MAINTENANCE_ONLY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.maintenance_only == 'true' }}
-        TOPUS_UNLOCK_ONLY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.unlock_only == 'true' }}
-        TOPUS_REPAIR_PENDING_ONLY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.repair_pending_only == 'true' }}
-        TOPUS_FORCE_SUBSCRIPTION_SYNC: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.force_subscription_sync == 'true') || github.event.client_payload.force_subscription_sync == 'true' }}
-        TOPUS_SYNC_ONLY: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.sync_only == 'true') || github.event.schedule == '17 2 * * *' || github.event.client_payload.sync_only == 'true' || (github.event_name == 'repository_dispatch' && github.event.client_payload.video_id == '' && github.event.client_payload.channel_id == '') }}
-        TOPUS_PUSH_ONLY: ${{ github.event.schedule == '*/5 * * * *' || (github.event_name == 'repository_dispatch' && github.event.client_payload.video_id != '' && github.event.client_payload.channel_id != '') }}
-      run: |
-        python src/main.py
-
-    - name: Report publisher heartbeat
-      if: ${{ always() }}
-      env:
-        TOPUS_WATCHDOG_TOKEN: ${{ secrets.TOPUS_WORKER_ADMIN_SECRET }}
-        RUN_STATUS: ${{ job.status }}
-      run: |
-        curl --fail --silent --show-error --max-time 10 \
-          -X POST "https://scitopus.com/topus-watchdog/heartbeat" \
-          -H "Authorization: Bearer ${TOPUS_WATCHDOG_TOKEN}" \
-          -H "Content-Type: application/json" \
-          --data "{\"status\":\"${RUN_STATUS}\",\"run_id\":\"${GITHUB_RUN_ID}\",\"event\":\"${GITHUB_EVENT_NAME}\",\"sha\":\"${GITHUB_SHA}\"}" \
-          || true
+  sync-bot-state:
+    if: ${{ github.event.inputs.sync_bot_state == 'true' || github.event.client_payload.sync_bot_state == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - name: Preserve explicit Apps Script bot-state sync requests
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          TOPUS_WORKER_URL: ${{ secrets.TOPUS_WORKER_URL }}
+          TOPUS_WORKER_ADMIN_SECRET: ${{ secrets.TOPUS_WORKER_ADMIN_SECRET }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: '8460cfa72309d5c869775d6c38ca41dd'
+          CLOUDFLARE_WORKER_SCRIPT_NAME: 'topus-telegram-subscriptions'
+        run: python src/sync_bot_state_sheet.py

@@ -7,6 +7,8 @@ import requests
 import config
 from sheets import format_timestamp, load_youtube_channels
 
+failed_channels = set()
+
 
 def check_rss_feed(channel_id):
     """Проверка RSS фида канала"""
@@ -115,6 +117,7 @@ def rss_fallback_check(client, project, published_videos, project_channels=None,
                 videos = None
 
             if videos is None:
+                failed_channels.add(channel_id)
                 continue
 
             videos_found_count += len(videos)

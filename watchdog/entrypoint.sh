@@ -9,4 +9,4 @@ chown topus:topus /data
 chmod 0700 /data
 export GOOGLE_SERVICE_ACCOUNT_JSON_FILE="$target_path"
 
-exec su -s /bin/sh topus -c 'exec python /app/watchdog.py'
+exec su -s /bin/sh topus -c 'exec python /app/controller.py'
