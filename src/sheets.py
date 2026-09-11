@@ -998,7 +998,11 @@ def authenticate_google_sheets():
         credentials_dict,
         scopes=['https://www.googleapis.com/auth/spreadsheets']
     )
-    client = gspread.authorize(credentials)
+    if os.environ.get('TOPUS_CONTROL_REQUIRED') == 'true':
+        from sheets_rate import CoordinatedSheetsClient
+        client = gspread.authorize(credentials, http_client=CoordinatedSheetsClient)
+    else:
+        client = gspread.authorize(credentials)
     return client
 
 def acquire_lock(sheet, stale_after_seconds=900):
