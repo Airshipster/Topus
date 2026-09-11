@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
 from push_store import database, accept_xml, confirm, health
 from delivery_journal import summary
+from control_client import ControlClient, configured
 
 ACTIVE = os.environ.get('TOPUS_WATCHDOG_ACTIVE', 'false').lower() == 'true'
 TOKEN = os.environ.get('TOPUS_WATCHDOG_TOKEN', '')
@@ -55,6 +56,11 @@ def run_job(name, mode=None):
             error = f'exit {code}'
     except Exception as exc:
         error = type(exc).__name__
+    if name in ('renewal', 'notifications') and configured():
+        try:
+            ControlClient().heartbeat('renewal' if name == 'renewal' else 'personal', not error, error)
+        except Exception as exc:
+            error = error or type(exc).__name__
     with database() as db:
         db.execute('UPDATE jobs SET completed=?,success=CASE WHEN ?=\'\' THEN ? ELSE success END,error=? WHERE name=?',
                    (time.time(), error, time.time(), error, name))

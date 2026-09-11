@@ -8,18 +8,25 @@ from push_store import database, verify_key
 from sheets import authenticate_google_sheets, load_settings, load_projects, get_all_active_channels, format_timestamp
 
 
+def reconcile_inventory(channels, complete):
+    if not channels:
+        raise RuntimeError('Subscription inventory incomplete; keeping existing leases')
+    with database() as db:
+        if complete:
+            db.execute('UPDATE leases SET enabled=0')
+        db.executemany('INSERT INTO leases(channel_id) VALUES (?) ON CONFLICT(channel_id) DO UPDATE SET enabled=1',
+                       [(c,) for c in channels])
+
+
 def run():
     client = authenticate_google_sheets()
     sheet = client.open_by_key(config.SPREADSHEET_ID)
     load_settings(sheet)
     projects = load_projects(sheet, update_status=False)
     channels = get_all_active_channels(client, projects)
-    if not channels or any(p.get('channels_error') for p in projects):
-        raise RuntimeError('Subscription inventory incomplete; keeping existing leases')
+    incomplete = sum(bool(p.get('channels_error')) for p in projects)
+    reconcile_inventory(channels, complete=not incomplete)
     with database() as db:
-        db.execute('UPDATE leases SET enabled=0')
-        db.executemany('INSERT INTO leases(channel_id) VALUES (?) ON CONFLICT(channel_id) DO UPDATE SET enabled=1',
-                       [(c,) for c in channels])
         due = [r['channel_id'] for r in db.execute('SELECT channel_id FROM leases WHERE enabled=1 '
                     'AND expires<? AND requested<? ORDER BY requested,channel_id LIMIT 100',
                     (time.time() + 86400, time.time() - 300)) if r['channel_id'] in channels]
@@ -83,6 +90,8 @@ def run():
     print(f'Subscription batch: requested={len(due)}, accepted={sum(results)}, verified={sum(r["expires"]>time.time() for r in leases.values())}', flush=True)
     if results and not any(results):
         raise RuntimeError('All subscription requests failed')
+    if incomplete:
+        raise RuntimeError('Partial subscription inventory; accessible channels renewed, existing leases retained')
 
 
 if __name__ == '__main__':

@@ -43,6 +43,17 @@ def notify_worker_subscribers(project, video, message):
         'text': message, 'parseMode': 'HTML',
     }
     key = json.dumps([project_code, payload['videoId']], separators=(',', ':'))
+    from control_client import configured, ControlClient
+    if configured():
+        from sheets import parse_datetime_value
+        published = parse_datetime_value(video.get('published'))
+        control = ControlClient()
+        queued = control.request('/notifications/put', {'owner': os.environ['TOPUS_PUBLISHER_OWNER'],
+            'lease': os.environ['TOPUS_PUBLISHER_LEASE'], 'payload': payload,
+            'published_at': published.timestamp() if published else None})
+        if queued['state'] == 'sent':
+            return queued['result']
+        return deliver_remote(control, queued['key'], worker_url, admin_secret)
     with connection() as db:
         db.execute('CREATE TABLE IF NOT EXISTS notify_outbox (key TEXT PRIMARY KEY,payload TEXT NOT NULL,sent INTEGER DEFAULT 0,updated REAL DEFAULT 0,error TEXT)')
         db.execute('INSERT OR IGNORE INTO notify_outbox(key,payload) VALUES (?,?)', (key, json.dumps(payload)))
@@ -75,6 +86,18 @@ def deliver_outbox(key, payload, worker_url, admin_secret):
 
 
 def retry_outbox():
+    from control_client import configured, ControlClient
+    if configured():
+        control = ControlClient()
+        items = control.request('/notifications/pending', {}).get('items', [])
+        failed = 0
+        for item in items:
+            if deliver_remote(control, item['key'], os.environ['TOPUS_WORKER_URL'], os.environ['TOPUS_WORKER_ADMIN_SECRET']) is None:
+                failed += 1
+        control.heartbeat('personal', failed == 0, 'PERSONAL_RETRY_PENDING' if failed else '')
+        if failed:
+            raise RuntimeError('Personal notification retries pending: ' + str(failed))
+        return
     with connection() as db:
         db.execute('CREATE TABLE IF NOT EXISTS notify_outbox (key TEXT PRIMARY KEY,payload TEXT NOT NULL,sent INTEGER DEFAULT 0,updated REAL DEFAULT 0,error TEXT)')
         rows = list(db.execute('SELECT key,payload FROM notify_outbox WHERE sent=0 AND updated<? ORDER BY updated LIMIT 5', (time.time()-120,)))
@@ -84,6 +107,28 @@ def retry_outbox():
             failed += 1
     if failed:
         raise RuntimeError(f'Personal notification retries failed: {failed}')
+
+
+def deliver_remote(control, key, worker_url, admin_secret):
+    claim = control.request('/notifications/claim', {'key': key})
+    if not claim.get('claim'):
+        return None
+    result = None
+    error = ''
+    try:
+        response = requests.post(worker_url.rstrip('/') + '/admin/notify', json=claim['payload'],
+            headers={'x-admin-secret': admin_secret, 'User-Agent': 'Topus-Control/1.0'},
+            timeout=(5, 60), allow_redirects=False)
+        if response.status_code != 200:
+            raise RuntimeError('Personal endpoint rejected request')
+        result = response.json()
+        if not result.get('ok'):
+            raise RuntimeError('Partial personal delivery')
+    except Exception as exc:
+        error = type(exc).__name__
+    control.request('/notifications/finish', {'key': key, 'claim': claim['claim'], 'ok': not error,
+        'queued': result.get('queued', 0) if result else 0, 'sent': result.get('sent', 0) if result else 0, 'error': error})
+    return result if not error else None
 
 
 if __name__ == '__main__':

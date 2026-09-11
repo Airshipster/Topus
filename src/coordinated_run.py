@@ -32,6 +32,14 @@ def run(client=None, spawn=subprocess.Popen, clock=time.monotonic):
     if owner not in ('server', 'github'):
         raise ControlUnavailable('CONTROL_OWNER_INVALID')
     name = 'server-publisher' if owner == 'server' else 'github'
+    if owner == 'github':
+        # This inbox is external, so runner teardown cannot discard pending work.
+        from worker_notifications import retry_outbox
+        if os.environ.get('TOPUS_WORKER_URL'):
+            try:
+                retry_outbox()
+            except Exception:
+                client.heartbeat('personal', False, 'PERSONAL_RETRY_PENDING')
     client.heartbeat(name, False, 'running')
     token = client.request('/lease/acquire', {'owner': owner}).get('token')
     if not token:
