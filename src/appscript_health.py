@@ -37,10 +37,22 @@ def main():
     def control(path, body=None):
         req = urllib.request.Request(base + path, data=None if body is None else json.dumps(body).encode(),
             headers={'Authorization':'Bearer '+settings['TOPUS_CONTROL_TOKEN'], 'Content-Type':'application/json', 'User-Agent':'Topus-Control/1.0'})
-        with opener.open(req, timeout=25) as response:
+        with opener.open(req, timeout=60 if path == '/monitor' else 25) as response:
             return json.loads(response.read(32768))
     snapshot = control('/status')
     beats = snapshot.get('beats', {})
+    if beats.get('server-http', {}).get('success_minutes', 999) >= 4:
+        try:
+            result = control('/monitor', {})
+            if not result.get('ok'):
+                raise RuntimeError('COORDINATOR_MONITOR_FAILED')
+            control('/incident', {'kind':'coordinator-monitor', 'active':False,
+                'summary':'Полный контроль очередей: MONITOR_EXECUTION_FAILED.'})
+            print('Coordinator queue checks: ' + ('already running' if result.get('busy') else 'OK'))
+        except Exception:
+            control('/incident', {'kind':'coordinator-monitor', 'active':True,
+                'summary':'Полный контроль очередей: MONITOR_EXECUTION_FAILED.'})
+            print('Coordinator monitor failed; independent component checks continue')
     for name, limit in [('server-publisher',15),('github',45),('rss',45),('renewal',30)]:
         if name in beats:
             control('/incident', {'kind':name+'-stale', 'active':stale_component(beats[name],limit),
