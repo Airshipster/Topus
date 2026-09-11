@@ -41,6 +41,8 @@ from subscriptions import deduplicate_subscription_rows, get_or_create_subscript
 from telegram_client import delete_telegram_message, format_message, send_to_telegram
 from worker_notifications import notify_worker_subscribers
 from youtube_client import get_last_youtube_api_error, get_video_info_from_api, get_youtube_api_calls
+from delivery_journal import send_public
+from retry_queue import pending_events
 
 
 def parse_datetime(value):
@@ -48,6 +50,8 @@ def parse_datetime(value):
 
 
 def get_stale_reason(published_at, project=None, video=None):
+    if video and video.get('retry_accepted'):
+        return ''
     effective_published_at = effective_youtube_publication_timestamp(video, published_at)
     published = parse_datetime(effective_published_at)
     if not published:
@@ -68,7 +72,7 @@ def get_stale_reason(published_at, project=None, video=None):
 def copy_video_classification(video, video_info):
     if not video_info:
         return video
-    for field in ('is_short', 'short_reason', 'is_live', 'was_live', 'is_upcoming', 'duration', 'duration_seconds', 'live_actual_start', 'live_actual_end', 'width', 'height'):
+    for field in ('published', 'is_short', 'short_reason', 'is_live', 'was_live', 'is_upcoming', 'duration', 'duration_seconds', 'live_actual_start', 'live_actual_end', 'width', 'height'):
         if field in video_info:
             video[field] = video_info[field]
     return video
@@ -365,6 +369,12 @@ def select_push_projects(master_sheet, projects, push_events):
 
 
 def main():
+    from control_client import configured, ControlClient
+    owner = os.environ.get('TOPUS_PUBLISHER_OWNER')
+    if owner not in ('server', 'github') or (owner == 'github' and not configured()):
+        raise RuntimeError('Publishing is owned by the server controller; signal /run instead')
+    if configured() and not os.environ.get('TOPUS_PUBLISHER_LEASE'):
+        raise RuntimeError('Run coordinated_run.py to obtain shared ownership first')
     print("="*60)
     print("TOPUS - YouTube to Telegram Publisher")
     print("="*60)
@@ -380,7 +390,7 @@ def main():
         except Exception as error:
             if push_only_mode() and is_sheets_quota_error(error):
                 print(f"\n⚠️  Google Sheets read quota is busy; push-only run will retry on the next dispatch: {error}")
-                return
+                raise RuntimeError('Google Sheets unavailable; push work remains pending') from error
             raise
 
         if unlock_only_mode():
@@ -418,9 +428,11 @@ def main():
         if not acquire_lock_with_wait(master_sheet):
             print("\n❌ Cannot acquire lock. Another process is running. Exiting.")
             update_run_status(master_sheet, 'busy: another run holds lock', run_status_details())
-            return
+            raise RuntimeError('Publisher lock busy; work not completed')
         lock_acquired = True
         update_run_status(master_sheet, f'running: {run_mode_name()}', run_status_details())
+        from push_store import mirror_events
+        mirror_events(master_sheet)
         
         print("\n⚙️  Loading settings...")
         settings = load_settings(master_sheet)
@@ -435,10 +447,13 @@ def main():
 
         print("\n📂 Loading projects...")
         projects = load_projects(master_sheet, update_status=not push_only_mode())
+        if configured():
+            ControlClient().register_projects(projects)
 
         push_events = []
         if push_only_mode():
             push_events = get_push_events(master_sheet)
+            push_events.extend(pending_events(master_sheet))
             print(f"📬 Unprocessed push events: {len(push_events)}")
             if not push_events:
                 print("\n✅ Push-only mode completed. No pending push events.")
@@ -493,7 +508,7 @@ def main():
 
         if sync_only_mode():
             print("\n✅ Sync-only mode completed. Skipping RSS/publish processing.")
-            duplicate_or_stale_pending = delete_stale_unpublished_video_rows(master_sheet)
+            duplicate_or_stale_pending = 0
             deleted_old_rows = delete_old_activity_rows(master_sheet)
             update_last_run(master_sheet)
             if subscription_sync_result.get('partial'):
@@ -515,6 +530,8 @@ def main():
         if not push_only_mode():
             push_events = get_push_events(master_sheet)
             print(f"📬 Unprocessed push events: {len(push_events)}")
+        if not push_only_mode():
+            push_events.extend(pending_events(master_sheet))
         
         total_found = 0
         total_published = 0
@@ -539,6 +556,8 @@ def main():
 
         def queue_push_event_mark(event, project_name):
             key = event['row_index']
+            if key < 0:
+                return
             tracked = push_events_to_mark.setdefault(key, {
                 'row_index': event['row_index'],
                 'projects': event.get('projects', ''),
@@ -555,10 +574,14 @@ def main():
             print(f"  📺 Active channels: {len(yt_channels)}")
             
             # Process push events
-            if not project.get('push_api_enabled', True):
+            if not project.get('push_api_enabled', True) and not any(e.get('retry_project') == project['name'] for e in push_events):
                 print("  ⏭️  Push API disabled for project")
             else:
                 for event in push_events:
+                    if not project.get('push_api_enabled', True) and not event.get('retry_project'):
+                        continue
+                    if event.get('retry_project') and event['retry_project'] != project['name']:
+                        continue
                     if event['channel_id'] not in yt_channels:
                         continue
                     channel_info = yt_channels[event['channel_id']]
@@ -601,6 +624,7 @@ def main():
                         'source_method': source_method,
                         'bot_only': bool(channel_info.get('bot_only')),
                         'channel_info': channel_info,
+                        'retry_accepted': event.get('retry_accepted', False),
                     }
                     copy_video_classification(video, video_info_api)
                 
@@ -659,7 +683,7 @@ def main():
                 return_seen=True,
                 rss_cache=rss_cache,
             )
-            delete_rss_missing_publications(master_sheet, project, rss_seen_by_channel, log_entries)
+            # Absence from a bounded RSS feed does not prove deletion on YouTube.
             
             for video in rss_videos:
                 channel_info = video['channel_info']
@@ -670,7 +694,10 @@ def main():
                 
                 total_found += 1
                 
-                video_info_api, _ = get_cached_video_info(video['video_id'])
+                video_info_api, api_error = get_cached_video_info(video['video_id'])
+                if not video_info_api:
+                    total_failed += 1
+                    continue
                 
                 if video_info_api:
                     copy_video_classification(video, video_info_api)
@@ -787,11 +814,13 @@ def main():
                 continue
             
             print(f"  📤 Publishing: {video['title'][:50]}...")
+            effective_date = parse_datetime(effective_youtube_publication_timestamp(video, video_published_date))
             
-            tg_message_id = send_to_telegram(
+            tg_message_id = send_public(
                 project['bot_token'],
                 project['channel_id'],
-                message
+                message, project['name'], video['video_id'],
+                published_at=effective_date.timestamp() if effective_date else None,
             )
             
             if tg_message_id:
@@ -823,6 +852,9 @@ def main():
         # СОХРАНЯЕМ ЛОГИ БАТЧЕМ
         if log_entries:
             print(f"\n📝 Saving logs...")
+            executor = 'GitHub' if owner == 'github' else 'server'
+            for entry in log_entries:
+                entry[5] = f'{entry[5]} | Executor: {executor}'
             log_events_batch(master_sheet, log_entries)
 
         if not push_only_mode():
@@ -851,6 +883,9 @@ def main():
             f'complete: found {total_found}, published {total_published}, filtered {total_filtered}, failed {total_failed}',
             run_status_details(),
         )
+        from rss import failed_channels
+        if total_failed or failed_channels or any(p.get('channels_error') for p in projects):
+            raise RuntimeError(f'Incomplete pass: publication errors={total_failed}, RSS failures={len(failed_channels)}')
         
     except Exception as e:
         print(f"\n❌❌❌ FATAL ERROR: {e}")

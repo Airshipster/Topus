@@ -1059,7 +1059,7 @@ def acquire_lock(sheet, stale_after_seconds=900):
         
     except Exception as e:
         print(f"  ❌ Error acquiring lock: {e}")
-        return False
+        raise
 
 def release_lock(sheet):
     """Освободить блокировку"""
@@ -1256,6 +1256,7 @@ def save_videos_batch(sheet, videos_data):
                         existing_rows[key] = existing
         except Exception as e:
             print(f"  ⚠️  Could not load existing video rows: {e}")
+            raise
 
         rows = []
         rows_publication_keys = []
@@ -1281,7 +1282,10 @@ def save_videos_batch(sheet, videos_data):
             tg_published_at = format_timestamp() if tg_message_id else ''
 
             if existing:
-                if existing['status'] == 'pending' or str(existing['status']).startswith('deleted'):
+                if existing['status'] in ('pending', 'failed', 'retry') or str(existing['status']).startswith('deleted'):
+                    if is_filtered:
+                        update_video_publication_status(sheet, video['video_id'], project_name,
+                            status='filtered', error=row_error, video=video)
                     if str(existing['status']).startswith('deleted'):
                         video['restored_from_status'] = existing['status']
                     print(f"  🔁 Retrying {existing['status'] or 'tracked'}: {video['video_id']} / {project_name}")
@@ -1316,14 +1320,8 @@ def save_videos_batch(sheet, videos_data):
                 saved_publication_keys.extend(batch_publication_keys)
                 print(f"  💾 Saved batch {i//config.BATCH_SIZE + 1}: {len(batch)} videos")
             except Exception as e:
-                print(f"  ⚠️  Batch failed, saving one by one: {e}")
-                # Если батч упал - сохраняем по одной (защита от потери)
-                for row, key in zip(batch, batch_publication_keys):
-                    try:
-                        worksheet.append_row(row, value_input_option='USER_ENTERED')
-                        saved_publication_keys.append(key)
-                    except Exception as e2:
-                        print(f"  ❌ Failed to save {key[0]} / {key[1]}: {e2}")
+                # An append timeout may have committed: re-read on the next run.
+                raise RuntimeError('Ambiguous Sheets append; preserving input for reconciliation') from e
             
             time.sleep(0.5)  # Небольшая пауза между батчами
         
@@ -1331,12 +1329,12 @@ def save_videos_batch(sheet, videos_data):
         
     except Exception as e:
         print(f"  ❌ Critical error in save_videos_batch: {e}")
-        return []
+        raise
 
 
 def row_status_blocks_retry(status):
     status = str(status or '').strip().lower()
-    return bool(status and status != 'pending' and not status.startswith('deleted'))
+    return bool(status and status not in ('pending', 'failed', 'retry') and not status.startswith('deleted'))
 
 def update_video_publication_status(sheet, video_id, project_name, tg_message_id=None, status='published', error='', video=None, mark_tg_published=False):
     """Обновление статуса публикации существующей строки видео"""
@@ -1396,7 +1394,7 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
         return True
     except Exception as e:
         print(f"  ⚠️  Error updating publication status for {video_id}: {e}")
-        return False
+        raise
 
 
 def reconcile_pending_published_videos(sheet):
@@ -2098,6 +2096,13 @@ def delete_old_activity_rows(sheet, retention_days=None):
             for row_index, row in enumerate(values[1:], start=2):
                 if not any(str(cell).strip() for cell in row):
                     continue
+                data = row_as_dict(headers, row)
+                if worksheet_name == config.SHEET_NAME_VIDEOS:
+                    status = status_name_from_text(first_value(data, ['Системный статус']))
+                    if status not in ('published', 'filtered'):
+                        continue
+                if worksheet_name == config.SHEET_NAME_PUSH_EVENTS and data.get('Обработано') != '✅':
+                    continue
                 row_date = parse_datetime_value(cell_value(row, date_col))
                 if row_date and row_date < cutoff:
                     rows_to_delete.append(row_index)
@@ -2573,7 +2578,7 @@ def get_published_videos(sheet):
         tracked = set()
         for row in records:
             status = status_name_from_text(row.get('Системный статус', ''))
-            if status == 'pending' or str(status).startswith('deleted'):
+            if status in ('pending', 'failed', 'retry') or str(status).startswith('deleted'):
                 continue
             video_id = video_id_from_url(row.get('Ссылка на видео', '')) or str(row.get('Video ID', '')).strip()
             project_name = project_name_from_cell(row.get('Проект', ''))
@@ -2583,7 +2588,7 @@ def get_published_videos(sheet):
         return tracked
     except Exception as e:
         print(f"  ⚠️  Error loading published videos: {e}")
-        return set()
+        raise
 
 def get_push_events(sheet):
     """Получение необработанных push-событий"""
@@ -2599,10 +2604,9 @@ def get_push_events(sheet):
         channel_col = indexes.get('Ссылка на канал')
         status_col = indexes.get('Обработано')
         projects_col = indexes.get('Проекты')
-        timestamp_col = indexes.get('Timestamp GMT+4') or indexes.get('Timestamp')
+        timestamp_col = indexes.get('Timestamp GMT+4', indexes.get('Timestamp'))
         if video_col is None or channel_col is None or status_col is None:
-            print("❌ Push events headers missing required columns")
-            return []
+            raise ValueError('Push events headers missing required columns')
         
         events = []
         for i, row in enumerate(values[1:], start=2):
@@ -2624,7 +2628,7 @@ def get_push_events(sheet):
         return events
     except Exception as e:
         print(f"❌ Error loading push events: {e}")
-        return []
+        raise
 
 def mark_push_event_processed(sheet, row_index, project_name, current_projects=''):
     """Отметка push-события как обработанного"""
