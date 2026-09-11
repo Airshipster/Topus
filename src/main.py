@@ -874,6 +874,11 @@ def main():
         
         # Обновление метаданных
         print("\n📝 Updating metadata...")
+        from rss import failed_channels, confirmed_unavailable_channels
+        unavailable_sources = confirmed_unavailable_channels(failed_channels) if not push_only_mode() else set()
+        unresolved_sources = failed_channels - unavailable_sources
+        if unavailable_sources:
+            print(f'RSS sources unavailable in YouTube API: {len(unavailable_sources)}; retained for future checks')
         if get_youtube_api_calls() > 0:
             update_youtube_quota(master_sheet, get_youtube_api_calls())
         update_last_run(master_sheet)
@@ -894,9 +899,13 @@ def main():
             f'complete: found {total_found}, published {total_published}, filtered {total_filtered}, failed {total_failed}',
             run_status_details(),
         )
-        from rss import failed_channels
-        if total_failed or failed_channels or any(p.get('channels_error') for p in projects):
-            raise RuntimeError(f'Incomplete pass: publication errors={total_failed}, RSS failures={len(failed_channels)}')
+        if total_failed or unresolved_sources or any(p.get('channels_error') for p in projects):
+            raise RuntimeError(f'Incomplete pass: publication errors={total_failed}, RSS failures={len(unresolved_sources)}')
+        if configured() and not push_only_mode():
+            control = ControlClient()
+            control.heartbeat('rss', True, f'SOURCE_UNAVAILABLE_{len(unavailable_sources)}' if unavailable_sources else '')
+            control.request('/incident', {'kind':'rss-sources-unavailable', 'active':bool(unavailable_sources),
+                'summary':f'YouTube API: недоступны {len(unavailable_sources)} каналов. Данные сохранены; проверка повторится.'})
         
     except Exception as e:
         print(f"\n❌❌❌ FATAL ERROR: {e}")

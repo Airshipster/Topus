@@ -85,7 +85,11 @@ def run(client=None, spawn=subprocess.Popen, clock=time.monotonic):
         client.heartbeat(name, code == 0, '' if code == 0 else 'PUBLISHER_FAILED')
         if rss_pass:
             if code == 0:
-                client.heartbeat('rss', True)
+                detail = client.request('/status').get('beats', {}).get('rss', {}).get('error', '')
+                if detail.startswith('SOURCE_UNAVAILABLE_'):
+                    client.heartbeat('rss', True, detail)
+                else:
+                    client.heartbeat('rss', True)
             else:
                 client.heartbeat('rss', False, 'RSS_PASS_FAILED')
         return code
