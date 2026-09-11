@@ -22,13 +22,18 @@ def confirmed_unavailable_channels(channel_ids):
             try:
                 youtube_client.youtube_api_calls += 1
                 response = requests.get('https://www.googleapis.com/youtube/v3/channels',
-                    params={'part':'id', 'id':','.join(batch), 'key':key}, timeout=(5, 15))
+                    params={'part':'snippet', 'id':','.join(batch), 'key':key}, timeout=(5, 15))
                 if response.status_code != 200:
                     continue
                 payload = response.json()
-                if payload.get('kind') != 'youtube#channelListResponse' or not isinstance(payload.get('items'), list):
+                if payload.get('kind') != 'youtube#channelListResponse':
                     continue
-                present = {item['id'] for item in payload['items'] if isinstance(item, dict) and item.get('id')}
+                items = payload.get('items')
+                if items is None and payload.get('pageInfo', {}).get('totalResults') == 0:
+                    items = []
+                if not isinstance(items, list):
+                    continue
+                present = {item['id'] for item in items if isinstance(item, dict) and item.get('id')}
                 unavailable.update(set(batch) - present)
                 break
             except (requests.RequestException, ValueError, TypeError):
