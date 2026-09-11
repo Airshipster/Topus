@@ -874,9 +874,11 @@ def main():
         
         # Обновление метаданных
         print("\n📝 Updating metadata...")
-        from rss import failed_channels, confirmed_unavailable_channels
+        from rss import failed_channels, confirmed_unavailable_channels, failure_reasons
         unavailable_sources = confirmed_unavailable_channels(failed_channels) if not push_only_mode() else set()
         unresolved_sources = failed_channels - unavailable_sources
+        for channel_id in sorted(unresolved_sources):
+            print(f'RSS_UNRESOLVED channel={channel_id} reason={failure_reasons.get(channel_id, "UNKNOWN")}', flush=True)
         if unavailable_sources:
             print(f'RSS sources unavailable in YouTube API: {len(unavailable_sources)}; retained for future checks')
         if get_youtube_api_calls() > 0:

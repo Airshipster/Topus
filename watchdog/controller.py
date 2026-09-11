@@ -20,6 +20,7 @@ from control_client import ControlClient, configured
 ACTIVE = os.environ.get('TOPUS_WATCHDOG_ACTIVE', 'false').lower() == 'true'
 TOKEN = os.environ.get('TOPUS_WATCHDOG_TOKEN', '')
 wake = threading.Event()
+requested_rss = threading.Event()
 running = {'publisher': None, 'renewal': False, 'tick': time.time()}
 lock = threading.Lock()
 
@@ -82,7 +83,8 @@ def publisher_loop():
             rss = jobs.get('rss', {})
             push = jobs.get('push', {})
             # Cadence is measured from start, never postponed by an unrelated success.
-            if now - (rss.get('started') or 0) >= 1800:
+            if requested_rss.is_set() or now - (rss.get('started') or 0) >= 1800:
+                requested_rss.clear()
                 mode = 'rss'
             elif now - (push.get('started') or 0) >= 120 or wake.is_set():
                 mode = 'push'
@@ -200,7 +202,13 @@ class Handler(BaseHTTPRequestHandler):
                     self.headers.get('Authorization', ''), 'Bearer ' + TOKEN):
                 self.reply(401, {'error': 'unauthorized'})
                 return
-            self.rfile.read(length)
+            raw = self.rfile.read(length)
+            if route == '/run':
+                options = json.loads(raw) if raw else {}
+                if not isinstance(options, dict) or options.get('mode', 'push') not in ('push', 'rss'):
+                    raise ValueError('invalid mode')
+                if options.get('mode') == 'rss':
+                    requested_rss.set()
             wake.set()
             self.reply(202, {'accepted': True, 'owner': 'server'})
         except PermissionError:

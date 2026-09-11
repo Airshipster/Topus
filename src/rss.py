@@ -8,6 +8,7 @@ import config
 from sheets import format_timestamp, load_youtube_channels
 
 failed_channels = set()
+failure_reasons = {}
 
 
 def confirmed_unavailable_channels(channel_ids):
@@ -41,24 +42,31 @@ def confirmed_unavailable_channels(channel_ids):
     return unavailable
 
 
-def check_rss_feed(channel_id):
+def _check_rss_feed_once(channel_id, direct=False):
     """Проверка RSS фида канала"""
     try:
         time.sleep(0.05)
         
-        url = f"{config.CLOUDFLARE_WORKER_URL}/?channel={channel_id}"
-        response = requests.get(url, timeout=15)
+        url = (f'https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}' if direct
+               else f"{config.CLOUDFLARE_WORKER_URL}/?channel={channel_id}")
+        response = requests.get(url, timeout=(5, 15))
         
         if response.status_code != 200:
+            failure_reasons[channel_id] = 'HTTP_' + str(response.status_code)
             return None
         
         if len(response.content) == 0:
+            failure_reasons[channel_id] = 'EMPTY_BODY'
             return None
         
         from xml.etree import ElementTree as ET
         try:
             root = ET.fromstring(response.content)
         except ET.ParseError:
+            failure_reasons[channel_id] = 'INVALID_XML'
+            return None
+        if root.tag != '{http://www.w3.org/2005/Atom}feed':
+            failure_reasons[channel_id] = 'NOT_ATOM_FEED'
             return None
         
         ns = {
@@ -110,8 +118,23 @@ def check_rss_feed(channel_id):
                 })
         
         return videos
-    except:
+    except Exception as error:
+        failure_reasons[channel_id] = type(error).__name__
         return None
+
+
+def check_rss_feed(channel_id):
+    """Recover transient/proxy failures without dropping a failed source as empty."""
+    for attempt, direct in enumerate((False, True, False)):
+        if attempt:
+            time.sleep(0.5 * attempt)
+        videos = _check_rss_feed_once(channel_id, direct=direct)
+        if videos is not None:
+            failure_reasons.pop(channel_id, None)
+            failed_channels.discard(channel_id)
+            return videos
+    print(f'RSS_SOURCE_FAILED channel={channel_id} reason={failure_reasons.get(channel_id, "UNKNOWN")} attempts=3', flush=True)
+    return None
 
 def rss_fallback_check(client, project, published_videos, project_channels=None, return_seen=False, rss_cache=None):
     """RSS fallback для конкретного проекта"""
