@@ -12,6 +12,10 @@ class RssUnavailableTests(unittest.TestCase):
         response.json.return_value={'kind':'youtube#channelListResponse','items':[{'id':'live'}]}
         with patch('rss.config.YOUTUBE_API_KEYS',['fixture']),patch('rss.requests.get',return_value=response):
             self.assertEqual(rss.confirmed_unavailable_channels({'live','missing'}),{'missing'})
+            response.json.return_value={'kind':'youtube#channelListResponse','pageInfo':{'totalResults':0}}
+            self.assertEqual(rss.confirmed_unavailable_channels({'missing'}),{'missing'})
+            response.json.return_value={'kind':'youtube#channelListResponse'}
+            self.assertEqual(rss.confirmed_unavailable_channels({'live'}),set())
             response.json.return_value={}
             self.assertEqual(rss.confirmed_unavailable_channels({'live'}),set())
             response.status_code=403

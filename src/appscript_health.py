@@ -60,7 +60,7 @@ def main():
         return
     ok = False
     try:
-        with urllib.request.urlopen(PROBE_URL, timeout=15) as response:
+        with urllib.request.urlopen(PROBE_URL, timeout=30) as response:
             ok = response.status == 200 and valid_health(json.loads(response.read(16384)), time.time())
     except Exception:
         pass
