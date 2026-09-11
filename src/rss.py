@@ -10,6 +10,32 @@ from sheets import format_timestamp, load_youtube_channels
 failed_channels = set()
 
 
+def confirmed_unavailable_channels(channel_ids):
+    """Distinguish an unavailable source from a failed scan, without deleting it."""
+    import youtube_client
+    unavailable = set()
+    ids = sorted(channel_ids)
+    keys = config.YOUTUBE_API_KEYS or ([config.YOUTUBE_API_KEY] if config.YOUTUBE_API_KEY else [])
+    for start in range(0, len(ids), 50):
+        batch = ids[start:start + 50]
+        for key in keys[:3]:
+            try:
+                youtube_client.youtube_api_calls += 1
+                response = requests.get('https://www.googleapis.com/youtube/v3/channels',
+                    params={'part':'id', 'id':','.join(batch), 'key':key}, timeout=(5, 15))
+                if response.status_code != 200:
+                    continue
+                payload = response.json()
+                if payload.get('kind') != 'youtube#channelListResponse' or not isinstance(payload.get('items'), list):
+                    continue
+                present = {item['id'] for item in payload['items'] if isinstance(item, dict) and item.get('id')}
+                unavailable.update(set(batch) - present)
+                break
+            except (requests.RequestException, ValueError, TypeError):
+                continue
+    return unavailable
+
+
 def check_rss_feed(channel_id):
     """Проверка RSS фида канала"""
     try:
