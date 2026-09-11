@@ -25,7 +25,7 @@ class ControlClient:
     def request(self, path, body=None):
         try:
             response = self.session.request('GET' if body is None else 'POST', self.url + path,
-                headers={'Authorization': 'Bearer ' + self.token}, json=body,
+                headers={'Authorization': 'Bearer ' + self.token, 'User-Agent': 'Topus-Control/1.0'}, json=body,
                 timeout=(5, 20), allow_redirects=False)
             if response.status_code != 200:
                 raise ControlUnavailable('CONTROL_HTTP_' + str(response.status_code))
