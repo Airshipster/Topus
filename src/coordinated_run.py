@@ -32,6 +32,10 @@ def run(client=None, spawn=subprocess.Popen, clock=time.monotonic):
     if owner not in ('server', 'github'):
         raise ControlUnavailable('CONTROL_OWNER_INVALID')
     name = 'server-publisher' if owner == 'server' else 'github'
+    if client.request('/status').get('active') is False:
+        client.heartbeat(name, owner == 'github')
+        print('CONTROL_INACTIVE: waiting for coordinated activation; no publication performed', flush=True)
+        return 75
     if owner == 'github':
         # This inbox is external, so runner teardown cannot discard pending work.
         from worker_notifications import retry_outbox

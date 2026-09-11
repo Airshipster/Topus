@@ -88,6 +88,15 @@ class CoordinationTests(unittest.TestCase):
         self.assertEqual(spawn.call_args.kwargs['env']['TOPUS_PUSH_ONLY'], 'true')
         self.assertNotIn(unittest.mock.call('rss', True), client.heartbeat.call_args_list)
 
+    def test_disabled_coordinator_never_starts_publisher(self):
+        client = Mock()
+        client.request.return_value = {'active': False}
+        spawn = Mock()
+        with patch.dict(os.environ, {'TOPUS_PUBLISHER_OWNER': 'github'}):
+            self.assertEqual(run(client, spawn), 75)
+        spawn.assert_not_called()
+        self.assertNotIn(unittest.mock.call('rss', True), client.heartbeat.call_args_list)
+
     def test_remote_queue_drains_without_local_ingress(self):
         self.check_remote_mirror(fail_append=False)
 
