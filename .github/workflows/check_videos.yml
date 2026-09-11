@@ -2,6 +2,7 @@ name: Check YouTube Videos
 
 on:
   schedule:
+    - cron: '*/5 * * * *'
     - cron: '7,37 * * * *'
   repository_dispatch:
     types: [topus-push]
@@ -16,28 +17,36 @@ permissions:
   contents: read
 
 concurrency:
-  group: topus-publisher-signal
+  group: topus-publisher
   cancel-in-progress: false
 
 jobs:
-  signal-server:
+  fallback-publisher:
     if: ${{ github.event.inputs.sync_bot_state != 'true' && github.event.client_payload.sync_bot_state != 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 25
     steps:
-      - name: Signal the single durable publisher
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Shared-lease fallback; healthy primary retains ownership
         env:
-          TOPUS_TOKEN: ${{ secrets.TOPUS_WORKER_ADMIN_SECRET }}
-        run: |
-          curl --fail --silent --show-error --max-time 15 --retry 2 \
-            -X POST 'https://scitopus.com/topus-watchdog/run' \
-            -H "Authorization: Bearer ${TOPUS_TOKEN}" \
-            -H 'Content-Type: application/json' \
-            --data '{"source":"github"}'
-      - name: Check publication readiness, not just HTTP liveness
-        run: |
-          curl --fail --silent --show-error --max-time 15 \
-            'https://scitopus.com/topus-watchdog/status'
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          TOPUS_WORKER_URL: ${{ secrets.TOPUS_WORKER_URL }}
+          TOPUS_WORKER_ADMIN_SECRET: ${{ secrets.TOPUS_WORKER_ADMIN_SECRET }}
+          TOPUS_CONTROL_URL: https://topus-publication-control.scitopus.workers.dev
+          TOPUS_CONTROL_TOKEN: ${{ secrets.TOPUS_CONTROL_TOKEN }}
+          TOPUS_CONTROL_REQUIRED: 'true'
+          TOPUS_PUBLISHER_OWNER: github
+          TOPUS_RUN_SOURCE: github-fallback
+          TOPUS_PUSH_ONLY: auto
+          TOPUS_PUSH_DB: ${{ runner.temp }}/topus-push.sqlite3
+          TOPUS_DELIVERY_DB: ${{ runner.temp }}/topus-publication.sqlite3
+          PYTHONUNBUFFERED: '1'
+        run: python src/coordinated_run.py
 
   sync-bot-state:
     if: ${{ github.event.inputs.sync_bot_state == 'true' || github.event.client_payload.sync_bot_state == 'true' }}

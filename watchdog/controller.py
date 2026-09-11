@@ -36,6 +36,8 @@ def run_job(name, mode=None):
     env.pop('TOPUS_MAX_PUBLISH_AGE_HOURS_OVERRIDE', None)
     env.pop('TOPUS_RSS_FALLBACK_AGE_HOURS_OVERRIDE', None)
     script = {'renewal': 'renew_direct.py', 'notifications': 'worker_notifications.py'}.get(name, 'main.py')
+    if script == 'main.py' and env.get('TOPUS_CONTROL_REQUIRED') == 'true':
+        script = 'coordinated_run.py'
     error = ''
     try:
         child = subprocess.Popen([sys.executable, '/app/src/' + script], env=env, start_new_session=True)

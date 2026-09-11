@@ -369,8 +369,12 @@ def select_push_projects(master_sheet, projects, push_events):
 
 
 def main():
-    if os.environ.get('TOPUS_PUBLISHER_OWNER') != 'server':
+    from control_client import configured, ControlClient
+    owner = os.environ.get('TOPUS_PUBLISHER_OWNER')
+    if owner not in ('server', 'github') or (owner == 'github' and not configured()):
         raise RuntimeError('Publishing is owned by the server controller; signal /run instead')
+    if configured() and not os.environ.get('TOPUS_PUBLISHER_LEASE'):
+        raise RuntimeError('Run coordinated_run.py to obtain shared ownership first')
     print("="*60)
     print("TOPUS - YouTube to Telegram Publisher")
     print("="*60)
@@ -443,6 +447,8 @@ def main():
 
         print("\n📂 Loading projects...")
         projects = load_projects(master_sheet, update_status=not push_only_mode())
+        if configured():
+            ControlClient().register_projects(projects)
 
         push_events = []
         if push_only_mode():
@@ -808,11 +814,13 @@ def main():
                 continue
             
             print(f"  📤 Publishing: {video['title'][:50]}...")
+            effective_date = parse_datetime(effective_youtube_publication_timestamp(video, video_published_date))
             
             tg_message_id = send_public(
                 project['bot_token'],
                 project['channel_id'],
-                message, project['name'], video['video_id']
+                message, project['name'], video['video_id'],
+                published_at=effective_date.timestamp() if effective_date else None,
             )
             
             if tg_message_id:
@@ -844,6 +852,9 @@ def main():
         # СОХРАНЯЕМ ЛОГИ БАТЧЕМ
         if log_entries:
             print(f"\n📝 Saving logs...")
+            executor = 'GitHub' if owner == 'github' else 'server'
+            for entry in log_entries:
+                entry[5] = f'{entry[5]} | Executor: {executor}'
             log_events_batch(master_sheet, log_entries)
 
         if not push_only_mode():

@@ -50,7 +50,10 @@ def summary():
         return {r['state']: r['n'] for r in db.execute('SELECT state,count(*) n FROM deliveries GROUP BY state')}
 
 
-def send_public(bot_token, channel_id, message, project, video_id):
+def send_public(bot_token, channel_id, message, project, video_id, published_at=None):
+    from control_client import configured, ControlClient
+    if configured():
+        return ControlClient().send(project, video_id, channel_id, message, published_at)
     import requests
     key = json.dumps(['public', project, str(channel_id), video_id], separators=(',', ':'))
     receipt = claim(key)

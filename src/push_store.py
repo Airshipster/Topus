@@ -86,8 +86,16 @@ def mirror_events(sheet):
     from datetime import datetime, timezone
     from sheets import format_timestamp, channel_link
     import config
+    from control_client import configured, ControlClient
     with database() as db:
         events = [dict(r) for r in db.execute('SELECT * FROM events WHERE mirrored=0 ORDER BY received LIMIT 100')]
+    local_events = events
+    control = ControlClient() if configured() else None
+    if control:
+        for start in range(0, len(local_events), 25):
+            control.request('/events', {'events': [{**e, 'event_id': e['fingerprint'], 'source': 'server'}
+                                                  for e in local_events[start:start + 25]]})
+        events = control.request('/events/pending', {}).get('events', [])
     if not events:
         return
     worksheet = sheet.worksheet(config.SHEET_NAME_PUSH_EVENTS)
@@ -106,8 +114,12 @@ def mirror_events(sheet):
             existing.add(key)
     if rows:
         worksheet.append_rows(rows, value_input_option='USER_ENTERED')
+    if control:
+        for start in range(0, len(events), 25):
+            control.request('/events/ack', {'owner': os.environ['TOPUS_PUBLISHER_OWNER'],
+                'lease': os.environ['TOPUS_PUBLISHER_LEASE'], 'keys': [e['key'] for e in events[start:start + 25]]})
     with database() as db:
-        db.executemany('UPDATE events SET mirrored=1 WHERE fingerprint=?', [(e['fingerprint'],) for e in events])
+        db.executemany('UPDATE events SET mirrored=1 WHERE fingerprint=?', [(e['fingerprint'],) for e in local_events])
         db.execute('DELETE FROM events WHERE mirrored=1 AND received<?', (time.time() - 7 * 86400,))
 
 
