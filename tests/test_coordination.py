@@ -14,6 +14,20 @@ import push_store
 
 
 class CoordinationTests(unittest.TestCase):
+    def test_coordinated_owner_does_not_wait_on_or_mutate_legacy_lock(self):
+        from main import acquire_lock_with_wait
+        sheet = Mock()
+        with patch('control_client.configured', return_value=True), \
+             patch('control_client.ControlClient') as client, \
+             patch.dict(os.environ, {'TOPUS_PUBLISHER_OWNER':'server', 'TOPUS_PUBLISHER_LEASE':'fixture'}):
+            client.return_value.request.return_value = {'ok':True}
+            self.assertTrue(acquire_lock_with_wait(sheet))
+            sheet.assert_not_called()
+            self.assertEqual(sheet.mock_calls, [])
+            client.return_value.request.return_value = {'ok':False}
+            with self.assertRaisesRegex(RuntimeError, 'lease lost'):
+                acquire_lock_with_wait(sheet)
+
     def test_config_fails_closed(self):
         for url in ['', 'http://example.test', 'https://user:pass@example.test']:
             with self.assertRaises(ControlUnavailable):

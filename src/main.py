@@ -183,6 +183,17 @@ def publication_key(video_id, project):
 
 
 def acquire_lock_with_wait(master_sheet):
+    from control_client import configured, ControlClient
+    if configured():
+        # The shared lease fences every send. A legacy Sheet flag can survive
+        # process termination and must not block its verified replacement.
+        owner = os.environ.get('TOPUS_PUBLISHER_OWNER')
+        lease = os.environ.get('TOPUS_PUBLISHER_LEASE')
+        if not owner or not lease:
+            raise RuntimeError('Shared publisher lease missing')
+        if not ControlClient().request('/lease/renew', {'owner': owner, 'lease': lease}).get('ok'):
+            raise RuntimeError('Shared publisher lease lost')
+        return True
     if maintenance_only_mode():
         return acquire_lock(master_sheet, stale_after_seconds=120)
 
@@ -417,7 +428,7 @@ def main():
                 print("\n❌ Cannot acquire lock. Another process is running. Exiting.")
                 update_run_status(master_sheet, 'busy: another run holds lock', run_status_details())
                 return
-            lock_acquired = True
+            lock_acquired = not configured()
             fixed = reconcile_pending_published_videos(master_sheet)
             deleted = delete_stale_unpublished_video_rows(master_sheet)
             ensure_non_settings_sheet_row_counts(master_sheet)
@@ -429,7 +440,7 @@ def main():
             print("\n❌ Cannot acquire lock. Another process is running. Exiting.")
             update_run_status(master_sheet, 'busy: another run holds lock', run_status_details())
             raise RuntimeError('Publisher lock busy; work not completed')
-        lock_acquired = True
+        lock_acquired = not configured()
         update_run_status(master_sheet, f'running: {run_mode_name()}', run_status_details())
         from push_store import mirror_events
         mirror_events(master_sheet)
