@@ -68,6 +68,17 @@ jobs:
           PYTHONUNBUFFERED: '1'
         run: python src/coordinated_run.py
 
+  health-monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Independently verify pipeline and Apps Script queue access
+        env:
+          TOPUS_CONTROL_URL: https://topus-publication-control.scitopus.workers.dev
+          TOPUS_CONTROL_TOKEN: ${{ secrets.TOPUS_CONTROL_TOKEN }}
+        run: python3 src/appscript_health.py
+
   sync-bot-state:
     if: ${{ github.event.inputs.sync_bot_state == 'true' || github.event.client_payload.sync_bot_state == 'true' }}
     runs-on: ubuntu-latest

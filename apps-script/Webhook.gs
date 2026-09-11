@@ -47,6 +47,7 @@ function doPost(e) {
 }
 
 function doGet(e) {
+  if (e && e.parameter && e.parameter.health === 'queue-v1') return topusQueueHealth_();
   var maintenance = e && e.parameter ? e.parameter.maintenance : '';
   if (maintenance === 'fastLayout') {
     repairTopusFastLayout();
