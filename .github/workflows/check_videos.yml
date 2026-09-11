@@ -8,6 +8,21 @@ on:
     types: [topus-push]
   workflow_dispatch:
     inputs:
+      maintenance_only:
+        description: 'Repair workbook layout only'
+        default: 'false'
+      unlock_only:
+        description: 'Clear the legacy sheet lock only'
+        default: 'false'
+      sync_only:
+        description: 'Synchronize subscriptions only'
+        default: 'false'
+      repair_pending_only:
+        description: 'Reconcile previously published pending rows only'
+        default: 'false'
+      force_subscription_sync:
+        description: 'Force explicit subscription maintenance'
+        default: 'false'
       sync_bot_state:
         description: 'Only sync bot users/subscriptions; do not signal publication'
         required: false
@@ -43,6 +58,11 @@ jobs:
           TOPUS_PUBLISHER_OWNER: github
           TOPUS_RUN_SOURCE: github-fallback
           TOPUS_PUSH_ONLY: auto
+          TOPUS_MAINTENANCE_ONLY: ${{ github.event.inputs.maintenance_only == 'true' }}
+          TOPUS_UNLOCK_ONLY: ${{ github.event.inputs.unlock_only == 'true' }}
+          TOPUS_SYNC_ONLY: ${{ github.event.inputs.sync_only == 'true' || github.event.client_payload.sync_only == 'true' }}
+          TOPUS_REPAIR_PENDING_ONLY: ${{ github.event.inputs.repair_pending_only == 'true' }}
+          TOPUS_FORCE_SUBSCRIPTION_SYNC: ${{ github.event.inputs.force_subscription_sync == 'true' || github.event.client_payload.force_subscription_sync == 'true' }}
           TOPUS_PUSH_DB: ${{ runner.temp }}/topus-push.sqlite3
           TOPUS_DELIVERY_DB: ${{ runner.temp }}/topus-publication.sqlite3
           PYTHONUNBUFFERED: '1'

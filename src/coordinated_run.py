@@ -55,7 +55,11 @@ def run(client=None, spawn=subprocess.Popen, clock=time.monotonic):
     try:
         env = os.environ.copy()
         env.update(TOPUS_PUBLISHER_LEASE=token, TOPUS_CONTROL_REQUIRED='true')
-        if env.get('TOPUS_PUSH_ONLY', '') == 'auto':
+        maintenance = any(env.get(key, '').lower() == 'true' for key in
+            ('TOPUS_MAINTENANCE_ONLY', 'TOPUS_UNLOCK_ONLY', 'TOPUS_SYNC_ONLY', 'TOPUS_REPAIR_PENDING_ONLY', 'TOPUS_FORCE_SUBSCRIPTION_SYNC'))
+        if maintenance:
+            env['TOPUS_PUSH_ONLY'] = 'false'
+        elif env.get('TOPUS_PUSH_ONLY', '') == 'auto':
             rss = client.request('/status').get('beats', {}).get('rss', {})
             env['TOPUS_PUSH_ONLY'] = 'true' if (rss.get('success_minutes') is not None and rss['success_minutes'] < 30) else 'false'
         child = spawn([sys.executable, str(Path(__file__).with_name('main.py'))],
@@ -71,7 +75,7 @@ def run(client=None, spawn=subprocess.Popen, clock=time.monotonic):
                 if not client.request('/lease/renew', payload).get('ok'):
                     raise ControlUnavailable('CONTROL_LEASE_LOST')
         client.heartbeat(name, code == 0, '' if code == 0 else 'PUBLISHER_FAILED')
-        if code == 0 and env.get('TOPUS_PUSH_ONLY') != 'true':
+        if code == 0 and not maintenance and env.get('TOPUS_PUSH_ONLY') != 'true':
             client.heartbeat('rss', True)
         return code
     except Exception:

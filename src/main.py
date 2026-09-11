@@ -72,7 +72,7 @@ def get_stale_reason(published_at, project=None, video=None):
 def copy_video_classification(video, video_info):
     if not video_info:
         return video
-    for field in ('is_short', 'short_reason', 'is_live', 'was_live', 'is_upcoming', 'duration', 'duration_seconds', 'live_actual_start', 'live_actual_end', 'width', 'height'):
+    for field in ('published', 'is_short', 'short_reason', 'is_live', 'was_live', 'is_upcoming', 'duration', 'duration_seconds', 'live_actual_start', 'live_actual_end', 'width', 'height'):
         if field in video_info:
             video[field] = video_info[field]
     return video

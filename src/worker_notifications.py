@@ -46,7 +46,7 @@ def notify_worker_subscribers(project, video, message):
     from control_client import configured, ControlClient
     if configured():
         from sheets import parse_datetime_value
-        published = parse_datetime_value(video.get('published'))
+        published = parse_datetime_value(video.get('live_actual_end') or video.get('published'))
         control = ControlClient()
         queued = control.request('/notifications/put', {'owner': os.environ['TOPUS_PUBLISHER_OWNER'],
             'lease': os.environ['TOPUS_PUBLISHER_LEASE'], 'payload': payload,
