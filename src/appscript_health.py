@@ -60,7 +60,10 @@ def main():
         return
     ok = False
     try:
-        with urllib.request.urlopen(PROBE_URL, timeout=30) as response:
+        # HTTP caches must not replay an old success; Apps Script itself bounds sheet reads.
+        probe = urllib.request.Request(PROBE_URL + '&probe=' + str(int(time.time())),
+                                       headers={'Cache-Control': 'no-cache'})
+        with urllib.request.urlopen(probe, timeout=30) as response:
             ok = response.status == 200 and valid_health(json.loads(response.read(16384)), time.time())
     except Exception:
         pass
