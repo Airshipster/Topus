@@ -1,5 +1,6 @@
 """Bounded WebSub maintenance, independent of the publisher lock."""
 import os
+import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 import requests
@@ -21,10 +22,22 @@ def reconcile_inventory(channels, complete):
 def run():
     client = authenticate_google_sheets()
     sheet = client.open_by_key(config.SPREADSHEET_ID)
-    load_settings(sheet)
-    projects = load_projects(sheet, update_status=False)
-    channels = get_all_active_channels(client, projects)
-    incomplete = sum(bool(p.get('channels_error')) for p in projects)
+    with database() as db:
+        db.execute('CREATE TABLE IF NOT EXISTS inventory_cache (id INTEGER PRIMARY KEY, updated REAL, payload TEXT)')
+        cached = db.execute('SELECT updated,payload FROM inventory_cache WHERE id=1').fetchone()
+    incomplete = 0
+    if cached and time.time() - cached['updated'] < 3600:
+        channels = json.loads(cached['payload'])
+    else:
+        load_settings(sheet)
+        projects = load_projects(sheet, update_status=False)
+        channels = get_all_active_channels(client, projects)
+        incomplete = sum(bool(p.get('channels_error')) for p in projects)
+        if channels and not incomplete:
+            minimal = {key: {'projects': value.get('projects', [])} for key, value in channels.items()}
+            with database() as db:
+                db.execute('INSERT INTO inventory_cache VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET updated=excluded.updated,payload=excluded.payload',
+                           (time.time(), json.dumps(minimal)))
     reconcile_inventory(channels, complete=not incomplete)
     with database() as db:
         due = [r['channel_id'] for r in db.execute('SELECT channel_id FROM leases WHERE enabled=1 '

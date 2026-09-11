@@ -65,7 +65,11 @@ def run(client=None, spawn=subprocess.Popen, clock=time.monotonic):
             env['TOPUS_PUSH_ONLY'] = 'false'
         elif env.get('TOPUS_PUSH_ONLY', '') == 'auto':
             rss = client.request('/status').get('beats', {}).get('rss', {})
-            env['TOPUS_PUSH_ONLY'] = 'true' if (rss.get('success_minutes') is not None and rss['success_minutes'] < 30) else 'false'
+            last_attempt = rss.get('seen_minutes', rss.get('success_minutes'))
+            env['TOPUS_PUSH_ONLY'] = 'true' if last_attempt is not None and last_attempt < 30 else 'false'
+        rss_pass = not maintenance and env.get('TOPUS_PUSH_ONLY') != 'true'
+        if rss_pass:
+            client.heartbeat('rss', False, 'running')
         child = spawn([sys.executable, str(Path(__file__).with_name('main.py'))],
                       env=env, start_new_session=True)
         deadline = clock() + 1200
@@ -79,8 +83,11 @@ def run(client=None, spawn=subprocess.Popen, clock=time.monotonic):
                 if not client.request('/lease/renew', payload).get('ok'):
                     raise ControlUnavailable('CONTROL_LEASE_LOST')
         client.heartbeat(name, code == 0, '' if code == 0 else 'PUBLISHER_FAILED')
-        if code == 0 and not maintenance and env.get('TOPUS_PUSH_ONLY') != 'true':
-            client.heartbeat('rss', True)
+        if rss_pass:
+            if code == 0:
+                client.heartbeat('rss', True)
+            else:
+                client.heartbeat('rss', False, 'RSS_PASS_FAILED')
         return code
     except Exception:
         if child is not None:
