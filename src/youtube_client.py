@@ -43,15 +43,16 @@ def is_retryable_youtube_status(status_code):
 
 
 def detect_shorts_from_web(video_id):
-    """Best-effort Shorts check without spending YouTube Data API quota."""
-    urls = [
-        f'https://www.youtube.com/watch?v={video_id}',
-        f'https://www.youtube.com/shorts/{video_id}',
-    ]
+    """Best-effort Shorts check when structured metadata is inconclusive.
+
+    Never request the Shorts route itself: YouTube can render that route with a
+    Shorts canonical URL even for an ordinary video ID, which turns the route
+    into a false-positive detector.
+    """
+    urls = [f'https://www.youtube.com/watch?v={video_id}']
     patterns = [
         rf'https://www\.youtube\.com/shorts/{re.escape(video_id)}',
         rf'"canonicalUrl"\s*:\s*"https://www\.youtube\.com/shorts/{re.escape(video_id)}"',
-        r'"isShortsEligible"\s*:\s*true',
     ]
     for url in urls:
         try:
@@ -150,15 +151,11 @@ def get_video_info_from_api(video_id):
                         is_short = True
                         short_reasons.append(f"duration {duration_seconds}s")
 
-            if width and height:
-                if height > width:
-                    is_short = True
-                    short_reasons.append(f"vertical {width}x{height}")
-                elif height == width:
-                    is_short = True
-                    short_reasons.append(f"square {width}x{height}")
-
-            if not is_short and detect_shorts_from_web(video_id):
+            # player.embedHtml contains a suggested iframe viewport, not the
+            # uploaded video resolution. It is not evidence of a Shorts format.
+            # Modern Shorts may run longer than one minute, so verify every
+            # short-form candidate against the canonical watch-page metadata.
+            if not is_short and (not duration_seconds or duration_seconds <= 180) and detect_shorts_from_web(video_id):
                 is_short = True
                 short_reasons.append("YouTube Shorts canonical")
 

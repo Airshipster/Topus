@@ -37,6 +37,15 @@ class CyrillicTitleFilterTests(unittest.TestCase):
                 self.assertTrue(filtered)
                 self.assertEqual('Title has no Cyrillic letters', reason)
 
+    def test_filters_shorts_even_when_project_flag_allows_them(self):
+        project = {**self.project, 'allow_shorts': True}
+        filtered, reason = should_filter_video(
+            {'title': 'Научный короткий ролик', 'is_short': True, 'duration_seconds': 125},
+            project,
+        )
+        self.assertTrue(filtered)
+        self.assertEqual('Short video (125s)', reason)
+
 
 if __name__ == '__main__':
     unittest.main()
