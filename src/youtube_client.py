@@ -81,14 +81,14 @@ def format_youtube_timestamp(value):
 
 
 def parse_video_dimensions(player):
-    embed_html = player.get('embedHtml', '') if player else ''
-    width_match = re.search(r'\bwidth="(\d+)"', embed_html)
-    height_match = re.search(r'\bheight="(\d+)"', embed_html)
-
-    if not width_match or not height_match:
+    # These fields are returned only when YouTube knows the aspect ratio.
+    # Default iframe markup may describe a fallback player, not the video.
+    try:
+        width = int((player or {}).get('embedWidth', 0))
+        height = int((player or {}).get('embedHeight', 0))
+    except (TypeError, ValueError):
         return None, None
-
-    return int(width_match.group(1)), int(height_match.group(1))
+    return (width, height) if width > 0 and height > 0 else (None, None)
 
 
 def get_video_info_from_api(video_id):
@@ -107,6 +107,7 @@ def get_video_info_from_api(video_id):
         url = "https://www.googleapis.com/youtube/v3/videos"
         params = {
             'part': 'snippet,contentDetails,liveStreamingDetails,player',
+            'maxHeight': 720,
             'id': video_id,
             'key': api_key
         }

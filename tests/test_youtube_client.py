@@ -26,7 +26,7 @@ class YouTubeClientTests(unittest.TestCase):
                     'liveBroadcastContent': 'none',
                 },
                 'contentDetails': {'duration': 'PT1H5M36S'},
-                'player': {'embedHtml': '<iframe width="480" height="270"></iframe>'},
+                'player': {'embedWidth': '1280', 'embedHeight': '720'},
             }]
         }
 
@@ -47,7 +47,7 @@ class YouTubeClientTests(unittest.TestCase):
                 'snippet': {'title': 'Long video', 'channelTitle': 'Test', 'channelId': 'channel',
                             'publishedAt': '2026-09-12T08:05:44Z', 'liveBroadcastContent': 'none'},
                 'contentDetails': {'duration': 'PT1H5M36S'},
-                'player': {'embedHtml': '<iframe width="270" height="480"></iframe>'},
+                'player': {'embedWidth': '270', 'embedHeight': '480'},
             }]
         }
         with patch.object(youtube_client.requests, 'get', return_value=response):
@@ -102,7 +102,7 @@ class YouTubeClientTests(unittest.TestCase):
                         'snippet': {'title': 'Формат ролика', 'channelTitle': 'Test', 'channelId': 'channel',
                                     'publishedAt': '2026-09-12T08:05:44Z', 'liveBroadcastContent': 'none'},
                         'contentDetails': {'duration': 'PT10M'},
-                        'player': {'embedHtml': f'<iframe width="{dimensions[0]}" height="{dimensions[1]}"></iframe>'},
+                        'player': {'embedWidth': dimensions[0], 'embedHeight': dimensions[1]},
                     }]
                 }
                 with patch.object(youtube_client.requests, 'get', return_value=response):
@@ -116,3 +116,13 @@ class YouTubeClientTests(unittest.TestCase):
         data = row_as_dict(headers, row)
 
         self.assertEqual(status_name_from_text(first_value(data, ['Системный статус'])), 'retry')
+
+    def test_default_iframe_is_not_aspect_evidence(self):
+        self.assertEqual(youtube_client.parse_video_dimensions({
+            'embedHtml': '<iframe width="480" height="480"></iframe>'
+        }), (None, None))
+
+    def test_invalid_structured_dimensions(self):
+        for player in ({}, {'embedWidth': None}, {'embedWidth': 'x'},
+                       {'embedWidth': 10, 'embedHeight': 0}):
+            self.assertEqual(youtube_client.parse_video_dimensions(player), (None, None))
