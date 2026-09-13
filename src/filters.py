@@ -33,7 +33,10 @@ def should_filter_video(video_info, project, channel_info=None):
     if not video_info:
         return False, ""
     
-    if config.FILTER_SHORTS and not project.get('allow_shorts') and video_info.get('is_short'):
+    # Shorts never enter the public feed or personal bot notifications.  This
+    # is global policy, so a stale per-project sheet flag cannot opt a project
+    # back in accidentally.
+    if config.FILTER_SHORTS and video_info.get('is_short'):
         reason = video_info.get('short_reason') or f"{video_info.get('duration_seconds', 0)}s"
         return True, f"Short video ({reason})"
     

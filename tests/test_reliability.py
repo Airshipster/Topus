@@ -18,7 +18,13 @@ class ReliabilityTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.env = patch.dict(os.environ, {'TOPUS_DELIVERY_DB': self.tmp.name + '/delivery.db',
                                           'TOPUS_PUSH_DB': self.tmp.name + '/push.db',
-                                          'TOPUS_HUB_SECRET': 'test-secret-not-production'})
+                                          'TOPUS_HUB_SECRET': 'test-secret-not-production',
+                                          # This unit verifies the local receipt journal.  The
+                                          # production coordinator is covered by its own tests.
+                                          'TOPUS_CONTROL_URL': '',
+                                          'TOPUS_CONTROL_REQUIRED': 'false',
+                                          'TOPUS_PUBLISHER_OWNER': '',
+                                          'TOPUS_PUBLISHER_LEASE': ''})
         self.env.start()
     def tearDown(self):
         self.env.stop()
