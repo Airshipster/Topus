@@ -369,6 +369,10 @@ def post_sync(worker_url, admin_secret, payload):
 
 def set_telegram_webhooks(worker_url, payload):
     for project in payload['projects']:
+        # SciTopus interactions are owned by the server, not this Worker mirror.
+        if project['code'].casefold() == 'scitopus':
+            print('  SciTopus webhook: preserved (server-owned)')
+            continue
         webhook_url = f"{worker_url.rstrip()}/telegram/{project['code']}/{project['webhookSecret']}"
         response = requests.post(
             f"https://api.telegram.org/bot{project['botToken']}/setWebhook",
