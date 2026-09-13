@@ -147,15 +147,19 @@ def get_video_info_from_api(video_id):
                     minutes = int(match.group(2) or 0)
                     seconds = int(match.group(3) or 0)
                     duration_seconds = hours * 3600 + minutes * 60 + seconds
-                    if duration_seconds <= 60:
+                    if duration_seconds <= 182:
                         is_short = True
                         short_reasons.append(f"duration {duration_seconds}s")
 
-            # player.embedHtml contains a suggested iframe viewport, not the
-            # uploaded video resolution. It is not evidence of a Shorts format.
-            # Modern Shorts may run longer than one minute, so verify every
-            # short-form candidate against the canonical watch-page metadata.
-            if not is_short and (not duration_seconds or duration_seconds <= 180) and detect_shorts_from_web(video_id):
+            if width and height:
+                if height > width:
+                    is_short = True
+                    short_reasons.append(f"vertical {width}x{height}")
+                elif height == width:
+                    is_short = True
+                    short_reasons.append(f"square {width}x{height}")
+
+            if not is_short and not duration_seconds and detect_shorts_from_web(video_id):
                 is_short = True
                 short_reasons.append("YouTube Shorts canonical")
 
