@@ -38,7 +38,7 @@ class YouTubeClientTests(unittest.TestCase):
         self.assertEqual(video['duration_seconds'], 3936)
         self.assertFalse(video['is_short'])
 
-    def test_embed_viewport_never_classifies_video_as_short(self):
+    def test_vertical_format_is_a_short_even_for_a_longer_video(self):
         config.YOUTUBE_API_KEYS = ['test-key']
         response = Mock()
         response.status_code = 200
@@ -52,9 +52,10 @@ class YouTubeClientTests(unittest.TestCase):
         }
         with patch.object(youtube_client.requests, 'get', return_value=response):
             video = youtube_client.get_video_info_from_api('b6Ky9Pz1olM')
-        self.assertFalse(video['is_short'])
+        self.assertTrue(video['is_short'])
+        self.assertEqual('vertical 270x480', video['short_reason'])
 
-    def test_short_form_candidate_uses_canonical_shorts_check(self):
+    def test_short_form_candidate_uses_canonical_shorts_check_when_duration_is_missing(self):
         config.YOUTUBE_API_KEYS = ['test-key']
         response = Mock()
         response.status_code = 200
@@ -62,7 +63,7 @@ class YouTubeClientTests(unittest.TestCase):
             'items': [{
                 'snippet': {'title': 'Короткий научный ролик', 'channelTitle': 'Test', 'channelId': 'channel',
                             'publishedAt': '2026-09-12T08:05:44Z', 'liveBroadcastContent': 'none'},
-                'contentDetails': {'duration': 'PT2M5S'},
+                'contentDetails': {},
                 'player': {},
             }]
         }
@@ -72,6 +73,42 @@ class YouTubeClientTests(unittest.TestCase):
             video = youtube_client.get_video_info_from_api('shortcandidate')
         self.assertTrue(video['is_short'])
         self.assertEqual('YouTube Shorts canonical', video['short_reason'])
+
+    def test_duration_up_to_182_seconds_is_a_short(self):
+        config.YOUTUBE_API_KEYS = ['test-key']
+        response = Mock()
+        response.status_code = 200
+        response.json.return_value = {
+            'items': [{
+                'snippet': {'title': 'Короткий научный ролик', 'channelTitle': 'Test', 'channelId': 'channel',
+                            'publishedAt': '2026-09-12T08:05:44Z', 'liveBroadcastContent': 'none'},
+                'contentDetails': {'duration': 'PT3M2S'},
+                'player': {},
+            }]
+        }
+        with patch.object(youtube_client.requests, 'get', return_value=response):
+            video = youtube_client.get_video_info_from_api('shortduration')
+        self.assertTrue(video['is_short'])
+        self.assertEqual('duration 182s', video['short_reason'])
+
+    def test_vertical_and_square_formats_are_shorts(self):
+        config.YOUTUBE_API_KEYS = ['test-key']
+        for dimensions, expected in ((('270', '480'), 'vertical 270x480'), (('480', '480'), 'square 480x480')):
+            with self.subTest(dimensions=dimensions):
+                response = Mock()
+                response.status_code = 200
+                response.json.return_value = {
+                    'items': [{
+                        'snippet': {'title': 'Формат ролика', 'channelTitle': 'Test', 'channelId': 'channel',
+                                    'publishedAt': '2026-09-12T08:05:44Z', 'liveBroadcastContent': 'none'},
+                        'contentDetails': {'duration': 'PT10M'},
+                        'player': {'embedHtml': f'<iframe width="{dimensions[0]}" height="{dimensions[1]}"></iframe>'},
+                    }]
+                }
+                with patch.object(youtube_client.requests, 'get', return_value=response):
+                    video = youtube_client.get_video_info_from_api('shortformat')
+                self.assertTrue(video['is_short'])
+                self.assertEqual(expected, video['short_reason'])
 
     def test_formula_status_header_preserves_retry_state(self):
         headers = ['Проект', 'Системный статус\nPush: ✅1, RSS: ✅2']
