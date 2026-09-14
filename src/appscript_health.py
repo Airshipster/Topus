@@ -26,6 +26,25 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def probe_queue():
+    """Retry once; never turn an invalid or stale response into a success."""
+    for attempt in range(2):
+        try:
+            probe = urllib.request.Request(PROBE_URL + '&probe=' + str(time.time_ns()),
+                                           headers={'Cache-Control': 'no-cache'})
+            with urllib.request.urlopen(probe, timeout=30) as response:
+                if response.status == 200 and valid_health(json.loads(response.read(16384)), time.time()):
+                    return True
+                reason = 'INVALID_QUEUE_HEALTH'
+        except Exception as error:
+            # Do not log URLs, response bodies or credentials.
+            reason = type(error).__name__
+        print(f'Apps Script probe attempt {attempt + 1}: {reason}')
+        if attempt == 0:
+            time.sleep(2)
+    return False
+
+
 def main():
     settings = dict(os.environ)
     if not settings.get('TOPUS_CONTROL_TOKEN'):
@@ -70,15 +89,13 @@ def main():
     if previous.get('error') == '' and previous.get('seen_minutes', 999) < 4:
         print('Apps Script queue check already fresh')
         return
-    ok = False
-    try:
-        # HTTP caches must not replay an old success; Apps Script itself bounds sheet reads.
-        probe = urllib.request.Request(PROBE_URL + '&probe=' + str(int(time.time())),
-                                       headers={'Cache-Control': 'no-cache'})
-        with urllib.request.urlopen(probe, timeout=30) as response:
-            ok = response.status == 200 and valid_health(json.loads(response.read(16384)), time.time())
-    except Exception:
-        pass
+    ok = probe_queue()
+    if not ok:
+        latest = control('/status').get('beats', {}).get('appscript', {})
+        if (latest.get('success', 0) > previous.get('success', 0)
+                and latest.get('error') == '' and latest.get('success_minutes', 999) < 4):
+            print('Newer successful queue check supersedes this failed probe')
+            return
     control('/beat', {'name':'appscript', 'ok':ok, 'error':'' if ok else 'QUEUE_READ_CHECK_FAILED'})
     stale = not ok and previous.get('success_minutes', 999) >= 15
     control('/incident', {'kind':'appscript-queue-health', 'active':stale,

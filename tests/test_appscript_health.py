@@ -5,10 +5,26 @@ import io
 import json
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).parents[1]/'src'))
-from appscript_health import valid_health, stale_component, main
+from appscript_health import valid_health, stale_component, main, probe_queue
 
 
 class AppScriptHealthTests(unittest.TestCase):
+    def test_transient_failure_retries(self):
+        class Response(io.BytesIO):
+            status = 200
+        response = Response(json.dumps({'kind':'topus-push-queue-read','ok':True,'checkedAt':1000000}).encode())
+        with patch('appscript_health.urllib.request.urlopen', side_effect=[TimeoutError(),response]) as request, \
+                patch('appscript_health.time.time',return_value=1001), \
+                patch('appscript_health.time.sleep'):
+            self.assertTrue(probe_queue())
+            self.assertEqual(request.call_count,2)
+
+    def test_permanent_failure_stays_failed_and_bounded(self):
+        with patch('appscript_health.urllib.request.urlopen', side_effect=TimeoutError()) as request, \
+                patch('appscript_health.time.sleep'):
+            self.assertFalse(probe_queue())
+            self.assertEqual(request.call_count,2)
+
     def test_full_monitor_recovers_stale_cron_without_repeating_fresh_checks(self):
         for age, expected in [(60, True), (0, False)]:
             with self.subTest(age=age):
