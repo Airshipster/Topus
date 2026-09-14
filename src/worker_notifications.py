@@ -3,7 +3,24 @@ import os
 import requests
 import json
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from delivery_journal import connection
+
+
+def publication_datetime(value):
+    """Sheets dates without an offset are Baku wall time, never host-local UTC."""
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        except (TypeError, ValueError):
+            from sheets import parse_datetime_value
+            parsed = parse_datetime_value(value)
+    if parsed is not None and parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo('Asia/Baku'))
+    return parsed
 
 
 def worker_message_id(result):
@@ -37,8 +54,7 @@ def notify_worker_subscribers(project, video, message):
     if not worker_url or not admin_secret or not project_code or not channel_id:
         return None
 
-    from sheets import parse_datetime_value
-    youtube_published = parse_datetime_value(video.get('published'))
+    youtube_published = publication_datetime(video.get('published'))
     payload = {
         'projectCode': project_code, 'channelId': channel_id,
         'videoId': str(video.get('video_id') or video.get('videoId') or '').strip(),
@@ -48,8 +64,7 @@ def notify_worker_subscribers(project, video, message):
     key = json.dumps([project_code, payload['videoId']], separators=(',', ':'))
     from control_client import configured, ControlClient
     if configured():
-        from sheets import parse_datetime_value
-        published = parse_datetime_value(video.get('live_actual_end') or video.get('published'))
+        published = publication_datetime(video.get('live_actual_end') or video.get('published'))
         control = ControlClient()
         queued = control.request('/notifications/put', {'owner': os.environ['TOPUS_PUBLISHER_OWNER'],
             'lease': os.environ['TOPUS_PUBLISHER_LEASE'], 'payload': payload,

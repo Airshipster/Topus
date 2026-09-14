@@ -9,6 +9,27 @@ import worker_notifications
 
 
 class AdminVideoAgeTests(unittest.TestCase):
+    def test_real_biomolecula_timestamp_keeps_baku_offset(self):
+        from youtube_client import format_youtube_timestamp
+        original = '2026-09-14T21:00:34Z'
+        sheet_value = format_youtube_timestamp(original)
+        parsed = worker_notifications.publication_datetime(sheet_value)
+        self.assertEqual(parsed.isoformat(), '2026-09-15T01:00:34+04:00')
+        now = datetime.datetime.fromisoformat('2026-09-14T21:18:34+00:00')
+        self.assertEqual((now - parsed).total_seconds() / 60, 18)
+
+    def test_explicit_offsets_are_not_discarded(self):
+        for value in ('2026-09-14T21:00:34Z', '2026-09-15T01:00:34+04:00'):
+            self.assertEqual(worker_notifications.publication_datetime(value).timestamp(), 1789419634)
+
+    def test_legacy_naive_iso_is_baku_time(self):
+        self.assertEqual(worker_notifications.publication_datetime('2026-09-15T01:00:34').isoformat(),
+                         '2026-09-15T01:00:34+04:00')
+
+    def test_invalid_or_missing_dates_remain_unknown(self):
+        for value in (None, '', 'invalid'):
+            self.assertIsNone(worker_notifications.publication_datetime(value))
+
     def test_original_publication_survives_queue_payload(self):
         published = datetime.datetime(2026, 9, 14, 19, 32, tzinfo=datetime.timezone.utc)
         captured = []
