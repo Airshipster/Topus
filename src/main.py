@@ -707,7 +707,13 @@ def main():
                 
                 video_info_api, api_error = get_cached_video_info(video['video_id'])
                 if not video_info_api:
-                    total_failed += 1
+                    if api_error:
+                        total_failed += 1
+                        print(f"    RSS metadata request failed for {video['video_id']}: {api_error}")
+                    else:
+                        # A valid empty API response is not a failed RSS scan.
+                        # Do not mark it processed: it can become available later.
+                        print(f"    RSS video unavailable in YouTube API; deferred: {video['video_id']}")
                     continue
                 
                 if video_info_api:

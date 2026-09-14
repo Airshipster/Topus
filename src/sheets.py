@@ -103,6 +103,24 @@ def is_sheets_quota_error(error):
     )
 
 
+def read_with_retry(operation, attempts=3):
+    """Retry idempotent Sheets reads, including spreadsheet metadata."""
+    delay = 5
+    for attempt in range(1, attempts + 1):
+        try:
+            return operation()
+        except Exception as error:
+            status = getattr(getattr(error, 'response', None), 'status_code', None)
+            transient = is_sheets_quota_error(error) or (
+                isinstance(error, gspread.exceptions.APIError) and status in (500, 502, 503, 504)
+            )
+            if not transient or attempt >= attempts:
+                raise
+            print(f"    Sheets read HTTP {status}: retry {attempt}/{attempts - 1} in {delay}s")
+            time.sleep(delay)
+            delay *= 2
+
+
 def get_values_with_quota_retry(worksheet, range_name=None, attempts=3, value_render_option=None):
     delay_seconds = 5
     for attempt in range(1, attempts + 1):
@@ -2390,7 +2408,7 @@ def load_youtube_channels(client, project, include_disabled=False):
     project.pop('channels_error', None)
     project['disabled_channel_count'] = 0
     try:
-        sheet = client.open_by_key(project['sheet_id'])
+        sheet = read_with_retry(lambda: client.open_by_key(project['sheet_id']))
         configured_name = project.get('channels_sheet_name', '')
         preferred_names = [configured_name] if configured_name else []
         candidate_worksheets = []
@@ -2398,17 +2416,17 @@ def load_youtube_channels(client, project, include_disabled=False):
 
         for name in [name for name in preferred_names if name]:
             try:
-                candidate = sheet.worksheet(name)
+                candidate = read_with_retry(lambda: sheet.worksheet(name))
                 if candidate.id not in seen_sheet_ids:
                     candidate_worksheets.append(candidate)
                     seen_sheet_ids.add(candidate.id)
-            except Exception as e:
+            except gspread.exceptions.WorksheetNotFound as e:
                 print(f"  ⚠️  Channels sheet '{name}' not available for {project['name']}: {type(e).__name__}")
                 continue
 
         if not candidate_worksheets:
             try:
-                worksheets = sheet.worksheets()
+                worksheets = read_with_retry(sheet.worksheets)
                 if worksheets:
                     candidate_worksheets.append(worksheets[0])
             except Exception as e:
