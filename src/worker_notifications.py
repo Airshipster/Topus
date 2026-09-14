@@ -37,10 +37,13 @@ def notify_worker_subscribers(project, video, message):
     if not worker_url or not admin_secret or not project_code or not channel_id:
         return None
 
+    from sheets import parse_datetime_value
+    youtube_published = parse_datetime_value(video.get('published'))
     payload = {
         'projectCode': project_code, 'channelId': channel_id,
         'videoId': str(video.get('video_id') or video.get('videoId') or '').strip(),
         'text': message, 'parseMode': 'HTML',
+        'youtubePublishedAt': youtube_published.isoformat() if youtube_published else None,
     }
     key = json.dumps([project_code, payload['videoId']], separators=(',', ':'))
     from control_client import configured, ControlClient
