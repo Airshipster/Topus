@@ -114,9 +114,13 @@ def get_values_with_quota_retry(worksheet, range_name=None, attempts=3, value_re
                 return worksheet.get_all_values(value_render_option=value_render_option)
             return worksheet.get_all_values()
         except Exception as error:
-            if not is_sheets_quota_error(error) or attempt >= attempts:
+            status = getattr(getattr(error, 'response', None), 'status_code', None)
+            transient = is_sheets_quota_error(error) or (
+                isinstance(error, gspread.exceptions.APIError) and status in (500, 502, 503, 504)
+            )
+            if not transient or attempt >= attempts:
                 raise
-            print(f"  ⚠️  Sheets quota busy while reading {worksheet.title}; retry {attempt}/{attempts - 1} in {delay_seconds}s")
+            print(f"  ⚠️  Sheets temporarily unavailable while reading {worksheet.title}; retry {attempt}/{attempts - 1} in {delay_seconds}s")
             time.sleep(delay_seconds)
             delay_seconds *= 2
 
