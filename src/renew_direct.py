@@ -20,6 +20,10 @@ def reconcile_inventory(channels, complete):
 
 
 def run():
+    callback = os.environ.get('TOPUS_WEBSUB_URL', '').strip()
+    secret = os.environ.get('TOPUS_HUB_SECRET', '')
+    if not callback.startswith('https://') or not secret:
+        raise RuntimeError('WEBSUB_CONFIGURATION_MISSING: callback URL or signing secret')
     client = authenticate_google_sheets()
     sheet = client.open_by_key(config.SPREADSHEET_ID)
     with database() as db:
@@ -49,10 +53,10 @@ def run():
     def renew(channel):
         try:
             response = requests.post('https://pubsubhubbub.appspot.com/subscribe', data={
-                'hub.callback': os.environ['TOPUS_WEBSUB_URL'] + '?verify=' + verify_key(channel),
+                'hub.callback': callback + '?verify=' + verify_key(channel),
                 'hub.topic': 'https://www.youtube.com/xml/feeds/videos.xml?channel_id=' + channel,
                 'hub.mode': 'subscribe', 'hub.verify': 'async', 'hub.lease_seconds': '432000',
-                'hub.secret': os.environ['TOPUS_HUB_SECRET'],
+                'hub.secret': secret,
             }, timeout=(5, 12))
             error = '' if response.status_code in (202, 204) else f'HTTP {response.status_code}'
         except requests.RequestException as exc:

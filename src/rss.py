@@ -125,10 +125,12 @@ def _check_rss_feed_once(channel_id, direct=False):
 
 def check_rss_feed(channel_id):
     """Recover transient/proxy failures without dropping a failed source as empty."""
-    for attempt, direct in enumerate((False, True, False)):
+    for attempt, direct in enumerate((True, False, True)):
         if attempt:
             time.sleep(0.5 * attempt)
         videos = _check_rss_feed_once(channel_id, direct=direct)
+        if failure_reasons.get(channel_id) in ('HTTP_401', 'HTTP_403'):
+            break
         if videos is not None:
             failure_reasons.pop(channel_id, None)
             failed_channels.discard(channel_id)
