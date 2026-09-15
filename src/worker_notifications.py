@@ -55,11 +55,13 @@ def notify_worker_subscribers(project, video, message):
         return None
 
     youtube_published = publication_datetime(video.get('published'))
+    live_ended = publication_datetime(video.get('live_actual_end'))
     payload = {
         'projectCode': project_code, 'channelId': channel_id,
         'videoId': str(video.get('video_id') or video.get('videoId') or '').strip(),
         'text': message, 'parseMode': 'HTML',
         'youtubePublishedAt': youtube_published.isoformat() if youtube_published else None,
+        'youtubeLiveEndedAt': live_ended.isoformat() if live_ended else None,
     }
     key = json.dumps([project_code, payload['videoId']], separators=(',', ':'))
     from control_client import configured, ControlClient
