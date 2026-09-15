@@ -6,6 +6,11 @@ sys.path.insert(0, str(Path(__file__).parents[1] / 'src'))
 import rss
 
 class RssRetryTests(unittest.TestCase):
+    def test_static_discovery_document_is_not_success(self):
+        response = Mock(status_code=200, content=b'<feed xmlns="http://www.w3.org/2005/Atom"><title>YouTube video feed</title></feed>')
+        with patch('rss.requests.get', return_value=response), patch('rss.time.sleep'):
+            self.assertIsNone(rss.check_rss_feed('fixture'))
+            self.assertEqual(rss.failure_reasons['fixture'], 'STATIC_DISCOVERY_DOCUMENT')
     def setUp(self):
         rss.failure_reasons.clear()
         rss.failed_channels.clear()
