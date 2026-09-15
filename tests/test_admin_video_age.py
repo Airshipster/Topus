@@ -37,7 +37,8 @@ class AdminVideoAgeTests(unittest.TestCase):
             def request(self, path, payload):
                 captured.append(payload)
                 return {'state': 'pending', 'key': 'key'}
-        sheets = types.SimpleNamespace(parse_datetime_value=lambda value: published if value == 'original' else None)
+        ended = published + datetime.timedelta(hours=2)
+        sheets = types.SimpleNamespace(parse_datetime_value=lambda value: {'original': published, 'later': ended}.get(value))
         control = types.SimpleNamespace(configured=lambda: True, ControlClient=Control)
         with patch.dict(sys.modules, {'sheets': sheets, 'control_client': control}), patch.dict(os.environ, {
             'TOPUS_WORKER_URL': 'https://example.invalid', 'TOPUS_WORKER_ADMIN_SECRET': 'test',
@@ -46,6 +47,7 @@ class AdminVideoAgeTests(unittest.TestCase):
             worker_notifications.notify_worker_subscribers({'code':'SciTopus'},
                 {'channel_id':'channel','video_id':'video','published':'original','live_actual_end':'later'}, 'text')
         self.assertEqual(captured[0]['payload']['youtubePublishedAt'], published.isoformat())
+        self.assertEqual(captured[0]['payload']['youtubeLiveEndedAt'], ended.isoformat())
         self.assertEqual(captured[0]['payload']['text'], 'text')
 
 
