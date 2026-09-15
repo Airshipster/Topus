@@ -41,6 +41,7 @@ def run_job(name, mode=None):
     if script == 'main.py' and env.get('TOPUS_CONTROL_REQUIRED') == 'true':
         script = 'coordinated_run.py'
     error = ''
+    code = None
     try:
         child = subprocess.Popen([sys.executable, '/app/src/' + script], env=env, start_new_session=True)
         try:
@@ -63,6 +64,9 @@ def run_job(name, mode=None):
         except Exception as exc:
             error = error or type(exc).__name__
     with database() as db:
+        if name == 'rss' and code == 75:
+            # Lease contention did not scan anything; retry in one minute.
+            db.execute('UPDATE jobs SET started=? WHERE name=?', (time.time() - 1740, name))
         db.execute('UPDATE jobs SET completed=?,success=CASE WHEN ?=\'\' THEN ? ELSE success END,error=? WHERE name=?',
                    (time.time(), error, time.time(), error, name))
 
