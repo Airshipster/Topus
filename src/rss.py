@@ -75,6 +75,9 @@ def _check_rss_feed_once(channel_id, direct=False):
         }
         
         entries = root.findall('atom:entry', ns)
+        if not entries and root.findtext('atom:title', '', ns) == 'YouTube video feed':
+            failure_reasons[channel_id] = 'STATIC_DISCOVERY_DOCUMENT'
+            return None
         
         videos = []
         cutoff_time = datetime.utcnow() - timedelta(hours=config.RSS_FALLBACK_AGE_HOURS)
