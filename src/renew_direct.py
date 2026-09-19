@@ -79,6 +79,10 @@ def run():
         results = list(pool.map(renew, due))
     worksheet = sheet.worksheet('Подписки')
     values = worksheet.get_all_values()
+    from subscription_sheet import reconcile_view
+    with database() as db:
+        leases = {r['channel_id']: dict(r) for r in db.execute('SELECT * FROM leases')}
+    values = reconcile_view(sheet, worksheet, values, leases, channels, not incomplete)
     headers = [h.splitlines()[0].strip() for h in values[0]]
     ci, ri, si = (headers.index(h) for h in ('Channel ID', 'Last Renewed', 'Status'))
     import gspread
@@ -105,6 +109,8 @@ def run():
             updates.append({'range': gspread.utils.rowcol_to_a1(n, si+1), 'values': [[status]]})
     if updates:
         worksheet.batch_update(updates, value_input_option='USER_ENTERED')
+    from subscription_sheet import clear_legacy_error_fill
+    clear_legacy_error_fill(sheet, worksheet, ci, len(values))
     new_rows = []
     for channel in channels.keys() - seen:
         names = channels[channel].get('projects', [])
