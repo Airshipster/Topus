@@ -19,6 +19,15 @@ def reconcile_inventory(channels, complete):
                        [(c,) for c in channels])
 
 
+def require_verified_coverage():
+    # HTTP acceptance is not a confirmed lease; callbacks commit verification.
+    with database() as db:
+        missing = db.execute('SELECT count(*) FROM leases WHERE enabled=1 AND expires<=?',
+                             (time.time(),)).fetchone()[0]
+    if missing:
+        raise RuntimeError(f'WEBSUB_UNVERIFIED_{missing}')
+
+
 def run():
     callback = os.environ.get('TOPUS_WEBSUB_URL', '').strip()
     secret = os.environ.get('TOPUS_HUB_SECRET', '')
@@ -54,7 +63,7 @@ def run():
         try:
             response = requests.post('https://pubsubhubbub.appspot.com/subscribe', data={
                 'hub.callback': callback + '?verify=' + verify_key(channel),
-                'hub.topic': 'https://www.youtube.com/xml/feeds/videos.xml?channel_id=' + channel,
+                'hub.topic': 'https://www.youtube.com/feeds/videos.xml?channel_id=' + channel,
                 'hub.mode': 'subscribe', 'hub.verify': 'async', 'hub.lease_seconds': '432000',
                 'hub.secret': secret,
             }, timeout=(5, 12))
@@ -109,6 +118,7 @@ def run():
         raise RuntimeError('All subscription requests failed')
     if incomplete:
         raise RuntimeError('Partial subscription inventory; accessible channels renewed, existing leases retained')
+    require_verified_coverage()
 
 
 if __name__ == '__main__':

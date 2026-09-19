@@ -173,7 +173,7 @@ class Handler(BaseHTTPRequestHandler):
             channel = parse_qs(topic.query).get('channel_id', [''])[0]
             try:
                 valid = (topic.scheme == 'https' and topic.netloc == 'www.youtube.com' and
-                         topic.path == '/xml/feeds/videos.xml' and q.get('hub.mode') == 'subscribe' and
+                         topic.path in ('/feeds/videos.xml', '/xml/feeds/videos.xml') and q.get('hub.mode') == 'subscribe' and
                          0 < int(q.get('hub.lease_seconds', '0')) and
                          confirm(channel, q.get('verify', ''), int(q['hub.lease_seconds'])))
             except (ValueError, KeyError):
