@@ -37,7 +37,9 @@ def run_job(name, mode=None):
     # Preserve configured age filters: no silent 72-hour publication override.
     env.pop('TOPUS_MAX_PUBLISH_AGE_HOURS_OVERRIDE', None)
     env.pop('TOPUS_RSS_FALLBACK_AGE_HOURS_OVERRIDE', None)
-    script = {'renewal': 'renew_direct.py', 'notifications': 'worker_notifications.py'}.get(name, 'main.py')
+    script = {'renewal': 'renew_direct.py', 'notifications': 'worker_notifications.py',
+              'rss-discovery': 'rss_discovery.py'}.get(name, 'main.py')
+    env['TOPUS_RSS_CACHE_ONLY'] = 'true' if script == 'main.py' else 'false'
     if script == 'main.py' and env.get('TOPUS_CONTROL_REQUIRED') == 'true':
         script = 'coordinated_run.py'
     error = ''
@@ -117,6 +119,22 @@ def renewal_loop():
         time.sleep(120)
 
 
+def discovery_loop():
+    while True:
+        with database() as db:
+            row = db.execute("SELECT started FROM jobs WHERE name='rss-discovery'").fetchone()
+        if ACTIVE and (not row or time.time() - (row['started'] or 0) >= 1800):
+            try:
+                run_job('rss-discovery')
+            except Exception as exc:
+                print('RSS discovery scheduler error: ' + type(exc).__name__, flush=True)
+            finally:
+                # Publish completed source results even if other sources failed.
+                requested_rss.set()
+                wake.set()
+        time.sleep(5)
+
+
 def notifications_loop():
     while True:
         if ACTIVE:
@@ -173,7 +191,7 @@ class Handler(BaseHTTPRequestHandler):
             channel = parse_qs(topic.query).get('channel_id', [''])[0]
             try:
                 valid = (topic.scheme == 'https' and topic.netloc == 'www.youtube.com' and
-                         topic.path == '/xml/feeds/videos.xml' and q.get('hub.mode') == 'subscribe' and
+                         topic.path in ('/feeds/videos.xml', '/xml/feeds/videos.xml') and q.get('hub.mode') == 'subscribe' and
                          0 < int(q.get('hub.lease_seconds', '0')) and
                          confirm(channel, q.get('verify', ''), int(q['hub.lease_seconds'])))
             except (ValueError, KeyError):
@@ -230,7 +248,7 @@ if __name__ == '__main__':
     with database():
         pass
     threads = [threading.Thread(target=target, daemon=True) for target in
-               (publisher_loop, renewal_loop, notifications_loop)]
+               (publisher_loop, renewal_loop, notifications_loop, discovery_loop)]
     for thread in threads:
         thread.start()
     threading.Thread(target=restart_guard, args=(threads,), daemon=True).start()

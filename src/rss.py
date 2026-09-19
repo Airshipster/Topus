@@ -1,4 +1,5 @@
 import time
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
@@ -128,6 +129,15 @@ def _check_rss_feed_once(channel_id, direct=False):
 
 def check_rss_feed(channel_id):
     """Recover transient/proxy failures without dropping a failed source as empty."""
+    if os.environ.get('TOPUS_RSS_CACHE_ONLY') == 'true':
+        from rss_discovery import read_result
+        videos, error = read_result(channel_id)
+        if error:
+            failure_reasons[channel_id] = error
+        else:
+            failure_reasons.pop(channel_id, None)
+            failed_channels.discard(channel_id)
+        return videos
     for attempt, direct in enumerate((True, False, True)):
         if attempt:
             time.sleep(0.5 * attempt)
