@@ -134,6 +134,9 @@ def check_rss_feed(channel_id):
         videos, error = read_result(channel_id)
         if error:
             failure_reasons[channel_id] = error
+            failed_channels.add(channel_id)
+            from api_rescue import read_result as read_api_result
+            videos = read_api_result(channel_id)
         else:
             failure_reasons.pop(channel_id, None)
             failed_channels.discard(channel_id)
