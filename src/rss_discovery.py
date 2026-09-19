@@ -55,6 +55,7 @@ def run():
         raise RuntimeError('RSS_DISCOVERY_INVENTORY_EMPTY')
     initialize()
     failures = 0
+    failed = set()
     with ThreadPoolExecutor(max_workers=max(1, min(12, int(config.RSS_WORKERS)))) as pool:
         futures = {pool.submit(check_rss_feed, channel): channel for channel in channels}
         for future in as_completed(futures):
@@ -66,6 +67,11 @@ def run():
                 videos, error = None, type(exc).__name__
             save_result(channel, videos, error)
             failures += bool(error)
+            if error:
+                failed.add(channel)
+    if failed:
+        from api_rescue import run as rescue
+        rescue(failed)
     with database() as db:
         db.execute('DELETE FROM rss_discovery WHERE checked<?', (time.time()-7*86400,))
     print(f'RSS_DISCOVERY completed={len(channels)} failed={failures}', flush=True)

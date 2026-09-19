@@ -699,6 +699,8 @@ def main():
             for video in rss_videos:
                 channel_info = video['channel_info']
                 source_method = source_method_for_channel('RSS', channel_info)
+                if video.get('discovery_method') == 'YouTube API backup':
+                    source_method += ' [YouTube API backup]'
                 video['source_method'] = source_method
                 video['bot_only'] = bool(channel_info.get('bot_only'))
                 key = publication_key(video['video_id'], project)
@@ -824,10 +826,17 @@ def main():
                     )
                     total_published += 1
                 else:
-                    print("    ❌ Failed to notify bot subscribers")
-                    log_entries.append([timestamp, project['name'], 'Publish failed', video['video_id'], video.get('channel_id', ''), 'Worker notification error', 'error', source_method])
-                    update_video_publication_status(master_sheet, video['video_id'], project['name'], status='failed', error='Worker notification error')
-                    total_failed += 1
+                    # Personal delivery has its own durable queue. It must not make
+                    # the source event look unprocessed and trigger a full replay.
+                    print("    ⚠️  Bot subscriber notification queued for separate retry")
+                    log_entries.append([timestamp, project['name'], 'Personal notification pending', video['video_id'], video.get('channel_id', ''), 'Worker notification pending', 'warning', source_method])
+                    update_video_publication_status(
+                        master_sheet,
+                        video['video_id'],
+                        project['name'],
+                        status='notification-pending',
+                        error='Worker notification pending',
+                    )
                 continue
             
             print(f"  📤 Publishing: {video['title'][:50]}...")
