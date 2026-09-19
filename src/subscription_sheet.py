@@ -35,26 +35,30 @@ def reconcile_view(sheet, worksheet, values, leases, channels, complete):
 
 def clear_legacy_error_fill(sheet, worksheet, column, row_count):
     import gspread
+    from channel_availability import unavailable
+    missing = unavailable()
     start = gspread.utils.rowcol_to_a1(2, column + 1)
     end = gspread.utils.rowcol_to_a1(max(2, row_count), column + 1)
     metadata = sheet.fetch_sheet_metadata(params={
         'ranges': ["'" + worksheet.title.replace("'", "''") + "'!" + start + ':' + end],
         'includeGridData': 'true',
-        'fields': 'sheets(data(startRow,rowData(values(userEnteredFormat))))'})
+        'fields': 'sheets(data(startRow,rowData(values(formattedValue,userEnteredFormat))))'})
     requests = []
     for tab in metadata.get('sheets', []):
         for grid in tab.get('data', []):
             for row, data in enumerate(grid.get('rowData', []), grid.get('startRow', 1)):
                 for cell in data.get('values', []):
                     color = cell.get('userEnteredFormat', {}).get('backgroundColor', {})
-                    if all(abs(color.get(k, 0) - v) < .001 for k, v in
-                           (('red', 1), ('green', .8), ('blue', .8))):
+                    pink = all(abs(color.get(k, 0) - v) < .001 for k, v in
+                               (('red', 1), ('green', .8), ('blue', .8)))
+                    desired = cell.get('formattedValue') in missing
+                    if pink != desired:
                         requests.append({'repeatCell': {
                             'range': {'sheetId': worksheet.id, 'startRowIndex': row,
                                       'endRowIndex': row + 1, 'startColumnIndex': column,
                                       'endColumnIndex': column + 1},
-                            'cell': {'userEnteredFormat': {}},
+                            'cell': {'userEnteredFormat': {'backgroundColor': {'red': 1, 'green': .8, 'blue': .8}} if desired else {}},
                             'fields': 'userEnteredFormat.backgroundColor,userEnteredFormat.backgroundColorStyle'}})
     if requests:
         sheet.batch_update({'requests': requests})
-        print('Cleared legacy subscription error fills: ' + str(len(requests)), flush=True)
+        print('Updated channel availability fills: ' + str(len(requests)), flush=True)

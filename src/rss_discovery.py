@@ -53,6 +53,8 @@ def run():
                             include_disabled=bool(project.get('bot_enabled'))))
     if not channels:
         raise RuntimeError('RSS_DISCOVERY_INVENTORY_EMPTY')
+    from channel_availability import check as check_availability
+    check_availability(channels)
     initialize()
     failures = 0
     failed = set()

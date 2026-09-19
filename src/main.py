@@ -571,6 +571,9 @@ def main():
                 return
             tracked = push_events_to_mark.setdefault(key, {
                 'row_index': event['row_index'],
+                'video_id': event['video_id'],
+                'channel_id': event['channel_id'],
+                'timestamp': event.get('timestamp', ''),
                 'projects': event.get('projects', ''),
                 'project_names': set(),
             })

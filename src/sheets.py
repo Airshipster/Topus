@@ -2689,7 +2689,8 @@ def mark_push_events_processed_batch(sheet, tracked_events):
 
     try:
         worksheet = sheet.worksheet(config.SHEET_NAME_PUSH_EVENTS)
-        headers = get_values_with_quota_retry(worksheet, '1:1')
+        current_values = get_values_with_quota_retry(worksheet)
+        headers = current_values[:1]
         header_row = [str(value).strip() for value in headers[0]] if headers else []
         indexes = {header: index + 1 for index, header in enumerate(header_row)}
         status_col = indexes.get('Обработано')
@@ -2697,9 +2698,26 @@ def mark_push_events_processed_batch(sheet, tracked_events):
         timestamp_col = indexes.get('Timestamp GMT+4') or indexes.get('Timestamp')
         if not status_col or not projects_col:
             raise ValueError('Push events headers missing Обработано/Проекты')
+        video_col = indexes['Video ID']
+        channel_col = indexes['Ссылка на канал']
+        current_rows = {}
+        for number, row in enumerate(current_values[1:], 2):
+            def value(column):
+                return clean_sheet_value(row[column - 1]) if column and len(row) >= column else ''
+            channel = value(channel_col)
+            key = (value(video_col), channel_id_from_link(channel) or channel,
+                   normalize_timestamp(value(timestamp_col)))
+            current_rows.setdefault(key, []).append((number, value(projects_col)))
         updates = []
         for tracked in tracked_events:
-            current_projects = clean_sheet_value(tracked.get('projects', ''))
+            key = (tracked.get('video_id'), tracked.get('channel_id'),
+                   normalize_timestamp(tracked.get('timestamp', '')))
+            matches = current_rows.get(key, [])
+            if len(matches) != 1:
+                # Do not mark a different event or guess between identical duplicates.
+                print('  PUSH_ACK_IDENTITY_UNRESOLVED', flush=True)
+                continue
+            row_index, current_projects = matches[0]
             project_names = tracked.get('project_names') or []
             project_set = {
                 value.strip()
@@ -2708,7 +2726,6 @@ def mark_push_events_processed_batch(sheet, tracked_events):
             }
             project_set.update(str(value).strip() for value in project_names if str(value).strip())
             new_projects = ', '.join(sorted(project_set))
-            row_index = tracked['row_index']
             updates.extend([
                 {'range': gspread.utils.rowcol_to_a1(row_index, status_col), 'values': [['✅']]},
                 {'range': gspread.utils.rowcol_to_a1(row_index, projects_col), 'values': [[new_projects]]},
