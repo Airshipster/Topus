@@ -50,18 +50,11 @@ def parse_datetime(value):
 
 
 def get_stale_reason(published_at, project=None, video=None):
+    if video and video.get('manual_replay'):
+        return ''
     effective_published_at = effective_youtube_publication_timestamp(video, published_at)
     published = parse_datetime(effective_published_at)
     if not published:
-        return ''
-
-    if video and video.get('retry_accepted'):
-        # A recovered queue item is useful only while it is still timely. Without
-        # this bound, an outage can turn into a burst of days-old posts.
-        retry_limit = int(os.environ.get('TOPUS_PENDING_RECOVERY_MAX_MINUTES', '60'))
-        age_minutes = (current_local_datetime() - published).total_seconds() / 60
-        if age_minutes > retry_limit:
-            return f"Deferred publication exceeded {retry_limit}-minute recovery window"
         return ''
 
     emergency_limit = os.environ.get('TOPUS_MAX_PUBLISH_AGE_HOURS_OVERRIDE', '').strip()

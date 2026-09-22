@@ -1,7 +1,5 @@
-import os
 import sys
 import unittest
-from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).parents[1] / 'src'))
@@ -23,11 +21,9 @@ class QueueContractTests(unittest.TestCase):
         self.assertFalse(sheets.row_status_blocks_retry('pending'))
         self.assertTrue(sheets.row_status_blocks_retry('published'))
 
-    def test_pending_recovery_is_timely_but_not_unbounded(self):
-        now = datetime(2026, 9, 22, 12, 0, tzinfo=main.current_local_datetime().tzinfo)
-        with patch('main.current_local_datetime', return_value=now):
-            self.assertEqual(main.get_stale_reason('2026-09-22 11:30:00', {}, {'retry_accepted': True}), '')
-            self.assertIn('60-minute', main.get_stale_reason('2026-09-22 10:59:00', {}, {'retry_accepted': True}))
+    def test_manual_replay_bypasses_age_but_regular_retry_does_not(self):
+        self.assertEqual(main.get_stale_reason('2020-01-01', {}, {'manual_replay': True}), '')
+        self.assertNotEqual(main.get_stale_reason('2020-01-01', {}, {'retry_accepted': True}), '')
 
     def test_push_read_error_is_not_empty_success(self):
         book = Mock()

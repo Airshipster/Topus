@@ -56,10 +56,12 @@ def should_filter_video(video_info, project, channel_info=None):
     title = video_info.get('title', '')
     latin_only = bool(project.get('only_latin'))
     cyrillic_only = bool(project.get('only_cyrillic'))
+    if cyrillic_only and not latin_only and not contains_cyrillic_letter(title):
+        return True, "Title has no Cyrillic letters"
     if latin_only and not cyrillic_only and contains_cyrillic_letter(title):
         return True, "Title contains Cyrillic letters"
-    if cyrillic_only and not latin_only and contains_latin_letter(title):
-        return True, "Title contains Latin letters"
+    if str(project.get('name', '')).strip() == 'SciTopus' and not contains_cyrillic_letter(title):
+        return True, "Title has no Cyrillic letters"
     
     if project.get('stop_words'):
         title_text = normalize_stop_text(video_info['title'])
