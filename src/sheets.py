@@ -25,6 +25,8 @@ PROJECT_STATUS_COLUMNS = [
     'Provisioned at',
 ]
 
+LANGUAGE_FILTER_COLUMNS = ['Только латиница', 'Только кириллица']
+
 CHANNEL_TEMPLATE_HEADERS = [
     'Шаблон',
     'Шаблон сообщения',
@@ -453,6 +455,38 @@ def ensure_project_status_columns(worksheet, headers):
         value_input_option='USER_ENTERED',
     )
     return headers + missing
+
+
+def ensure_project_language_columns(worksheet, headers):
+    present = [column in headers for column in LANGUAGE_FILTER_COLUMNS]
+    if all(present):
+        return headers
+    if any(present):
+        raise ValueError('partial language filter column migration')
+
+    # Insert exactly between O and the former P as requested. New projects use
+    # both green markers, meaning no language restriction until configured.
+    worksheet.spreadsheet.batch_update({'requests': [{
+        'insertDimension': {
+            'range': {'sheetId': worksheet.id, 'dimension': 'COLUMNS', 'startIndex': 15, 'endIndex': 17},
+            'inheritFromBefore': True,
+        }
+    }]})
+    worksheet.update(range_name='P1:Q1', values=[LANGUAGE_FILTER_COLUMNS], value_input_option='USER_ENTERED')
+    existing = get_values_with_quota_retry(worksheet, PROJECTS_READ_RANGE)
+    project_rows = []
+    for row in existing[1:]:
+        if any(str(cell).strip() in (SETTINGS_MARKER, '🔵') for cell in row):
+            break
+        project_rows.append(row)
+    if project_rows:
+        last_row = len(project_rows) + 1
+        worksheet.update(
+            range_name=f'P2:Q{last_row}',
+            values=[['🟢', '🟢']] * len(project_rows),
+            value_input_option='USER_ENTERED',
+        )
+    return headers[:15] + LANGUAGE_FILTER_COLUMNS + headers[15:]
 
 
 def validate_project_row(row):
@@ -2302,6 +2336,9 @@ def load_projects(sheet, update_status=True):
     if not values:
         return []
 
+    headers = ensure_project_language_columns(worksheet, values[0])
+    if headers != values[0]:
+        values = get_values_with_quota_retry(worksheet, PROJECTS_READ_RANGE)
     headers = ensure_project_status_columns(worksheet, values[0])
     projects = []
     status_updates = []
@@ -2343,6 +2380,8 @@ def load_projects(sheet, update_status=True):
             allow_shorts = shorts_value == '🟢'
             allow_streams = is_enabled_marker(row.get('Стримы'), default=False)
             allow_premieres = is_enabled_marker(row.get('Премьеры'), default=False)
+            only_latin = is_enabled_marker(row.get('Только латиница'), default=True)
+            only_cyrillic = is_enabled_marker(row.get('Только кириллица'), default=True)
             max_publish_age_hours = parse_positive_int_setting(
                 row.get('Возраст видео, ч'),
                 config.MAX_PUBLISH_AGE_HOURS,
@@ -2379,6 +2418,8 @@ def load_projects(sheet, update_status=True):
                 'allow_shorts': allow_shorts,
                 'allow_streams': allow_streams,
                 'allow_premieres': allow_premieres,
+                'only_latin': only_latin,
+                'only_cyrillic': only_cyrillic,
                 'max_publish_age_hours': max_publish_age_hours,
                 'push_api_enabled': is_enabled_marker(row.get('Push API'), default=True),
                 'rss_feed_enabled': is_enabled_marker(row.get('RSS feed'), default=True),

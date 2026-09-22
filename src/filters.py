@@ -15,6 +15,13 @@ def contains_cyrillic_letter(value):
     return False
 
 
+def contains_latin_letter(value):
+    for character in str(value or ''):
+        if unicodedata.category(character).startswith('L') and 'LATIN' in unicodedata.name(character, ''):
+            return True
+    return False
+
+
 def contains_whole_word(text, word):
     normalized_text = normalize_stop_text(text)
     normalized_word = normalize_stop_text(word).strip()
@@ -46,8 +53,13 @@ def should_filter_video(video_info, project, channel_info=None):
     if video_info.get('is_upcoming') and not project.get('allow_premieres'):
         return True, "Upcoming/Premiere"
 
-    if not contains_cyrillic_letter(video_info.get('title')):
-        return True, "Title has no Cyrillic letters"
+    title = video_info.get('title', '')
+    latin_only = bool(project.get('only_latin'))
+    cyrillic_only = bool(project.get('only_cyrillic'))
+    if latin_only and not cyrillic_only and contains_cyrillic_letter(title):
+        return True, "Title contains Cyrillic letters"
+    if cyrillic_only and not latin_only and contains_latin_letter(title):
+        return True, "Title contains Latin letters"
     
     if project.get('stop_words'):
         title_text = normalize_stop_text(video_info['title'])
