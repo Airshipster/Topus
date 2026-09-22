@@ -654,6 +654,7 @@ def main():
                         'bot_only': bool(channel_info.get('bot_only')),
                         'channel_info': channel_info,
                         'retry_accepted': event.get('retry_accepted', False),
+                        'manual_replay': event.get('manual_replay', False),
                     }
                     copy_video_classification(video, video_info_api)
                 
@@ -860,6 +861,8 @@ def main():
                 continue
             
             print(f"  📤 Publishing: {video['title'][:50]}...")
+            if video.get('manual_replay'):
+                time.sleep(3)
             effective_date = parse_datetime(effective_youtube_publication_timestamp(video, video_published_date))
             
             tg_message_id = send_public(

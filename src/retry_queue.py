@@ -22,7 +22,9 @@ def pending_events(sheet):
         video_id = video_id_from_url(first_value(item, ['Ссылка на видео', 'Video ID']))
         project = project_name_from_cell(first_value(item, ['Проект']))
         channel = channel_id_from_link(first_value(item, ['Ссылка на канал']))
+        manual_replay = 'Manual language recovery' in str(first_value(item, ['Системный статус']))
         if status in ('pending', 'failed', 'retry') and video_id and channel and (video_id, project) not in blocked:
             events.append({'row_index': -i, 'video_id': video_id, 'channel_id': channel,
-                           'projects': '', 'retry_project': project, 'retry_accepted': True})
+                           'projects': '', 'retry_project': project, 'retry_accepted': True,
+                           'manual_replay': manual_replay})
     return events
