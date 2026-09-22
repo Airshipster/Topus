@@ -2600,14 +2600,18 @@ def get_published_videos(sheet):
     """
     try:
         worksheet, _ = ensure_global_videos_worksheet(sheet)
-        records = worksheet.get_all_records()
+        values = get_values_with_quota_retry(worksheet)
+        if not values:
+            return set()
+        headers = values[0]
         tracked = set()
-        for row in records:
-            status = status_name_from_text(row.get('Системный статус', ''))
+        for row in values[1:]:
+            data = row_as_dict(headers, row)
+            status = status_name_from_text(first_value(data, ['Системный статус']))
             if status in ('pending', 'failed', 'retry') or str(status).startswith('deleted'):
                 continue
-            video_id = video_id_from_url(row.get('Ссылка на видео', '')) or str(row.get('Video ID', '')).strip()
-            project_name = project_name_from_cell(row.get('Проект', ''))
+            video_id = video_id_from_url(first_value(data, ['Ссылка на видео', 'Video ID']))
+            project_name = project_name_from_cell(first_value(data, ['Проект']))
             if video_id and project_name:
                 tracked.add((video_id, project_name))
         print(f"  📋 Found {len(tracked)} tracked video publications in table")

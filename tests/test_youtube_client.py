@@ -8,7 +8,7 @@ sys.path.insert(0, str(ROOT / 'src'))
 
 import config
 import youtube_client
-from sheets import first_value, row_as_dict, status_name_from_text
+from sheets import first_value, get_published_videos, row_as_dict, status_name_from_text
 
 
 class YouTubeClientTests(unittest.TestCase):
@@ -116,6 +116,19 @@ class YouTubeClientTests(unittest.TestCase):
         data = row_as_dict(headers, row)
 
         self.assertEqual(status_name_from_text(first_value(data, ['Системный статус'])), 'retry')
+
+    def test_published_lookup_uses_formula_status_header(self):
+        worksheet = Mock()
+        values = [
+            ['Проект', 'Ссылка на видео', 'Системный статус\nPush: summary'],
+            ['SciTopus', 'https://www.youtube.com/watch?v=abcdefghijk', 'Push: pending'],
+            ['SciTopus', 'https://www.youtube.com/watch?v=zyxwvutsrqp', 'Push: published'],
+        ]
+        with patch('sheets.ensure_global_videos_worksheet', return_value=(worksheet, [])), patch(
+            'sheets.get_values_with_quota_retry', return_value=values
+        ):
+            tracked = get_published_videos(Mock())
+        self.assertEqual(tracked, {('zyxwvutsrqp', 'SciTopus')})
 
     def test_default_iframe_is_not_aspect_evidence(self):
         self.assertEqual(youtube_client.parse_video_dimensions({

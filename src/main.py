@@ -50,11 +50,18 @@ def parse_datetime(value):
 
 
 def get_stale_reason(published_at, project=None, video=None):
-    if video and video.get('retry_accepted'):
-        return ''
     effective_published_at = effective_youtube_publication_timestamp(video, published_at)
     published = parse_datetime(effective_published_at)
     if not published:
+        return ''
+
+    if video and video.get('retry_accepted'):
+        # A recovered queue item is useful only while it is still timely. Without
+        # this bound, an outage can turn into a burst of days-old posts.
+        retry_limit = int(os.environ.get('TOPUS_PENDING_RECOVERY_MAX_MINUTES', '60'))
+        age_minutes = (current_local_datetime() - published).total_seconds() / 60
+        if age_minutes > retry_limit:
+            return f"Deferred publication exceeded {retry_limit}-minute recovery window"
         return ''
 
     emergency_limit = os.environ.get('TOPUS_MAX_PUBLISH_AGE_HOURS_OVERRIDE', '').strip()
@@ -626,6 +633,21 @@ def main():
                             ])
                             total_failed += 1
                             continue
+                        if event.get('retry_accepted'):
+                            reason = 'Deferred premiere or stream is unavailable in YouTube API'
+                            print(f"  ⏭️  Closing unavailable deferred video: {event['video_id']}")
+                            update_video_publication_status(
+                                master_sheet,
+                                event['video_id'],
+                                project['name'],
+                                status='unavailable',
+                                error=reason,
+                            )
+                            log_entries.append([
+                                format_timestamp(), project['name'], 'Deferred video unavailable',
+                                event['video_id'], event['channel_id'], reason,
+                                'warning', source_method,
+                            ])
                         queue_push_event_mark(event, project['name'])
                         continue
                 
@@ -643,16 +665,6 @@ def main():
                     copy_video_classification(video, video_info_api)
                 
                     video_published_date = video_info_api['published']
-                    stale_reason = get_stale_reason(video_published_date, project, video)
-                    if stale_reason:
-                        print(f"  🚫 Skipped stale: {video['title'][:50]} ({stale_reason})")
-                        timestamp = format_timestamp()
-                        log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], video.get('channel_id', ''), stale_reason, 'filtered', source_method])
-                        queue_push_event_mark(event, project['name'])
-                        published_videos.add(key)
-                        total_filtered += 1
-                        continue
-
                     hold_reason = pending_hold_reason(video_info_api, project)
                     if hold_reason:
                         print(f"  ⏳ Pending: {video['title'][:50]} ({hold_reason})")
@@ -662,7 +674,19 @@ def main():
                         publication_event_rows[key] = event
                         published_videos.add(key)
                         continue
-                
+
+                    stale_reason = get_stale_reason(video_published_date, project, video)
+                    if stale_reason:
+                        print(f"  🚫 Skipped stale: {video['title'][:50]} ({stale_reason})")
+                        timestamp = format_timestamp()
+                        log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], video.get('channel_id', ''), stale_reason, 'filtered', source_method])
+                        if event.get('retry_accepted'):
+                            update_video_publication_status(master_sheet, video['video_id'], project['name'], status='expired', error=stale_reason, video=video)
+                        queue_push_event_mark(event, project['name'])
+                        published_videos.add(key)
+                        total_filtered += 1
+                        continue
+
                     should_filter, filter_reason = should_filter_video(video_info_api, project, channel_info)
                     if should_filter:
                         print(f"  🚫 Filtered: {video['title'][:50]} ({filter_reason})")
