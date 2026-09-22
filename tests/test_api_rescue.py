@@ -1,9 +1,13 @@
 import json
 import os
+import sys
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
 import api_rescue as api
 from push_store import database

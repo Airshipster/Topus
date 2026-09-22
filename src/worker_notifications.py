@@ -51,7 +51,7 @@ def notify_worker_subscribers(project, video, message):
     if project_code not in routed_projects:
         return None
 
-    if not worker_url or not admin_secret or not project_code or not channel_id:
+    if not project_code or not channel_id:
         return None
 
     youtube_published = publication_datetime(video.get('published'))
@@ -73,7 +73,12 @@ def notify_worker_subscribers(project, video, message):
             'published_at': published.timestamp() if published else None})
         if queued['state'] == 'sent':
             return queued['result']
+        if not worker_url or not admin_secret:
+            control.heartbeat('personal', False, 'PERSONAL_DELIVERY_UNCONFIGURED')
+            return None
         return deliver_remote(control, queued['key'], worker_url, admin_secret)
+    if not worker_url or not admin_secret:
+        return None
     with connection() as db:
         db.execute('CREATE TABLE IF NOT EXISTS notify_outbox (key TEXT PRIMARY KEY,payload TEXT NOT NULL,sent INTEGER DEFAULT 0,updated REAL DEFAULT 0,error TEXT)')
         db.execute('INSERT OR IGNORE INTO notify_outbox(key,payload) VALUES (?,?)', (key, json.dumps(payload)))
@@ -110,9 +115,14 @@ def retry_outbox():
     if configured():
         control = ControlClient()
         items = control.request('/notifications/pending', {}).get('items', [])
+        worker_url = os.environ.get('TOPUS_WORKER_URL', '').strip()
+        admin_secret = os.environ.get('TOPUS_WORKER_ADMIN_SECRET', '').strip()
+        if not worker_url or not admin_secret:
+            control.heartbeat('personal', not items, 'PERSONAL_DELIVERY_UNCONFIGURED' if items else '')
+            return
         failed = 0
         for item in items:
-            if deliver_remote(control, item['key'], os.environ['TOPUS_WORKER_URL'], os.environ['TOPUS_WORKER_ADMIN_SECRET']) is None:
+            if deliver_remote(control, item['key'], worker_url, admin_secret) is None:
                 failed += 1
         control.heartbeat('personal', failed == 0, 'PERSONAL_RETRY_PENDING' if failed else '')
         if failed:
