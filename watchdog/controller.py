@@ -44,18 +44,38 @@ def run_job(name, mode=None):
         script = 'coordinated_run.py'
     error = ''
     code = None
+    preempted = False
     try:
         child = subprocess.Popen([sys.executable, '/app/src/' + script], env=env, start_new_session=True)
-        try:
-            code = child.wait(timeout=240 if name == 'renewal' else 1200)
-        except subprocess.TimeoutExpired:
-            os.killpg(child.pid, signal.SIGTERM)
+        timeout = 240 if name == 'renewal' else 1200
+        deadline = time.monotonic() + timeout
+        while child.poll() is None:
             try:
-                child.wait(timeout=10)
+                child.wait(timeout=min(2, max(0.1, deadline - time.monotonic())))
             except subprocess.TimeoutExpired:
-                os.killpg(child.pid, signal.SIGKILL)
-                child.wait()
-            code = 124
+                if name == 'rss' and wake.is_set():
+                    # A callback is time-sensitive. coordinated_run.py releases
+                    # the shared lease before exiting, so a Push pass can follow.
+                    os.killpg(child.pid, signal.SIGTERM)
+                    try:
+                        child.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(child.pid, signal.SIGKILL)
+                        child.wait()
+                    preempted = True
+                    error = 'preempted by push'
+                    break
+                if time.monotonic() >= deadline:
+                    os.killpg(child.pid, signal.SIGTERM)
+                    try:
+                        child.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(child.pid, signal.SIGKILL)
+                        child.wait()
+                    code = 124
+                    break
+        if not preempted and code is None:
+            code = child.returncode
         if code:
             error = f'exit {code}'
     except Exception as exc:
@@ -66,7 +86,7 @@ def run_job(name, mode=None):
         except Exception as exc:
             error = error or type(exc).__name__
     with database() as db:
-        if name == 'rss' and code == 75:
+        if name == 'rss' and (code == 75 or preempted):
             # Lease contention did not scan anything; retry in one minute.
             db.execute('UPDATE jobs SET started=? WHERE name=?', (time.time() - 1740, name))
         db.execute('UPDATE jobs SET completed=?,success=CASE WHEN ?=\'\' THEN ? ELSE success END,error=? WHERE name=?',
@@ -162,7 +182,7 @@ def status():
         job = data['jobs'].get(name, {})
         if not job.get('success') or now - job['success'] > limit:
             issues.append(name + ': no recent successful pass')
-        if job.get('error') not in ('', 'running', None):
+        if job.get('error') not in ('', 'running', None, 'preempted by push'):
             issues.append(name + ': ' + job['error'])
     if data['subscriptions'].get('expired'):
         issues.append('expired/unverified subscriptions')
