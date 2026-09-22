@@ -182,6 +182,15 @@ def publication_key(video_id, project):
     return (video_id, project['name'])
 
 
+def remember_publication_event(publication_event_rows, key, event):
+    """Keep the durable Push row when it coincides with a synthetic retry."""
+    current = publication_event_rows.get(key)
+    current_row = int(current.get('row_index', -1)) if current else -1
+    candidate_row = int(event.get('row_index', -1))
+    if current is None or (current_row < 0 <= candidate_row):
+        publication_event_rows[key] = event
+
+
 def acquire_lock_with_wait(master_sheet):
     from control_client import configured, ControlClient
     if configured():
@@ -665,7 +674,7 @@ def main():
                         timestamp = format_timestamp()
                         log_entries.append([timestamp, project['name'], 'Video pending', video['video_id'], video.get('channel_id', ''), hold_reason, 'pending', source_method])
                         videos_to_save.append((video, project, video_published_date, None, f"PENDING: {hold_reason}"))
-                        publication_event_rows[key] = event
+                        remember_publication_event(publication_event_rows, key, event)
                         published_videos.add(key)
                         continue
 
@@ -687,14 +696,14 @@ def main():
                         timestamp = format_timestamp()
                         log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], video.get('channel_id', ''), filter_reason, 'filtered', source_method])
                         videos_to_save.append((video, project, video_published_date, None, f"FILTERED: {filter_reason}"))
-                        publication_event_rows[key] = event
+                        remember_publication_event(publication_event_rows, key, event)
                         published_videos.add(key)
                         total_filtered += 1
                         continue
                 
                     # СНАЧАЛА добавляем в батч для сохранения
                     videos_to_save.append((video, project, video_published_date, None, None))
-                    publication_event_rows[key] = event
+                    remember_publication_event(publication_event_rows, key, event)
                     published_videos.add(key)
                 
                     print(f"  📝 Queued: {video['title'][:50]}...")
