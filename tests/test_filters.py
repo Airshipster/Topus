@@ -31,9 +31,10 @@ class CyrillicTitleFilterTests(unittest.TestCase):
         self.assertEqual('', reason)
 
     def test_filters_title_without_cyrillic(self):
+        project = {**self.project, 'only_latin': False, 'only_cyrillic': True}
         for title in ('Deep Learning Tutorial', '2026: AI + ML', '🚀 AI breakthrough'):
             with self.subTest(title=title):
-                filtered, reason = should_filter_video({'title': title}, self.project)
+                filtered, reason = should_filter_video({'title': title}, project)
                 self.assertTrue(filtered)
                 self.assertEqual('Title has no Cyrillic letters', reason)
 
