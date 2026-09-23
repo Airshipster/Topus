@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
-from push_store import database, accept_xml, confirm, health
+from push_store import database, accept_xml, confirm, health, record_callback
 from delivery_journal import summary
 from control_client import ControlClient, configured
 
@@ -235,8 +235,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(413, {'error': 'too_large'})
                 return
             if route == '/websub':
-                count = accept_xml(self.rfile.read(length), self.headers.get('X-Hub-Signature', ''))
-                if count:
+                try:
+                    counts = accept_xml(self.rfile.read(length), self.headers.get('X-Hub-Signature', ''))
+                except PermissionError:
+                    record_callback('rejected', rejection_code='bad_signature')
+                    raise
+                except (ValueError, KeyError):
+                    record_callback('rejected', rejection_code='invalid_payload')
+                    raise
+                except Exception:
+                    record_callback('rejected', rejection_code='internal_error')
+                    raise
+                record_callback('accepted', counts=counts)
+                if counts['new_events']:
                     wake.set()
                 self.reply(204, '', text=True)
                 return
