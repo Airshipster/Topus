@@ -111,3 +111,20 @@ class QueueContractTests(unittest.TestCase):
         updates = video_ws.batch_update.call_args.args[0]
         status_update = next(update for update in updates if update['range'] == 'K2')
         self.assertEqual(status_update['values'], [['Push: published']])
+
+    def test_reconciliation_backfills_source_for_completed_row(self):
+        video_ws, logs_ws, book = Mock(), Mock(), Mock()
+        video_ws.get_all_values.return_value = [sheets.VIDEO_HEADERS, [
+            'SciTopus', 'Test channel', 'https://youtube.com/channel/UCaaaaaaaaaaaaaaaaaaaaaa',
+            'Test title', 'https://youtube.com/watch?v=abcdefghijk', '23.09.2026 12:00:00',
+            '23.09.2026 12:05:00', '5', '23.09.2026 12:05:00', '71719', 'Published',
+        ]]
+        logs_ws.get_all_values.return_value = [sheets.LOG_HEADERS, [
+            'SciTopus', '23.09.2026 12:05:00', 'abcdefghijk', 'UCaaaaaaaaaaaaaaaaaaaaaa',
+            'Push: Video published. Telegram msg: 71719',
+        ]]
+        with patch('sheets.ensure_videos_worksheet', return_value=video_ws), \
+             patch('sheets.ensure_logs_worksheet', return_value=logs_ws):
+            self.assertEqual(sheets.reconcile_pending_published_videos(book), 1)
+        updates = video_ws.batch_update.call_args.args[0]
+        self.assertEqual(updates, [{'range': 'K2', 'values': [['Push: published']]}])

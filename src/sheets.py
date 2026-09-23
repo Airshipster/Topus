@@ -1503,6 +1503,7 @@ def reconcile_pending_published_videos(sheet):
                 published_logs[(video_id, project_name)] = (timestamp, match.group(1), log_method)
 
         updates = []
+        reconciled_rows = 0
         for row_index, row in enumerate(video_values[1:], start=2):
             data = row_as_dict(video_headers, row)
             project_name = project_name_from_cell(first_value(data, ['Проект']))
@@ -1513,14 +1514,20 @@ def reconcile_pending_published_videos(sheet):
             message_id = first_value(data, ['TG message_id'])
             tg_published_current = first_value(data, ['Дата публикации TG GMT+4', 'Дата публикации TG Asia/Baku', 'Дата публикации TG'])
             delay_current = first_value(data, ['Разница в минутах'])
+            log_entry = published_logs.get((video_id, project_name))
             if status == 'published' and message_id and tg_published_current and delay_current:
+                if not method and log_entry and log_entry[2]:
+                    updates.append({
+                        'range': gspread.utils.rowcol_to_a1(row_index, video_indexes['Системный статус']),
+                        'values': [[combined_status('published', '', log_entry[2])]],
+                    })
+                    reconciled_rows += 1
                 continue
 
-            log_entry = published_logs.get((video_id, project_name))
             if not log_entry and message_id and (not tg_published_current or not delay_current):
                 fallback_published_at = first_value(data, ['Дата обработки GMT+4', 'Дата обработки Asia/Baku', 'Дата обработки UTC'])
                 if fallback_published_at:
-                    log_entry = (normalize_timestamp(fallback_published_at), message_id)
+                    log_entry = (normalize_timestamp(fallback_published_at), message_id, '')
             if not log_entry:
                 continue
 
@@ -1538,14 +1545,14 @@ def reconcile_pending_published_videos(sheet):
                         'range': gspread.utils.rowcol_to_a1(row_index, video_indexes[header]),
                         'values': [[value]],
                     })
+            reconciled_rows += 1
 
         for i in range(0, len(updates), config.BATCH_SIZE):
             videos_worksheet.batch_update(updates[i:i + config.BATCH_SIZE], value_input_option='USER_ENTERED')
             time.sleep(0.2)
         if updates:
-            fixed = len(updates) // 4
-            print(f"  🧩 Reconciled pending published rows: {fixed}")
-            return fixed
+            print(f"  🧩 Reconciled published rows: {reconciled_rows}")
+            return reconciled_rows
         return 0
     except Exception as e:
         print(f"  ⚠️  Error reconciling pending published rows: {e}")
