@@ -63,3 +63,33 @@ class QueueContractTests(unittest.TestCase):
             result = pending_events(Mock())
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]['video_id'], 'abcdefghijk')
+
+    def test_pending_status_refresh_uses_one_batch_write(self):
+        worksheet = Mock()
+        headers = sheets.VIDEO_HEADERS
+        worksheet.get_all_values.return_value = [headers, [
+            'SciTopus', 'Test channel', 'https://youtube.com/channel/UCaaaaaaaaaaaaaaaaaaaaaa',
+            'Premiere', 'youtube.com/watch?v=abcdefghijk', '23.09.2026 12:00:00',
+            '23.09.2026 12:01:00', '', '', '',
+            'Push: pending. Awaiting premiere publication [retry-after=2026-09-23T14:00:00Z]',
+        ]]
+        sheet = Mock()
+        video = {
+            'video_id': 'abcdefghijk', 'url': 'https://www.youtube.com/watch?v=abcdefghijk',
+            'channel_id': 'UCaaaaaaaaaaaaaaaaaaaaaa', 'channel': 'Test channel', 'source_method': 'Push',
+        }
+        pending = 'Awaiting premiere publication [retry-after=2026-09-23T15:00:00Z]'
+
+        with patch('sheets.ensure_videos_worksheet', return_value=worksheet), \
+             patch('sheets.get_values_with_quota_retry', return_value=[headers]), \
+             patch('sheets.update_video_publication_status') as single_row_update:
+            result = sheets.save_videos_batch(
+                sheet, [(video, {'name': 'SciTopus'}, '23.09.2026 12:00:00', None, f'PENDING: {pending}')]
+            )
+
+        self.assertEqual(result, [('abcdefghijk', 'SciTopus')])
+        single_row_update.assert_not_called()
+        worksheet.batch_update.assert_called_once()
+        self.assertEqual(worksheet.batch_update.call_args.args[0][0]['range'], 'K2')
+        self.assertIn('retry-after=2026-09-23T15:00:00Z',
+                      worksheet.batch_update.call_args.args[0][0]['values'][0][0])

@@ -1311,6 +1311,7 @@ def save_videos_batch(sheet, videos_data):
                     existing = {
                         'row_index': row_index,
                         'status': status,
+                        'status_text': first_value(data, ['Системный статус']),
                     }
                     if not current or row_status_blocks_retry(status) or not row_status_blocks_retry(current.get('status')):
                         existing_rows[key] = existing
@@ -1321,6 +1322,7 @@ def save_videos_batch(sheet, videos_data):
         rows = []
         rows_publication_keys = []
         saved_publication_keys = []
+        pending_status_updates = []
         for video, project, video_published_date, tg_message_id, error in videos_data:
             project_name = project.get('name', '')
             key = (video['video_id'], project_name)
@@ -1347,8 +1349,15 @@ def save_videos_batch(sheet, videos_data):
                         update_video_publication_status(sheet, video['video_id'], project_name,
                             status='filtered', error=row_error, video=video)
                     elif is_pending_hold:
-                        update_video_publication_status(sheet, video['video_id'], project_name,
-                            status='pending', error=row_error, video=video)
+                        status_col = find_column_index(headers, ['Системный статус'])
+                        if status_col is None:
+                            raise ValueError('Global Videos is missing Системный статус column')
+                        existing_method, _ = status_method_from_text(existing.get('status_text'))
+                        status_value = combined_status('pending', row_error, source_method or existing_method)
+                        pending_status_updates.append({
+                            'range': gspread.utils.rowcol_to_a1(existing['row_index'], status_col + 1),
+                            'values': [[status_value]],
+                        })
                     if str(existing['status']).startswith('deleted'):
                         video['restored_from_status'] = existing['status']
                     print(f"  🔁 Retrying {existing['status'] or 'tracked'}: {video['video_id']} / {project_name}")
@@ -1372,6 +1381,10 @@ def save_videos_batch(sheet, videos_data):
             }
             rows.append(row_for_headers(headers, row_values))
             rows_publication_keys.append(key)
+
+        if pending_status_updates:
+            worksheet.batch_update(pending_status_updates, value_input_option='USER_ENTERED')
+            print(f"  🔁 Updated {len(pending_status_updates)} pending statuses in one batch")
         
         # Дробим на батчи по config.BATCH_SIZE
         for i in range(0, len(rows), config.BATCH_SIZE):
