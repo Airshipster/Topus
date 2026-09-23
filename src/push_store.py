@@ -26,6 +26,13 @@ def database():
       CREATE TABLE IF NOT EXISTS jobs (
         name TEXT PRIMARY KEY, started REAL, completed REAL, success REAL,
         error TEXT NOT NULL DEFAULT '');
+      CREATE TABLE IF NOT EXISTS callback_health (
+        id INTEGER PRIMARY KEY CHECK (id=1), requests INTEGER NOT NULL DEFAULT 0,
+        accepted INTEGER NOT NULL DEFAULT 0, rejected INTEGER NOT NULL DEFAULT 0,
+        entries INTEGER NOT NULL DEFAULT 0, new_events INTEGER NOT NULL DEFAULT 0,
+        ignored_unsubscribed INTEGER NOT NULL DEFAULT 0, duplicate_events INTEGER NOT NULL DEFAULT 0,
+        invalid_entries INTEGER NOT NULL DEFAULT 0, last_received REAL,
+        last_accepted REAL, last_rejected REAL, last_rejection_code TEXT NOT NULL DEFAULT '');
     ''')
     try:
         yield db
@@ -64,22 +71,50 @@ def accept_xml(body, signature):
     entries = root.findall('a:entry', ns)
     if root.tag == '{http://www.w3.org/2005/Atom}entry':
         entries = [root]
-    count = 0
+    counts = {'entries': 0, 'new_events': 0, 'ignored_unsubscribed': 0,
+              'duplicate_events': 0, 'invalid_entries': 0}
     with database() as db:
         for entry in entries:
+            counts['entries'] += 1
             vid = entry.findtext('y:videoId', '', ns)
             channel = entry.findtext('y:channelId', '', ns)
             if not re.fullmatch(r'[\w-]{11}', vid):
+                counts['invalid_entries'] += 1
                 continue
             known = db.execute('SELECT enabled FROM leases WHERE channel_id=?', (channel,)).fetchone()
             if not known or not known['enabled']:
+                counts['ignored_unsubscribed'] += 1
                 continue
             updated = entry.findtext('a:updated', '', ns)
             fingerprint = hashlib.sha256(f'{channel}:{vid}:{updated}'.encode()).hexdigest()
             cursor = db.execute('INSERT OR IGNORE INTO events(fingerprint,video_id,channel_id,received) VALUES (?,?,?,?)',
                                 (fingerprint, vid, channel, time.time()))
-            count += cursor.rowcount
-    return count
+            if cursor.rowcount:
+                counts['new_events'] += 1
+            else:
+                counts['duplicate_events'] += 1
+    return counts
+
+
+def record_callback(outcome, *, counts=None, rejection_code=''):
+    """Store aggregate callback health only; never persist request bodies or secrets."""
+    now = time.time()
+    counts = counts or {}
+    with database() as db:
+        db.execute('INSERT OR IGNORE INTO callback_health(id) VALUES (1)')
+        if outcome == 'accepted':
+            db.execute('UPDATE callback_health SET requests=requests+1, accepted=accepted+1, '
+                       'entries=entries+?, new_events=new_events+?, '
+                       'ignored_unsubscribed=ignored_unsubscribed+?, '
+                       'duplicate_events=duplicate_events+?, invalid_entries=invalid_entries+?, '
+                       'last_received=?, last_accepted=? WHERE id=1',
+                       tuple(max(0, int(counts.get(key, 0))) for key in (
+                           'entries', 'new_events', 'ignored_unsubscribed',
+                           'duplicate_events', 'invalid_entries')) + (now, now))
+        else:
+            db.execute('UPDATE callback_health SET requests=requests+1, rejected=rejected+1, '
+                       'last_received=?, last_rejected=?, last_rejection_code=? WHERE id=1',
+                       (now, now, str(rejection_code)[:40]))
 
 
 def mirror_events(sheet):
@@ -125,9 +160,16 @@ def mirror_events(sheet):
 
 def health():
     with database() as db:
+        callback = db.execute('SELECT * FROM callback_health WHERE id=1').fetchone()
         return {
             'pending_ingress': db.execute('SELECT count(*) FROM events WHERE mirrored=0').fetchone()[0],
             'last_push_at': db.execute('SELECT max(received) FROM events').fetchone()[0],
+            'callbacks': dict(callback) if callback else {
+                'requests': 0, 'accepted': 0, 'rejected': 0, 'entries': 0,
+                'new_events': 0, 'ignored_unsubscribed': 0,
+                'duplicate_events': 0, 'invalid_entries': 0,
+                'last_received': None, 'last_accepted': None, 'last_rejected': None,
+                'last_rejection_code': ''},
             'subscriptions': dict(db.execute('SELECT count(*) total, sum(expires>?) verified_active, '
                                             'sum(expires<=?) expired FROM leases WHERE enabled=1',
                                             (time.time(), time.time())).fetchone()),

@@ -6,11 +6,25 @@ from unittest.mock import Mock, patch
 from urllib.parse import urlencode
 
 import controller
-from push_store import database
+from push_store import database, health, record_callback
 from renew_direct import require_verified_coverage
 
 
 class CoverageTests(unittest.TestCase):
+    def test_callback_health_tracks_delivery_without_payload_data(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'TOPUS_PUSH_DB': directory + '/push.db'}):
+            record_callback('accepted', counts={'entries': 3, 'new_events': 2,
+                                               'duplicate_events': 1})
+            record_callback('rejected', rejection_code='bad_signature')
+            callbacks = health()['callbacks']
+        self.assertEqual(callbacks['requests'], 2)
+        self.assertEqual(callbacks['accepted'], 1)
+        self.assertEqual(callbacks['rejected'], 1)
+        self.assertEqual(callbacks['entries'], 3)
+        self.assertEqual(callbacks['new_events'], 2)
+        self.assertEqual(callbacks['duplicate_events'], 1)
+        self.assertEqual(callbacks['last_rejection_code'], 'bad_signature')
+
     def test_acceptance_does_not_replace_verification(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'TOPUS_PUSH_DB': directory + '/push.db'}):
             with database() as db:

@@ -1446,6 +1446,7 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
         yt_published = first_value(target_data, ['Дата публикации YT GMT+4', 'Дата публикации YT UTC'])
         effective_yt_published = effective_youtube_publication_timestamp(video, yt_published)
         method, _ = status_method_from_text(first_value(target_data, ['Системный статус']))
+        method = method or str((video or {}).get('source_method') or '').strip()
         current_project_cell = first_value(target_data, ['Проект'])
         project_formula = cell_value(project_formulas[target_row - 1], 0) if target_row - 1 < len(project_formulas) else ''
         if str(project_formula).strip().startswith('='):
@@ -1498,7 +1499,8 @@ def reconcile_pending_published_videos(sheet):
             event = first_value(data, ['Событие'])
             match = re.search(r'Telegram msg:\s*(\d+)', event)
             if project_name and video_id and match:
-                published_logs[(video_id, project_name)] = (timestamp, match.group(1))
+                log_method, _ = status_method_from_text(event)
+                published_logs[(video_id, project_name)] = (timestamp, match.group(1), log_method)
 
         updates = []
         for row_index, row in enumerate(video_values[1:], start=2):
@@ -1522,7 +1524,8 @@ def reconcile_pending_published_videos(sheet):
             if not log_entry:
                 continue
 
-            published_at, tg_message_id = log_entry
+            published_at, tg_message_id, log_method = log_entry
+            method = method or log_method
             yt_published = first_value(data, ['Дата публикации YT GMT+4', 'Дата публикации YT UTC'])
             for header, value in {
                 'Разница в минутах': publication_delay_minutes(yt_published, published_at),

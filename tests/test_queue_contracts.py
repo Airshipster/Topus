@@ -93,3 +93,21 @@ class QueueContractTests(unittest.TestCase):
         self.assertEqual(worksheet.batch_update.call_args.args[0][0]['range'], 'K2')
         self.assertIn('retry-after=2026-09-23T15:00:00Z',
                       worksheet.batch_update.call_args.args[0][0]['values'][0][0])
+
+    def test_publication_reconciliation_restores_source_from_event_log(self):
+        video_ws, logs_ws, book = Mock(), Mock(), Mock()
+        video_ws.get_all_values.return_value = [sheets.VIDEO_HEADERS, [
+            'SciTopus', 'Test channel', 'https://youtube.com/channel/UCaaaaaaaaaaaaaaaaaaaaaa',
+            'Test title', 'https://youtube.com/watch?v=abcdefghijk', '23.09.2026 12:00:00',
+            '23.09.2026 12:01:00', '', '', '', 'pending',
+        ]]
+        logs_ws.get_all_values.return_value = [sheets.LOG_HEADERS, [
+            'SciTopus', '23.09.2026 12:05:00', 'abcdefghijk', 'UCaaaaaaaaaaaaaaaaaaaaaa',
+            'Push: Video published. Telegram msg: 71719',
+        ]]
+        with patch('sheets.ensure_videos_worksheet', return_value=video_ws), \
+             patch('sheets.ensure_logs_worksheet', return_value=logs_ws):
+            self.assertEqual(sheets.reconcile_pending_published_videos(book), 1)
+        updates = video_ws.batch_update.call_args.args[0]
+        status_update = next(update for update in updates if update['range'] == 'K2')
+        self.assertEqual(status_update['values'], [['Push: published']])

@@ -73,8 +73,8 @@ class ReliabilityTests(unittest.TestCase):
                f'<entry><yt:videoId>abcdefghijk</yt:videoId><yt:channelId>{channel}</yt:channelId><updated>1</updated></entry>'
                f'<entry><yt:videoId>lmnopqrstuv</yt:videoId><yt:channelId>{channel}</yt:channelId><updated>1</updated></entry></feed>').encode()
         sig = 'sha1=' + hmac.new(b'test-secret-not-production', xml, hashlib.sha1).hexdigest()
-        self.assertEqual(push_store.accept_xml(xml, sig), 2)
-        self.assertEqual(push_store.accept_xml(xml, sig), 0)
+        self.assertEqual(push_store.accept_xml(xml, sig)['new_events'], 2)
+        self.assertEqual(push_store.accept_xml(xml, sig)['duplicate_events'], 2)
         with self.assertRaises(PermissionError):
             push_store.accept_xml(xml, 'sha1=wrong')
 
