@@ -1,5 +1,6 @@
 import time
 import os
+from datetime import datetime, timedelta, timezone
 
 from gspread.exceptions import APIError
 
@@ -40,7 +41,7 @@ from sheets import (
 from subscriptions import deduplicate_subscription_rows, get_or_create_subscriptions_worksheet, get_subscription_records, sync_subscriptions
 from telegram_client import delete_telegram_message, format_message, send_to_telegram
 from worker_notifications import notify_worker_subscribers
-from youtube_client import get_last_youtube_api_error, get_video_info_from_api, get_youtube_api_calls
+from youtube_client import get_last_youtube_api_error, get_video_info_from_api, get_videos_info_from_api, get_youtube_api_calls
 from delivery_journal import send_public
 from retry_queue import pending_events
 
@@ -72,7 +73,7 @@ def get_stale_reason(published_at, project=None, video=None):
 def copy_video_classification(video, video_info):
     if not video_info:
         return video
-    for field in ('published', 'is_short', 'short_reason', 'is_live', 'was_live', 'is_upcoming', 'duration', 'duration_seconds', 'live_actual_start', 'live_actual_end', 'width', 'height'):
+    for field in ('published', 'is_short', 'short_reason', 'is_live', 'was_live', 'is_upcoming', 'duration', 'duration_seconds', 'live_actual_start', 'live_actual_end', 'scheduled_start', 'width', 'height'):
         if field in video_info:
             video[field] = video_info[field]
     return video
@@ -97,9 +98,30 @@ def publication_status_detail(video):
 
 def pending_hold_reason(video_info, project):
     if video_info.get('is_upcoming') and not project.get('allow_premieres'):
-        return 'Awaiting premiere publication'
+        now = datetime.now(timezone.utc)
+        scheduled_text = str(video_info.get('scheduled_start') or '').strip()
+        try:
+            scheduled = datetime.fromisoformat(scheduled_text.replace('Z', '+00:00'))
+            if scheduled.tzinfo is None:
+                scheduled = scheduled.replace(tzinfo=timezone.utc)
+        except ValueError:
+            scheduled = None
+
+        if scheduled is None:
+            retry_at = now + timedelta(minutes=5)
+        elif scheduled > now + timedelta(hours=6):
+            retry_at = min(now + timedelta(hours=6), scheduled - timedelta(minutes=10))
+        elif scheduled > now + timedelta(minutes=10):
+            retry_at = scheduled - timedelta(minutes=10)
+        elif scheduled >= now - timedelta(minutes=10):
+            retry_at = now + timedelta(minutes=2)
+        else:
+            retry_at = now + timedelta(minutes=15)
+        retry_value = retry_at.astimezone(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
+        return f'Awaiting premiere publication [retry-after={retry_value}]'
     if video_info.get('is_live') and not project.get('allow_streams'):
-        return 'Awaiting stream archive'
+        retry_value = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat(timespec='seconds').replace('+00:00', 'Z')
+        return f'Awaiting stream archive [retry-after={retry_value}]'
     return ''
 
 
@@ -563,16 +585,42 @@ def main():
         log_entries = []
         rss_cache = {}
         video_info_cache = {}
+        youtube_quota_blocked = False
         push_events_to_mark = {}
         publication_event_rows = {}
 
         def get_cached_video_info(video_id):
+            nonlocal youtube_quota_blocked
             if video_id not in video_info_cache:
-                video_info_cache[video_id] = (
-                    get_video_info_from_api(video_id),
-                    get_last_youtube_api_error(),
-                )
+                if youtube_quota_blocked:
+                    video_info_cache[video_id] = (
+                        None,
+                        get_last_youtube_api_error() or 'YouTube API quota exhausted',
+                    )
+                else:
+                    video_info_cache[video_id] = (
+                        get_video_info_from_api(video_id),
+                        get_last_youtube_api_error(),
+                    )
             return video_info_cache[video_id]
+
+        def cache_video_info_batch(video_ids):
+            nonlocal youtube_quota_blocked
+            missing_ids = list(dict.fromkeys(video_id for video_id in video_ids if video_id not in video_info_cache))
+            if not missing_ids:
+                return
+            if youtube_quota_blocked:
+                error = get_last_youtube_api_error() or 'YouTube API quota exhausted'
+                video_info_cache.update({video_id: (None, error) for video_id in missing_ids})
+                return
+            results = get_videos_info_from_api(missing_ids)
+            video_info_cache.update(results)
+            youtube_quota_blocked = any(
+                error and 'quotaExceeded' in error
+                for _, error in results.values()
+            )
+            if youtube_quota_blocked:
+                print('  ⛔ YouTube API quota exhausted; remaining metadata requests deferred until a later pass')
 
         def queue_push_event_mark(event, project_name):
             key = event['row_index']
@@ -587,6 +635,22 @@ def main():
                 'project_names': set(),
             })
             tracked['project_names'].add(project_name)
+
+        push_video_ids = set()
+        for project in projects:
+            channels = project_channels.get(project['name'], {})
+            for event in push_events:
+                if event.get('retry_project') and event['retry_project'] != project['name']:
+                    continue
+                if not project.get('push_api_enabled', True) and not event.get('retry_project'):
+                    continue
+                if event.get('channel_id') not in channels:
+                    continue
+                if publication_key(event['video_id'], project) not in published_videos:
+                    push_video_ids.add(event['video_id'])
+        if push_video_ids:
+            print(f'  📦 Loading metadata for {len(push_video_ids)} pending Push videos in quota-efficient batches')
+            cache_video_info_batch(sorted(push_video_ids))
         
         for project in projects:
             print(f"\n{'='*60}")
@@ -724,6 +788,7 @@ def main():
                 return_seen=True,
                 rss_cache=rss_cache,
             )
+            cache_video_info_batch(video['video_id'] for video in rss_videos)
             # Absence from a bounded RSS feed does not prove deletion on YouTube.
             
             for video in rss_videos:

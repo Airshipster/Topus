@@ -12,6 +12,47 @@ from sheets import first_value, get_published_videos, row_as_dict, status_name_f
 
 
 class YouTubeClientTests(unittest.TestCase):
+    def test_batch_fetches_multiple_ids_in_one_request(self):
+        config.YOUTUBE_API_KEYS = ['test-key']
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            'items': [
+                {'id': 'video-one', 'snippet': {
+                    'title': 'Первое видео', 'channelTitle': 'Test', 'channelId': 'channel',
+                    'publishedAt': '2026-09-12T08:05:44Z', 'liveBroadcastContent': 'none'},
+                 'contentDetails': {'duration': 'PT10M'},
+                 'liveStreamingDetails': {'scheduledStartTime': '2026-09-25T14:00:00Z'},
+                 'player': {'embedWidth': 480, 'embedHeight': 270}},
+                {'id': 'video-two', 'snippet': {
+                    'title': 'Второе видео', 'channelTitle': 'Test', 'channelId': 'channel',
+                    'publishedAt': '2026-09-12T08:05:44Z', 'liveBroadcastContent': 'none'},
+                 'contentDetails': {'duration': 'PT10M'}, 'player': {'embedWidth': 480, 'embedHeight': 270}},
+            ]
+        }
+
+        with patch.object(youtube_client.requests, 'get', return_value=response) as get:
+            videos = youtube_client.get_videos_info_from_api(['video-one', 'video-two', 'video-one'])
+
+        self.assertEqual(get.call_count, 1)
+        self.assertEqual(get.call_args.kwargs['params']['id'], 'video-one,video-two')
+        self.assertEqual(videos['video-one'][0]['title'], 'Первое видео')
+        self.assertEqual(videos['video-two'][0]['title'], 'Второе видео')
+        self.assertEqual(videos['video-one'][0]['scheduled_start'], '2026-09-25T14:00:00Z')
+
+    def test_quota_exhaustion_stops_following_batches(self):
+        config.YOUTUBE_API_KEYS = ['test-key']
+        response = Mock(status_code=403)
+        response.json.return_value = {
+            'error': {'message': 'quota exceeded', 'errors': [{'reason': 'quotaExceeded'}]}
+        }
+
+        with patch.object(youtube_client.requests, 'get', return_value=response) as get:
+            results = youtube_client.get_videos_info_from_api([f'video-{i}' for i in range(51)])
+
+        self.assertEqual(get.call_count, 1)
+        self.assertEqual(len(results), 51)
+        self.assertTrue(all(video is None and 'quotaExceeded' in error for video, error in results.values()))
+
     def test_long_landscape_video_does_not_use_shorts_html_fallback(self):
         config.YOUTUBE_API_KEYS = ['test-key']
         response = Mock()

@@ -17,7 +17,7 @@ services:
       PORT: "8090"
     volumes:
       - ./data:/data
-      - /root/scitopus-secrets/scitopus-google-service-account.json:/run/host-secrets/google-service-account.json:ro
+      - /root/scitopus-secrets/topus-publication-google-service-account.json:/run/host-secrets/google-service-account.json:ro
     expose:
       - "8090"
     healthcheck:

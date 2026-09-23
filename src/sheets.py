@@ -1346,6 +1346,9 @@ def save_videos_batch(sheet, videos_data):
                     if is_filtered:
                         update_video_publication_status(sheet, video['video_id'], project_name,
                             status='filtered', error=row_error, video=video)
+                    elif is_pending_hold:
+                        update_video_publication_status(sheet, video['video_id'], project_name,
+                            status='pending', error=row_error, video=video)
                     if str(existing['status']).startswith('deleted'):
                         video['restored_from_status'] = existing['status']
                     print(f"  🔁 Retrying {existing['status'] or 'tracked'}: {video['video_id']} / {project_name}")
