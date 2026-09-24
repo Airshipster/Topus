@@ -27,6 +27,15 @@ running = {'publisher': None, 'renewal': False, 'tick': time.time()}
 lock = threading.Lock()
 
 
+def schedule_hot_retry(result, timer_factory=threading.Timer):
+    if result != 75:
+        return False
+    timer = timer_factory(45, requested_hot_rss.set)
+    timer.daemon = True
+    timer.start()
+    return True
+
+
 def run_job(name, mode=None):
     with database() as db:
         db.execute("INSERT INTO jobs(name,started,error) VALUES (?,?,'running') ON CONFLICT(name) "
@@ -97,6 +106,7 @@ def run_job(name, mode=None):
             db.execute('UPDATE jobs SET started=? WHERE name=?', (time.time() - retry_age, name))
         db.execute('UPDATE jobs SET completed=?,success=CASE WHEN ?=\'\' THEN ? ELSE success END,error=? WHERE name=?',
                    (time.time(), error, time.time(), error, name))
+    return code
 
 
 def publisher_loop():
@@ -130,7 +140,9 @@ def publisher_loop():
             wake.clear()
             running['publisher'] = mode
             try:
-                run_job(mode, mode)
+                result = run_job(mode, mode)
+                if mode == 'rss-hot':
+                    schedule_hot_retry(result)
             except Exception as exc:
                 print('Publisher scheduler error: ' + type(exc).__name__, flush=True)
                 time.sleep(10)
