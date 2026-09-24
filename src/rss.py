@@ -160,6 +160,11 @@ def rss_fallback_check(client, project, published_videos, project_channels=None,
     
     if project_channels is None:
         project_channels = load_youtube_channels(client, project)
+    if os.environ.get('TOPUS_RSS_HOT_ONLY') == 'true':
+        from rss_discovery import hot_channels
+        selected = hot_channels()
+        project_channels = {channel_id: info for channel_id, info in project_channels.items()
+                            if channel_id in selected}
     
     print(f"    Checking {len(project_channels)} channels")
     print(f"    Time window: {config.RSS_FALLBACK_AGE_HOURS}h")

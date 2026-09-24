@@ -33,6 +33,11 @@ def database():
         ignored_unsubscribed INTEGER NOT NULL DEFAULT 0, duplicate_events INTEGER NOT NULL DEFAULT 0,
         invalid_entries INTEGER NOT NULL DEFAULT 0, last_received REAL,
         last_accepted REAL, last_rejected REAL, last_rejection_code TEXT NOT NULL DEFAULT '');
+      CREATE TABLE IF NOT EXISTS rss_hotset (
+        channel_id TEXT PRIMARY KEY, last_video REAL NOT NULL, last_checked REAL NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS rss_push_gaps (
+        video_id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, first_seen REAL NOT NULL,
+        push_received REAL NOT NULL DEFAULT 0);
     ''')
     try:
         yield db
@@ -89,6 +94,9 @@ def accept_xml(body, signature):
             fingerprint = hashlib.sha256(f'{channel}:{vid}:{updated}'.encode()).hexdigest()
             cursor = db.execute('INSERT OR IGNORE INTO events(fingerprint,video_id,channel_id,received) VALUES (?,?,?,?)',
                                 (fingerprint, vid, channel, time.time()))
+            db.execute('UPDATE rss_push_gaps SET push_received=? '
+                       'WHERE video_id=? AND channel_id=? AND push_received=0',
+                       (time.time(), vid, channel))
             if cursor.rowcount:
                 counts['new_events'] += 1
             else:

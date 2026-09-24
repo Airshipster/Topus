@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
 from push_store import database, accept_xml, confirm, health, record_callback
+from rss_discovery import push_gap_health
 from delivery_journal import summary
 from control_client import ControlClient, configured
 
@@ -21,6 +22,7 @@ ACTIVE = os.environ.get('TOPUS_WATCHDOG_ACTIVE', 'false').lower() == 'true'
 TOKEN = os.environ.get('TOPUS_WATCHDOG_TOKEN', '')
 wake = threading.Event()
 requested_rss = threading.Event()
+requested_hot_rss = threading.Event()
 running = {'publisher': None, 'renewal': False, 'tick': time.time()}
 lock = threading.Lock()
 
@@ -38,7 +40,10 @@ def run_job(name, mode=None):
     env.pop('TOPUS_MAX_PUBLISH_AGE_HOURS_OVERRIDE', None)
     env.pop('TOPUS_RSS_FALLBACK_AGE_HOURS_OVERRIDE', None)
     script = {'renewal': 'renew_direct.py', 'notifications': 'worker_notifications.py',
-              'rss-discovery': 'rss_discovery.py'}.get(name, 'main.py')
+              'rss-discovery': 'rss_discovery.py',
+              'rss-hot-discovery': 'rss_discovery.py'}.get(name, 'main.py')
+    env['TOPUS_RSS_DISCOVERY_MODE'] = 'hot' if name == 'rss-hot-discovery' else 'full'
+    env['TOPUS_RSS_HOT_ONLY'] = 'true' if mode == 'rss-hot' else 'false'
     env['TOPUS_RSS_CACHE_ONLY'] = 'true' if script == 'main.py' else 'false'
     if script == 'main.py' and env.get('TOPUS_CONTROL_REQUIRED') == 'true':
         script = 'coordinated_run.py'
@@ -53,7 +58,7 @@ def run_job(name, mode=None):
             try:
                 child.wait(timeout=min(2, max(0.1, deadline - time.monotonic())))
             except subprocess.TimeoutExpired:
-                if name == 'rss' and wake.is_set():
+                if name in ('rss', 'rss-hot') and wake.is_set():
                     # A callback is time-sensitive. coordinated_run.py releases
                     # the shared lease before exiting, so a Push pass can follow.
                     os.killpg(child.pid, signal.SIGTERM)
@@ -86,9 +91,10 @@ def run_job(name, mode=None):
         except Exception as exc:
             error = error or type(exc).__name__
     with database() as db:
-        if name == 'rss' and (code == 75 or preempted):
+        if name in ('rss', 'rss-hot') and (code == 75 or preempted):
             # Lease contention did not scan anything; retry in one minute.
-            db.execute('UPDATE jobs SET started=? WHERE name=?', (time.time() - 1740, name))
+            retry_age = 1740 if name == 'rss' else 240
+            db.execute('UPDATE jobs SET started=? WHERE name=?', (time.time() - retry_age, name))
         db.execute('UPDATE jobs SET completed=?,success=CASE WHEN ?=\'\' THEN ? ELSE success END,error=? WHERE name=?',
                    (time.time(), error, time.time(), error, name))
 
@@ -111,9 +117,13 @@ def publisher_loop():
             # Cadence is measured from start, never postponed by an unrelated success.
             if requested_rss.is_set() or now - (rss.get('started') or 0) >= 1800:
                 requested_rss.clear()
+                requested_hot_rss.clear()
                 mode = 'rss'
             elif now - (push.get('started') or 0) >= 120 or wake.is_set():
                 mode = 'push'
+            elif requested_hot_rss.is_set():
+                requested_hot_rss.clear()
+                mode = 'rss-hot'
             else:
                 wake.wait(5)
                 continue
@@ -142,16 +152,26 @@ def renewal_loop():
 def discovery_loop():
     while True:
         with database() as db:
-            row = db.execute("SELECT started FROM jobs WHERE name='rss-discovery'").fetchone()
-        if ACTIVE and (not row or time.time() - (row['started'] or 0) >= 1800):
-            try:
-                run_job('rss-discovery')
-            except Exception as exc:
-                print('RSS discovery scheduler error: ' + type(exc).__name__, flush=True)
-            finally:
-                # Publish completed source results even if other sources failed.
-                requested_rss.set()
-                wake.set()
+            full = db.execute("SELECT started FROM jobs WHERE name='rss-discovery'").fetchone()
+            hot = db.execute("SELECT started FROM jobs WHERE name='rss-hot-discovery'").fetchone()
+        if ACTIVE:
+            now = time.time()
+            if not full or now - (full['started'] or 0) >= 1800:
+                try:
+                    run_job('rss-discovery')
+                except Exception as exc:
+                    print('RSS discovery scheduler error: ' + type(exc).__name__, flush=True)
+                finally:
+                    # Publish completed source results even if other sources failed.
+                    requested_rss.set()
+                    wake.set()
+            elif not hot or now - (hot['started'] or 0) >= 300:
+                try:
+                    run_job('rss-hot-discovery')
+                except Exception as exc:
+                    print('Hot RSS discovery scheduler error: ' + type(exc).__name__, flush=True)
+                finally:
+                    requested_hot_rss.set()
         time.sleep(5)
 
 
@@ -175,7 +195,8 @@ def restart_guard(threads):
 
 def status():
     data = health()
-    data.update({'active': ACTIVE, 'owner': 'server', 'running': dict(running), 'deliveries': summary()})
+    data.update({'active': ACTIVE, 'owner': 'server', 'running': dict(running),
+                 'deliveries': summary(), 'push_delivery': push_gap_health()})
     now = time.time()
     issues = []
     for name, limit in [('rss', 2700), ('push', 900), ('renewal', 900), ('notifications', 900)]:
@@ -186,6 +207,8 @@ def status():
             issues.append(name + ': ' + job['error'])
     if data['subscriptions'].get('expired'):
         issues.append('expired/unverified subscriptions')
+    if data['push_delivery'].get('open'):
+        issues.append('push delivery gaps: ' + str(data['push_delivery']['open']))
     if data['deliveries'].get('uncertain') or data['deliveries'].get('sending'):
         issues.append('delivery outcomes require reconciliation')
     data['issues'] = issues

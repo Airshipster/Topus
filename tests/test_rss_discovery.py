@@ -3,7 +3,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from rss_discovery import read_result, save_result
+from rss_discovery import hot_channels, push_gap_health, read_result, save_result
+from push_store import database
 import rss
 
 
@@ -37,3 +38,16 @@ class DiscoveryTests(unittest.TestCase):
         save_result('channel', [], '')
         self.assertEqual(rss.check_rss_feed('channel'), [])
         self.assertNotIn('channel', rss.failure_reasons)
+
+    def test_recent_active_verified_channel_enters_hotset(self):
+        with database() as db:
+            db.execute("INSERT INTO leases(channel_id,enabled) VALUES ('channel',1)")
+        save_result('channel', [{'video_id':'video-one'}], '', now=100)
+        self.assertEqual(hot_channels(now=101), {'channel'})
+        self.assertEqual(hot_channels(now=100 + 8 * 86400), set())
+
+    def test_hot_scan_records_only_new_videos_as_push_gaps(self):
+        save_result('channel', [{'video_id':'old-video'}], '', now=100)
+        save_result('channel', [{'video_id':'old-video'}, {'video_id':'new-video'}], '',
+                    now=200, track_push_gap=True)
+        self.assertEqual(push_gap_health(now=200 + 601)['open'], 1)
