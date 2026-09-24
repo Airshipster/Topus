@@ -119,10 +119,12 @@ class CoordinationTests(unittest.TestCase):
 
     def check_remote_mirror(self, fail_append):
         client = Mock()
-        event = {'key': 'fixture-event', 'video_id': 'abcdefghijk', 'channel_id': 'UC' + 'a' * 22, 'received': 1789000000}
+        event = {'key': 'fixture-event', 'video_id': 'abcdefghijk',
+                 'channel_id': 'UC' + 'a' * 22, 'received': 1789000000,
+                 'source': 'RSS · server'}
         client.request.side_effect = lambda path, body=None: {'events': [event]} if path == '/events/pending' else {'ok': True}
         worksheet = Mock()
-        worksheet.get_all_values.return_value = [['Timestamp GMT+4', 'Video ID', 'Ссылка на канал', 'Обработано', 'Проекты']]
+        worksheet.get_all_values.return_value = [['Timestamp GMT+4', 'Video ID', 'Ссылка на канал', 'Обработано', 'Проекты', 'Источник']]
         if fail_append:
             worksheet.append_rows.side_effect = RuntimeError('fixture write failure')
         sheet = Mock()
@@ -139,6 +141,7 @@ class CoordinationTests(unittest.TestCase):
         acknowledged = [call for call in client.request.call_args_list if call.args[0] == '/events/ack']
         self.assertEqual(len(acknowledged), 0 if fail_append else 1)
         worksheet.append_rows.assert_called_once()
+        self.assertEqual(worksheet.append_rows.call_args.args[0][0][-1], 'RSS · server')
 
 
 if __name__ == '__main__':

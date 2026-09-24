@@ -2701,6 +2701,7 @@ def get_push_events(sheet):
         channel_col = indexes.get('Ссылка на канал')
         status_col = indexes.get('Обработано')
         projects_col = indexes.get('Проекты')
+        source_col = indexes.get('Источник')
         timestamp_col = indexes.get('Timestamp GMT+4', indexes.get('Timestamp'))
         if video_col is None or channel_col is None or status_col is None:
             raise ValueError('Push events headers missing required columns')
@@ -2720,6 +2721,7 @@ def get_push_events(sheet):
                         'channel_id': channel_id,
                         'timestamp': row[timestamp_col] if timestamp_col is not None and len(row) > timestamp_col else '',
                         'projects': row[projects_col] if projects_col is not None and len(row) > projects_col else '',
+                        'source': row[source_col] if source_col is not None and len(row) > source_col else 'Push',
                     })
         
         return events

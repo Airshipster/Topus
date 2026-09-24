@@ -32,6 +32,22 @@ class QueueContractTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             sheets.get_push_events(book)
 
+    def test_push_event_source_is_read_and_classified(self):
+        worksheet = Mock()
+        worksheet.get_all_values.return_value = [
+            ['Timestamp GMT+4', 'Video ID', 'Ссылка на канал', 'Обработано', 'Проекты', 'Источник'],
+            ['25.09.2026 12:00:00', 'abcdefghijk',
+             'https://www.youtube.com/channel/UCaaaaaaaaaaaaaaaaaaaaaa', '❌', '', 'RSS · server'],
+        ]
+        book = Mock()
+        book.worksheet.return_value = worksheet
+
+        event = sheets.get_push_events(book)[0]
+
+        self.assertEqual(event['source'], 'RSS · server')
+        self.assertEqual(main.source_method_for_event(event, {}), 'RSS')
+        self.assertEqual(main.source_method_for_event({'source':'Push · server'}, {}), 'Push')
+
     def test_pending_stream_replay_is_scoped_to_project(self):
         values = [['Проект', 'Ссылка на видео', 'Ссылка на канал', 'Системный статус', 'TG message_id'],
                   ['SciTopus', 'https://www.youtube.com/watch?v=abcdefghijk',

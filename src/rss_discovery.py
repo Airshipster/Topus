@@ -4,7 +4,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from push_store import database
+from push_store import database, queue_event
 
 HOT_RETENTION_SECONDS = 7 * 86400
 PUSH_GRACE_SECONDS = 10 * 60
@@ -31,6 +31,7 @@ def _video_ids(videos):
 def save_result(channel, videos, error, now=None, track_push_gap=False):
     initialize()
     checked = time.time() if now is None else now
+    queued = 0
     with database() as db:
         previous_row = db.execute(
             'SELECT payload FROM rss_discovery WHERE channel_id=?', (channel,)
@@ -64,6 +65,10 @@ def save_result(channel, videos, error, now=None, track_push_gap=False):
                 db.execute('INSERT OR IGNORE INTO rss_push_gaps('
                            'video_id,channel_id,first_seen,push_received) VALUES (?,?,?,?)',
                            (video_id, channel, checked, push_received))
+                if not push_received:
+                    queued += queue_event(video_id, channel, received=checked,
+                                          source='RSS · server', connection=db)
+    return queued
 
 
 def hot_channels(now=None):
@@ -153,6 +158,7 @@ def run():
         return
     failures = 0
     failed = set()
+    queued = 0
     with ThreadPoolExecutor(max_workers=max(1, min(12, int(config.RSS_WORKERS)))) as pool:
         futures = {pool.submit(check_rss_feed, channel): channel for channel in channels}
         for future in as_completed(futures):
@@ -162,7 +168,7 @@ def run():
                 error = failure_reasons.get(channel, 'RSS_DISCOVERY_FAILED') if videos is None else ''
             except Exception as exc:
                 videos, error = None, type(exc).__name__
-            save_result(channel, videos, error, track_push_gap=(mode == 'hot'))
+            queued += save_result(channel, videos, error, track_push_gap=(mode == 'hot'))
             failures += bool(error)
             if error:
                 failed.add(channel)
@@ -173,7 +179,7 @@ def run():
         db.execute('DELETE FROM rss_discovery WHERE checked<?', (time.time()-7*86400,))
     if mode == 'hot':
         report_push_gap_health()
-    print(f'RSS_DISCOVERY mode={mode} completed={len(channels)} failed={failures}', flush=True)
+    print(f'RSS_DISCOVERY mode={mode} completed={len(channels)} failed={failures} queued={queued}', flush=True)
     if failures:
         raise RuntimeError(f'RSS_DISCOVERY_FAILED_{failures}')
 
