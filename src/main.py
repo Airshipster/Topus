@@ -83,6 +83,11 @@ def source_method_for_channel(method, channel_info):
     return f"{'Bot: ' if channel_info.get('bot_only') else ''}{method}"
 
 
+def source_method_for_event(event, channel_info):
+    source = str(event.get('source') or '').strip().lower()
+    return source_method_for_channel('RSS' if source.startswith('rss') else 'Push', channel_info)
+
+
 def publication_status_detail(video):
     labels = []
     if video.get('bot_only'):
@@ -672,7 +677,7 @@ def main():
                     if event['channel_id'] not in yt_channels:
                         continue
                     channel_info = yt_channels[event['channel_id']]
-                    source_method = source_method_for_channel('Push', channel_info)
+                    source_method = source_method_for_event(event, channel_info)
                 
                     key = publication_key(event['video_id'], project)
 

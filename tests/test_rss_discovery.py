@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from rss_discovery import hot_channels, push_gap_health, read_result, save_result
-from push_store import database
+from push_store import database, queue_event
 import rss
 
 
@@ -47,7 +47,28 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(hot_channels(now=100 + 8 * 86400), set())
 
     def test_hot_scan_records_only_new_videos_as_push_gaps(self):
-        save_result('channel', [{'video_id':'old-video'}], '', now=100)
-        save_result('channel', [{'video_id':'old-video'}, {'video_id':'new-video'}], '',
-                    now=200, track_push_gap=True)
+        channel = 'UC' + 'a' * 22
+        save_result(channel, [{'video_id':'oldvideo123'}], '', now=100)
+        queued = save_result(channel, [{'video_id':'oldvideo123'}, {'video_id':'newvideo123'}], '',
+                             now=200, track_push_gap=True)
+        self.assertEqual(queued, 1)
         self.assertEqual(push_gap_health(now=200 + 601)['open'], 1)
+        with database() as db:
+            event = db.execute("SELECT video_id,source FROM events").fetchone()
+        self.assertEqual((event['video_id'], event['source']), ('newvideo123', 'RSS · server'))
+
+    def test_hot_scan_does_not_queue_rss_when_push_arrived_first(self):
+        channel = 'UC' + 'b' * 22
+        save_result(channel, [{'video_id':'oldvideo123'}], '', now=100)
+        queue_event('newvideo123', channel, received=150, source='Push · server')
+
+        queued = save_result(channel, [
+            {'video_id':'oldvideo123'}, {'video_id':'newvideo123'}
+        ], '', now=200, track_push_gap=True)
+
+        self.assertEqual(queued, 0)
+        with database() as db:
+            sources = [row['source'] for row in db.execute(
+                "SELECT source FROM events WHERE video_id='newvideo123'"
+            )]
+        self.assertEqual(sources, ['Push · server'])

@@ -22,18 +22,8 @@ ACTIVE = os.environ.get('TOPUS_WATCHDOG_ACTIVE', 'false').lower() == 'true'
 TOKEN = os.environ.get('TOPUS_WATCHDOG_TOKEN', '')
 wake = threading.Event()
 requested_rss = threading.Event()
-requested_hot_rss = threading.Event()
 running = {'publisher': None, 'renewal': False, 'tick': time.time()}
 lock = threading.Lock()
-
-
-def schedule_hot_retry(result, timer_factory=threading.Timer):
-    if result != 75:
-        return False
-    timer = timer_factory(45, requested_hot_rss.set)
-    timer.daemon = True
-    timer.start()
-    return True
 
 
 def run_job(name, mode=None):
@@ -52,7 +42,6 @@ def run_job(name, mode=None):
               'rss-discovery': 'rss_discovery.py',
               'rss-hot-discovery': 'rss_discovery.py'}.get(name, 'main.py')
     env['TOPUS_RSS_DISCOVERY_MODE'] = 'hot' if name == 'rss-hot-discovery' else 'full'
-    env['TOPUS_RSS_HOT_ONLY'] = 'true' if mode == 'rss-hot' else 'false'
     env['TOPUS_RSS_CACHE_ONLY'] = 'true' if script == 'main.py' else 'false'
     if script == 'main.py' and env.get('TOPUS_CONTROL_REQUIRED') == 'true':
         script = 'coordinated_run.py'
@@ -67,7 +56,7 @@ def run_job(name, mode=None):
             try:
                 child.wait(timeout=min(2, max(0.1, deadline - time.monotonic())))
             except subprocess.TimeoutExpired:
-                if name in ('rss', 'rss-hot') and wake.is_set():
+                if name == 'rss' and wake.is_set():
                     # A callback is time-sensitive. coordinated_run.py releases
                     # the shared lease before exiting, so a Push pass can follow.
                     os.killpg(child.pid, signal.SIGTERM)
@@ -100,10 +89,9 @@ def run_job(name, mode=None):
         except Exception as exc:
             error = error or type(exc).__name__
     with database() as db:
-        if name in ('rss', 'rss-hot') and (code == 75 or preempted):
+        if name == 'rss' and (code == 75 or preempted):
             # Lease contention did not scan anything; retry in one minute.
-            retry_age = 1740 if name == 'rss' else 240
-            db.execute('UPDATE jobs SET started=? WHERE name=?', (time.time() - retry_age, name))
+            db.execute('UPDATE jobs SET started=? WHERE name=?', (time.time() - 1740, name))
         db.execute('UPDATE jobs SET completed=?,success=CASE WHEN ?=\'\' THEN ? ELSE success END,error=? WHERE name=?',
                    (time.time(), error, time.time(), error, name))
     return code
@@ -125,24 +113,20 @@ def publisher_loop():
             rss = jobs.get('rss', {})
             push = jobs.get('push', {})
             # Cadence is measured from start, never postponed by an unrelated success.
-            if requested_rss.is_set() or now - (rss.get('started') or 0) >= 1800:
-                requested_rss.clear()
-                requested_hot_rss.clear()
-                mode = 'rss'
-            elif now - (push.get('started') or 0) >= 120 or wake.is_set():
+            if wake.is_set():
                 mode = 'push'
-            elif requested_hot_rss.is_set():
-                requested_hot_rss.clear()
-                mode = 'rss-hot'
+                wake.clear()
+            elif requested_rss.is_set() or now - (rss.get('started') or 0) >= 1800:
+                requested_rss.clear()
+                mode = 'rss'
+            elif now - (push.get('started') or 0) >= 120:
+                mode = 'push'
             else:
                 wake.wait(5)
                 continue
-            wake.clear()
             running['publisher'] = mode
             try:
-                result = run_job(mode, mode)
-                if mode == 'rss-hot':
-                    schedule_hot_retry(result)
+                run_job(mode, mode)
             except Exception as exc:
                 print('Publisher scheduler error: ' + type(exc).__name__, flush=True)
                 time.sleep(10)
@@ -183,7 +167,12 @@ def discovery_loop():
                 except Exception as exc:
                     print('Hot RSS discovery scheduler error: ' + type(exc).__name__, flush=True)
                 finally:
-                    requested_hot_rss.set()
+                    with database() as db:
+                        pending = db.execute(
+                            'SELECT count(*) FROM events WHERE mirrored=0'
+                        ).fetchone()[0]
+                    if pending:
+                        wake.set()
         time.sleep(5)
 
 

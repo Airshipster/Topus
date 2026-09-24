@@ -18,7 +18,8 @@ def database():
     db.executescript('''
       CREATE TABLE IF NOT EXISTS events (
         fingerprint TEXT PRIMARY KEY, video_id TEXT NOT NULL, channel_id TEXT NOT NULL,
-        received REAL NOT NULL, mirrored INTEGER NOT NULL DEFAULT 0);
+        received REAL NOT NULL, mirrored INTEGER NOT NULL DEFAULT 0,
+        source TEXT NOT NULL DEFAULT 'Push · server');
       CREATE TABLE IF NOT EXISTS leases (
         channel_id TEXT PRIMARY KEY, requested REAL NOT NULL DEFAULT 0,
         verified REAL NOT NULL DEFAULT 0, expires REAL NOT NULL DEFAULT 0,
@@ -39,6 +40,9 @@ def database():
         video_id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, first_seen REAL NOT NULL,
         push_received REAL NOT NULL DEFAULT 0);
     ''')
+    event_columns = {row['name'] for row in db.execute('PRAGMA table_info(events)')}
+    if 'source' not in event_columns:
+        db.execute("ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT 'Push · server'")
     try:
         yield db
         db.commit()
@@ -48,6 +52,26 @@ def database():
 
 def verify_key(channel_id):
     return hmac.new(os.environ['TOPUS_HUB_SECRET'].encode(), channel_id.encode(), hashlib.sha256).hexdigest()
+
+
+def queue_event(video_id, channel_id, *, received=None, source='Push · server', fingerprint=None,
+                connection=None):
+    if not re.fullmatch(r'[\w-]{11}', str(video_id)) or not re.fullmatch(r'UC[\w-]{22}', str(channel_id)):
+        raise ValueError('Invalid video or channel ID')
+    source = str(source or 'Push · server')[:40]
+    fingerprint = fingerprint or hashlib.sha256(
+        f'{source}:{channel_id}:{video_id}'.encode()
+    ).hexdigest()
+    def insert(db):
+        return db.execute(
+            'INSERT OR IGNORE INTO events(fingerprint,video_id,channel_id,received,source) '
+            'VALUES (?,?,?,?,?)',
+            (fingerprint, video_id, channel_id, time.time() if received is None else received, source),
+        )
+    if connection is not None:
+        return bool(insert(connection).rowcount)
+    with database() as db:
+        return bool(insert(db).rowcount)
 
 
 def confirm(channel_id, supplied, lease):
@@ -92,8 +116,9 @@ def accept_xml(body, signature):
                 continue
             updated = entry.findtext('a:updated', '', ns)
             fingerprint = hashlib.sha256(f'{channel}:{vid}:{updated}'.encode()).hexdigest()
-            cursor = db.execute('INSERT OR IGNORE INTO events(fingerprint,video_id,channel_id,received) VALUES (?,?,?,?)',
-                                (fingerprint, vid, channel, time.time()))
+            cursor = db.execute('INSERT OR IGNORE INTO events('
+                                'fingerprint,video_id,channel_id,received,source) VALUES (?,?,?,?,?)',
+                                (fingerprint, vid, channel, time.time(), 'Push · server'))
             db.execute('UPDATE rss_push_gaps SET push_received=? '
                        'WHERE video_id=? AND channel_id=? AND push_received=0',
                        (time.time(), vid, channel))
@@ -136,7 +161,8 @@ def mirror_events(sheet):
     control = ControlClient() if configured() else None
     if control:
         for start in range(0, len(local_events), 25):
-            control.request('/events', {'events': [{**e, 'event_id': e['fingerprint'], 'source': 'server'}
+            control.request('/events', {'events': [{**e, 'event_id': e['fingerprint'],
+                                                    'source': e.get('source') or 'Push · server'}
                                                   for e in local_events[start:start + 25]]})
         events = control.request('/events/pending', {}).get('events', [])
     if not events:
@@ -144,6 +170,11 @@ def mirror_events(sheet):
     worksheet = sheet.worksheet(config.SHEET_NAME_PUSH_EVENTS)
     values = worksheet.get_all_values()
     headers = values[0]
+    if 'Источник' not in headers:
+        from sheets import a1_column
+        headers = list(headers) + ['Источник']
+        worksheet.update(range_name=f'A1:{a1_column(len(headers))}1', values=[headers],
+                         value_input_option='USER_ENTERED')
     # Retry an uncertain append by checking its durable video/channel key first.
     vi, ci = headers.index('Video ID'), headers.index('Ссылка на канал')
     existing = {(r[vi], r[ci]) for r in values[1:] if len(r) > max(vi, ci)}
@@ -152,7 +183,8 @@ def mirror_events(sheet):
         key = (event['video_id'], channel_link(event['channel_id']))
         if key not in existing:
             record = {'Timestamp GMT+4': format_timestamp(datetime.fromtimestamp(event['received'], timezone.utc)),
-                      'Video ID': key[0], 'Ссылка на канал': key[1], 'Обработано': '❌', 'Проекты': ''}
+                      'Video ID': key[0], 'Ссылка на канал': key[1], 'Обработано': '❌',
+                      'Проекты': '', 'Источник': event.get('source') or 'Push'}
             rows.append([record.get(h, '') for h in headers])
             existing.add(key)
     if rows:
