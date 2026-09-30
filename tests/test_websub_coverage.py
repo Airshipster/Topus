@@ -45,7 +45,7 @@ class CoverageTests(unittest.TestCase):
             request = Mock(path='/websub?'+query)
             with patch.object(controller, 'confirm', return_value=True) as confirm:
                 controller.Handler.do_GET(request)
-                confirm.assert_called_once_with('UCfixture', 'signed-token', 3600)
+                confirm.assert_called_once_with('UCfixture', 'signed-token', 3600, path)
                 request.reply.assert_called_once_with(200, 'challenge', text=True)
             request.reset_mock()
             with patch.object(controller, 'confirm', return_value=False):

@@ -2,11 +2,34 @@
 import os
 import json
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor
 import requests
 import config
 from push_store import database, verify_key
 from sheets import authenticate_google_sheets, load_settings, load_projects, get_all_active_channels, format_timestamp
+
+
+def hub_backoff(status, retry_after='', now=None):
+    now = time.time() if now is None else now
+    if status not in (429, 503):
+        return
+    try:
+        delay = max(120, min(3600, int(retry_after)))
+    except (ValueError, TypeError):
+        delay = 600 if status == 429 else 120
+    with database() as db:
+        db.execute('CREATE TABLE IF NOT EXISTS hub_backoff (id INTEGER PRIMARY KEY, until REAL NOT NULL)')
+        db.execute('INSERT INTO hub_backoff VALUES (1,?) ON CONFLICT(id) DO UPDATE '
+                   'SET until=max(until,excluded.until)', (now + delay,))
+
+
+def hub_ready(now=None):
+    now = time.time() if now is None else now
+    with database() as db:
+        db.execute('CREATE TABLE IF NOT EXISTS hub_backoff (id INTEGER PRIMARY KEY, until REAL NOT NULL)')
+        row = db.execute('SELECT until FROM hub_backoff WHERE id=1').fetchone()
+    return not row or row['until'] <= now
 
 
 def reconcile_inventory(channels, complete):
@@ -54,28 +77,42 @@ def run():
     reconcile_inventory(channels, complete=not incomplete)
     with database() as db:
         due = [r['channel_id'] for r in db.execute('SELECT channel_id FROM leases WHERE enabled=1 '
-                    'AND expires<? AND requested<? ORDER BY requested,channel_id LIMIT 100',
+                    "AND (expires<? OR topic_path!='/xml/feeds/videos.xml') "
+                    'AND requested<? ORDER BY requested,channel_id LIMIT 30',
                     (time.time() + 86400, time.time() - 300)) if r['channel_id'] in channels]
-        db.executemany("UPDATE leases SET requested=?,error='awaiting verification' WHERE channel_id=?",
-                       [(time.time(), c) for c in due])
+
+    pacing = threading.Lock()
+    last_request = [0.0]
 
     def renew(channel):
+        with pacing:
+            if not hub_ready():
+                return None
+            wait = 1 - (time.monotonic() - last_request[0])
+            if wait > 0:
+                time.sleep(wait)
+            last_request[0] = time.monotonic()
+            requested = time.time()
+            with database() as db:
+                db.execute("UPDATE leases SET requested=?,error='awaiting verification' WHERE channel_id=?",
+                           (requested, channel))
         try:
             response = requests.post('https://pubsubhubbub.appspot.com/subscribe', data={
                 'hub.callback': callback + '?verify=' + verify_key(channel),
-                'hub.topic': 'https://www.youtube.com/feeds/videos.xml?channel_id=' + channel,
+                'hub.topic': 'https://www.youtube.com/xml/feeds/videos.xml?channel_id=' + channel,
                 'hub.mode': 'subscribe', 'hub.verify': 'async', 'hub.lease_seconds': '432000',
                 'hub.secret': secret,
             }, timeout=(5, 12))
+            hub_backoff(response.status_code, response.headers.get('Retry-After', ''))
             error = '' if response.status_code in (202, 204) else f'HTTP {response.status_code}'
         except requests.RequestException as exc:
             error = type(exc).__name__
         if error:
             with database() as db:
-                db.execute('UPDATE leases SET error=? WHERE channel_id=?', (error, channel))
+                db.execute('UPDATE leases SET error=? WHERE channel_id=? AND verified<requested', (error, channel))
         return not error
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(renew, due))
     worksheet = sheet.worksheet('Подписки')
     values = worksheet.get_all_values()
@@ -119,8 +156,9 @@ def run():
         new_rows.append([record.get(h, '') for h in headers])
     if new_rows:
         worksheet.append_rows(new_rows, value_input_option='USER_ENTERED')
-    print(f'Subscription batch: requested={len(due)}, accepted={sum(results)}, verified={sum(r["expires"]>time.time() for r in leases.values())}', flush=True)
-    if results and not any(results):
+    attempted = [result for result in results if result is not None]
+    print(f'Subscription batch: requested={len(attempted)}, accepted={sum(attempted)}, verified={sum(r["expires"]>time.time() for r in leases.values())}', flush=True)
+    if attempted and not any(attempted):
         raise RuntimeError('All subscription requests failed')
     if incomplete:
         raise RuntimeError('Partial subscription inventory; accessible channels renewed, existing leases retained')

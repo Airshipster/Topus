@@ -109,6 +109,8 @@ def publisher_loop():
                 continue
             with database() as db:
                 jobs = {r['name']: dict(r) for r in db.execute('SELECT * FROM jobs')}
+                if db.execute('SELECT 1 FROM events WHERE mirrored=0 LIMIT 1').fetchone():
+                    wake.set()
             now = time.time()
             rss = jobs.get('rss', {})
             push = jobs.get('push', {})
@@ -152,14 +154,13 @@ def discovery_loop():
             hot = db.execute("SELECT started FROM jobs WHERE name='rss-hot-discovery'").fetchone()
         if ACTIVE:
             now = time.time()
-            if not full or now - (full['started'] or 0) >= 1800:
+            if not full or now - (full['started'] or 0) >= 300:
                 try:
                     run_job('rss-discovery')
                 except Exception as exc:
                     print('RSS discovery scheduler error: ' + type(exc).__name__, flush=True)
                 finally:
-                    # Publish completed source results even if other sources failed.
-                    requested_rss.set()
+                    # Per-video events wake publishing without a whole-project replay.
                     wake.set()
             elif not hot or now - (hot['started'] or 0) >= 300:
                 try:
@@ -237,7 +238,7 @@ class Handler(BaseHTTPRequestHandler):
                 valid = (topic.scheme == 'https' and topic.netloc == 'www.youtube.com' and
                          topic.path in ('/feeds/videos.xml', '/xml/feeds/videos.xml') and q.get('hub.mode') == 'subscribe' and
                          0 < int(q.get('hub.lease_seconds', '0')) and
-                         confirm(channel, q.get('verify', ''), int(q['hub.lease_seconds'])))
+                         confirm(channel, q.get('verify', ''), int(q['hub.lease_seconds']), topic.path))
             except (ValueError, KeyError):
                 valid = False
             self.reply(200 if valid else 403, q.get('hub.challenge', '') if valid else 'rejected', text=True)

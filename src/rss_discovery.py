@@ -28,7 +28,7 @@ def _video_ids(videos):
             if isinstance(video, dict) and video.get('video_id')}
 
 
-def save_result(channel, videos, error, now=None, track_push_gap=False):
+def save_result(channel, videos, error, now=None, track_push_gap=False, queue_discoveries=False):
     initialize()
     checked = time.time() if now is None else now
     queued = 0
@@ -51,14 +51,14 @@ def save_result(channel, videos, error, now=None, track_push_gap=False):
         elif not error:
             db.execute('UPDATE rss_hotset SET last_checked=? WHERE channel_id=?',
                        (checked, channel))
-        if track_push_gap and not error and isinstance(videos, list):
+        if (track_push_gap or queue_discoveries) and not error and isinstance(videos, list):
             new_ids = _video_ids(videos) - _video_ids(previous)
             for video in videos:
                 video_id = video.get('video_id') if isinstance(video, dict) else None
                 if video_id not in new_ids:
                     continue
                 push_row = db.execute(
-                    'SELECT max(received) received FROM events WHERE video_id=? AND channel_id=?',
+                    "SELECT max(received) received FROM events WHERE video_id=? AND channel_id=? AND source LIKE 'Push%'",
                     (video_id, channel),
                 ).fetchone()
                 push_received = float(push_row['received'] or 0)
@@ -138,24 +138,45 @@ def run():
     if mode == 'hot':
         channels = hot_channels()
     else:
-        client = authenticate_google_sheets()
-        sheet = client.open_by_key(config.SPREADSHEET_ID)
-        load_settings(sheet)
-        projects = load_projects(sheet, update_status=False)
-        channels = set()
-        for project in projects:
-            if project.get('rss_feed_enabled', True):
-                channels.update(load_youtube_channels(client, project,
-                                include_disabled=bool(project.get('bot_enabled'))))
-        if not channels:
-            raise RuntimeError('RSS_DISCOVERY_INVENTORY_EMPTY')
-        from channel_availability import check as check_availability
-        check_availability(channels)
+        initialize()
+        with database() as db:
+            db.execute('CREATE TABLE IF NOT EXISTS rss_inventory (id INTEGER PRIMARY KEY, updated REAL, payload TEXT)')
+            cached = db.execute('SELECT updated,payload FROM rss_inventory WHERE id=1').fetchone()
+        if cached and time.time() - cached['updated'] < 3600:
+            channels = set(json.loads(cached['payload']))
+        else:
+            channels = load_inventory(config)
+            with database() as db:
+                db.execute('INSERT INTO rss_inventory VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET '
+                           'updated=excluded.updated,payload=excluded.payload', (time.time(), json.dumps(sorted(channels))))
     initialize()
     if not channels:
         print('RSS_DISCOVERY mode=hot completed=0 failed=0', flush=True)
         report_push_gap_health()
         return
+    collect(channels, config, mode)
+
+
+def load_inventory(config):
+    from sheets import authenticate_google_sheets, load_settings, load_projects, load_youtube_channels
+    from channel_availability import check as check_availability
+    client = authenticate_google_sheets()
+    sheet = client.open_by_key(config.SPREADSHEET_ID)
+    load_settings(sheet)
+    projects = load_projects(sheet, update_status=False)
+    channels = set()
+    for project in projects:
+        if project.get('rss_feed_enabled', True):
+            channels.update(load_youtube_channels(client, project,
+                            include_disabled=bool(project.get('bot_enabled'))))
+    if not channels or any(project.get('channels_error') for project in projects):
+        raise RuntimeError('RSS_DISCOVERY_INVENTORY_INCOMPLETE')
+    check_availability(channels)
+    return channels
+
+
+def collect(channels, config, mode):
+    from rss import check_rss_feed, failure_reasons
     failures = 0
     failed = set()
     queued = 0
@@ -168,7 +189,8 @@ def run():
                 error = failure_reasons.get(channel, 'RSS_DISCOVERY_FAILED') if videos is None else ''
             except Exception as exc:
                 videos, error = None, type(exc).__name__
-            queued += save_result(channel, videos, error, track_push_gap=(mode == 'hot'))
+            queued += save_result(channel, videos, error, track_push_gap=(mode == 'hot'),
+                                  queue_discoveries=(mode == 'full'))
             failures += bool(error)
             if error:
                 failed.add(channel)

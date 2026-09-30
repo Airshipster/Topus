@@ -23,7 +23,8 @@ def database():
       CREATE TABLE IF NOT EXISTS leases (
         channel_id TEXT PRIMARY KEY, requested REAL NOT NULL DEFAULT 0,
         verified REAL NOT NULL DEFAULT 0, expires REAL NOT NULL DEFAULT 0,
-        error TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1);
+        error TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,
+        topic_path TEXT NOT NULL DEFAULT '');
       CREATE TABLE IF NOT EXISTS jobs (
         name TEXT PRIMARY KEY, started REAL, completed REAL, success REAL,
         error TEXT NOT NULL DEFAULT '');
@@ -43,6 +44,9 @@ def database():
     event_columns = {row['name'] for row in db.execute('PRAGMA table_info(events)')}
     if 'source' not in event_columns:
         db.execute("ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT 'Push · server'")
+    lease_columns = {row['name'] for row in db.execute('PRAGMA table_info(leases)')}
+    if 'topic_path' not in lease_columns:
+        db.execute("ALTER TABLE leases ADD COLUMN topic_path TEXT NOT NULL DEFAULT ''")
     try:
         yield db
         db.commit()
@@ -74,15 +78,15 @@ def queue_event(video_id, channel_id, *, received=None, source='Push · server',
         return bool(insert(db).rowcount)
 
 
-def confirm(channel_id, supplied, lease):
+def confirm(channel_id, supplied, lease, topic_path='/xml/feeds/videos.xml'):
     if not re.fullmatch(r'UC[\w-]{22}', channel_id) or not hmac.compare_digest(verify_key(channel_id), supplied):
         return False
     with database() as db:
         row = db.execute('SELECT requested,enabled FROM leases WHERE channel_id=?', (channel_id,)).fetchone()
         if not row or not row['enabled'] or time.time() - row['requested'] > 3600:
             return False
-        db.execute("UPDATE leases SET verified=?,expires=?,error='' WHERE channel_id=?",
-                   (time.time(), time.time() + min(lease, 864000), channel_id))
+        db.execute("UPDATE leases SET verified=?,expires=?,error='',topic_path=? WHERE channel_id=?",
+                   (time.time(), time.time() + min(lease, 864000), topic_path, channel_id))
     return True
 
 
@@ -203,7 +207,7 @@ def health():
         callback = db.execute('SELECT * FROM callback_health WHERE id=1').fetchone()
         return {
             'pending_ingress': db.execute('SELECT count(*) FROM events WHERE mirrored=0').fetchone()[0],
-            'last_push_at': db.execute('SELECT max(received) FROM events').fetchone()[0],
+            'last_push_at': db.execute("SELECT max(received) FROM events WHERE source LIKE 'Push%'").fetchone()[0],
             'callbacks': dict(callback) if callback else {
                 'requests': 0, 'accepted': 0, 'rejected': 0, 'entries': 0,
                 'new_events': 0, 'ignored_unsubscribed': 0,

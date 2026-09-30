@@ -72,3 +72,18 @@ class DiscoveryTests(unittest.TestCase):
                 "SELECT source FROM events WHERE video_id='newvideo123'"
             )]
         self.assertEqual(sources, ['Push · server'])
+
+    def test_rss_queue_is_not_evidence_of_a_real_push_callback(self):
+        channel = 'UC' + 'c' * 22
+        save_result(channel, [], '', now=100)
+        queue_event('newvideo123', channel, received=150, source='RSS · server')
+        save_result(channel, [{'video_id':'newvideo123'}], '', now=200, track_push_gap=True)
+        self.assertEqual(push_gap_health(now=801)['open'], 1)
+
+    def test_full_scan_queues_new_video_without_waiting_for_publication_pass(self):
+        channel = 'UC' + 'd' * 22
+        save_result(channel, [], '', now=100)
+        self.assertEqual(save_result(channel, [{'video_id':'newvideo123'}], '', now=200,
+                                     queue_discoveries=True), 1)
+        self.assertEqual(save_result(channel, [{'video_id':'newvideo123'}], '', now=300,
+                                     queue_discoveries=True), 0)
