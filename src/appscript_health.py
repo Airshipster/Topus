@@ -58,7 +58,7 @@ def main():
             headers={'Authorization':'Bearer '+settings['TOPUS_CONTROL_TOKEN'], 'Content-Type':'application/json', 'User-Agent':'Topus-Control/1.0'})
         with opener.open(req, timeout=60 if path == '/monitor' else 25) as response:
             return json.loads(response.read(32768))
-    snapshot = control('/status')
+    snapshot = control('/runtime')
     beats = snapshot.get('beats', {})
     if beats.get('server-http', {}).get('success_minutes', 999) >= 4:
         try:
@@ -91,7 +91,7 @@ def main():
         return
     ok = probe_queue()
     if not ok:
-        latest = control('/status').get('beats', {}).get('appscript', {})
+        latest = control('/runtime').get('beats', {}).get('appscript', {})
         if (latest.get('success', 0) > previous.get('success', 0)
                 and latest.get('error') == '' and latest.get('success_minutes', 999) < 4):
             print('Newer successful queue check supersedes this failed probe')

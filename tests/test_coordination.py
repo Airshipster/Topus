@@ -93,13 +93,14 @@ class CoordinationTests(unittest.TestCase):
         client = Mock()
         client.request.side_effect = lambda path, body=None: (
             {'token': 'lease'} if path == '/lease/acquire' else
-            {'beats': {'rss': {'success_minutes': 10}}} if path == '/status' else {'ok': True})
+            {'beats': {'rss': {'success_minutes': 10}}} if path == '/runtime' else {'ok': True})
         child = Mock()
         child.wait.return_value = 0
         spawn = Mock(return_value=child)
         with patch.dict(os.environ, {'TOPUS_PUBLISHER_OWNER': 'github', 'TOPUS_PUSH_ONLY': 'auto'}):
             self.assertEqual(run(client, spawn), 0)
         self.assertEqual(spawn.call_args.kwargs['env']['TOPUS_PUSH_ONLY'], 'true')
+        self.assertNotIn(unittest.mock.call('/status'), client.request.call_args_list)
         self.assertNotIn(unittest.mock.call('rss', True), client.heartbeat.call_args_list)
 
     def test_disabled_coordinator_never_starts_publisher(self):

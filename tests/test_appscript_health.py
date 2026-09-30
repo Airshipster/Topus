@@ -36,7 +36,7 @@ class AppScriptHealthTests(unittest.TestCase):
                         path = request.full_url.split('.workers.dev')[1]
                         calls.append(path)
                         body = {'beats':{'server-http':{'success_minutes':age},
-                            'appscript':{'error':'','seen_minutes':0}}} if path == '/status' else {'ok':True}
+                            'appscript':{'error':'','seen_minutes':0}}} if path == '/runtime' else {'ok':True}
                         return Response(json.dumps(body).encode())
                 with patch.dict('os.environ', {'TOPUS_CONTROL_TOKEN':'fixture',
                     'TOPUS_CONTROL_URL':'https://topus-publication-control.scitopus.workers.dev'}), \

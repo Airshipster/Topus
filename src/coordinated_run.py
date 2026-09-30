@@ -32,7 +32,7 @@ def run(client=None, spawn=subprocess.Popen, clock=time.monotonic):
     if owner not in ('server', 'github'):
         raise ControlUnavailable('CONTROL_OWNER_INVALID')
     name = 'server-publisher' if owner == 'server' else 'github'
-    if client.request('/status').get('active') is False:
+    if client.request('/runtime').get('active') is False:
         client.heartbeat(name, owner == 'github')
         print('CONTROL_INACTIVE: waiting for coordinated activation; no publication performed', flush=True)
         return 75
@@ -64,7 +64,7 @@ def run(client=None, spawn=subprocess.Popen, clock=time.monotonic):
         if maintenance:
             env['TOPUS_PUSH_ONLY'] = 'false'
         elif env.get('TOPUS_PUSH_ONLY', '') == 'auto':
-            rss = client.request('/status').get('beats', {}).get('rss', {})
+            rss = client.request('/runtime').get('beats', {}).get('rss', {})
             last_attempt = rss.get('seen_minutes', rss.get('success_minutes'))
             env['TOPUS_PUSH_ONLY'] = 'true' if last_attempt is not None and last_attempt < 30 else 'false'
         rss_pass = not maintenance and env.get('TOPUS_PUSH_ONLY') != 'true'
@@ -85,7 +85,7 @@ def run(client=None, spawn=subprocess.Popen, clock=time.monotonic):
         client.heartbeat(name, code == 0, '' if code == 0 else 'PUBLISHER_FAILED')
         if rss_pass:
             if code == 0:
-                detail = client.request('/status').get('beats', {}).get('rss', {}).get('error', '')
+                detail = client.request('/runtime').get('beats', {}).get('rss', {}).get('error', '')
                 if detail.startswith('SOURCE_UNAVAILABLE_'):
                     client.heartbeat('rss', True, detail)
                 else:
