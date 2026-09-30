@@ -4,6 +4,10 @@ from unittest.mock import Mock, patch
 import controller
 
 class RequestedRssTests(unittest.TestCase):
+    def test_publisher_failure_backoff_is_bounded(self):
+        self.assertEqual([controller.publisher_failure_delay(n) for n in (1, 2, 3, 20)],
+                         [30, 60, 120, 120])
+
     def request(self, body, auth='Bearer fixture'):
         request = Mock(path='/run', headers={'Content-Length':str(len(body)), 'Authorization':auth},
                        rfile=io.BytesIO(body))

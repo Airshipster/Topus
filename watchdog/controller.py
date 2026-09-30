@@ -97,10 +97,15 @@ def run_job(name, mode=None):
     return code
 
 
+def publisher_failure_delay(failures):
+    return min(120, 15 * (2 ** min(max(failures, 1), 3)))
+
+
 def publisher_loop():
     # OS lock survives HTTP signals and serializes all publisher modes.
     with open('/data/publisher.lock', 'a') as guard:
         fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        failures = 0
         while True:
             running['tick'] = time.time()
             if not ACTIVE:
@@ -128,7 +133,12 @@ def publisher_loop():
                 continue
             running['publisher'] = mode
             try:
-                run_job(mode, mode)
+                code = run_job(mode, mode)
+                failures = failures + 1 if code else 0
+                if code:
+                    # Persisted callbacks stay queued while the coordinator is
+                    # unavailable; do not amplify its failure with a tight loop.
+                    time.sleep(publisher_failure_delay(failures))
             except Exception as exc:
                 print('Publisher scheduler error: ' + type(exc).__name__, flush=True)
                 time.sleep(10)
