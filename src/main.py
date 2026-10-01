@@ -1022,7 +1022,8 @@ def main():
             raise RuntimeError(f'Incomplete pass: publication errors={total_failed}, RSS failures={len(unresolved_sources)}')
         if configured() and not push_only_mode():
             control = ControlClient()
-            control.heartbeat('rss', True, f'SOURCE_UNAVAILABLE_{len(unavailable_sources)}' if unavailable_sources else '')
+            if os.environ.get('TOPUS_RSS_CACHE_ONLY') != 'true':
+                control.heartbeat('rss', True, f'SOURCE_UNAVAILABLE_{len(unavailable_sources)}' if unavailable_sources else '')
             control.request('/incident', {'kind':'rss-sources-unavailable', 'active':bool(unavailable_sources),
                 'summary':f'YouTube API: недоступны {len(unavailable_sources)} каналов. Данные сохранены; проверка повторится.'})
         

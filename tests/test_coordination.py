@@ -89,6 +89,17 @@ class CoordinationTests(unittest.TestCase):
         stop.assert_called_once_with(child)
         self.assertNotIn(unittest.mock.call('server-publisher', True, ''), client.heartbeat.call_args_list)
 
+    def test_cache_reconciliation_never_replaces_actual_rss_collection_health(self):
+        client = Mock()
+        client.request.return_value = {'token': 'fixture-lease'}
+        child = Mock()
+        child.wait.return_value = 0
+        with patch.dict(os.environ, {'TOPUS_PUBLISHER_OWNER': 'server', 'TOPUS_PUSH_ONLY': 'false',
+                                     'TOPUS_RSS_CACHE_ONLY': 'true'}):
+            self.assertEqual(run(client, Mock(return_value=child)), 0)
+        client.heartbeat.assert_any_call('server-publisher', True, '')
+        self.assertFalse(any(call.args[0] == 'rss' for call in client.heartbeat.call_args_list))
+
     def test_auto_mode_preserves_rss_cadence(self):
         client = Mock()
         client.request.side_effect = lambda path, body=None: (

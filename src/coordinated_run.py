@@ -67,7 +67,8 @@ def run(client=None, spawn=subprocess.Popen, clock=time.monotonic):
             rss = client.request('/runtime').get('beats', {}).get('rss', {})
             last_attempt = rss.get('seen_minutes', rss.get('success_minutes'))
             env['TOPUS_PUSH_ONLY'] = 'true' if last_attempt is not None and last_attempt < 30 else 'false'
-        rss_pass = not maintenance and env.get('TOPUS_PUSH_ONLY') != 'true'
+        rss_pass = (not maintenance and env.get('TOPUS_PUSH_ONLY') != 'true'
+                    and env.get('TOPUS_RSS_CACHE_ONLY') != 'true')
         if rss_pass:
             client.heartbeat('rss', False, 'running')
         child = spawn([sys.executable, str(Path(__file__).with_name('main.py'))],

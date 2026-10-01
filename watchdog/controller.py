@@ -83,9 +83,10 @@ def run_job(name, mode=None):
             error = f'exit {code}'
     except Exception as exc:
         error = type(exc).__name__
-    if name in ('renewal', 'notifications') and configured():
+    if name in ('renewal', 'notifications', 'rss-discovery') and configured():
         try:
-            ControlClient().heartbeat('renewal' if name == 'renewal' else 'personal', not error, error)
+            heartbeat_name = {'renewal': 'renewal', 'notifications': 'personal', 'rss-discovery': 'rss'}[name]
+            ControlClient().heartbeat(heartbeat_name, not error, error)
         except Exception as exc:
             error = error or type(exc).__name__
     with database() as db:
@@ -170,21 +171,23 @@ def discovery_loop():
                 except Exception as exc:
                     print('RSS discovery scheduler error: ' + type(exc).__name__, flush=True)
                 finally:
-                    # Per-video events wake publishing without a whole-project replay.
-                    wake.set()
+                    wake_pending_discoveries()
             elif not hot or now - (hot['started'] or 0) >= 300:
                 try:
                     run_job('rss-hot-discovery')
                 except Exception as exc:
                     print('Hot RSS discovery scheduler error: ' + type(exc).__name__, flush=True)
                 finally:
-                    with database() as db:
-                        pending = db.execute(
-                            'SELECT count(*) FROM events WHERE mirrored=0'
-                        ).fetchone()[0]
-                    if pending:
-                        wake.set()
+                    wake_pending_discoveries()
         time.sleep(5)
+
+
+def wake_pending_discoveries():
+    # Empty scans must not interrupt the full publisher's reconciliation pass.
+    with database() as db:
+        pending = db.execute('SELECT 1 FROM events WHERE mirrored=0 LIMIT 1').fetchone()
+    if pending:
+        wake.set()
 
 
 def notifications_loop():
@@ -211,7 +214,7 @@ def status():
                  'deliveries': summary(), 'push_delivery': push_gap_health()})
     now = time.time()
     issues = []
-    for name, limit in [('rss', 2700), ('push', 900), ('renewal', 900), ('notifications', 900)]:
+    for name, limit in [('rss-discovery', 2700), ('push', 900), ('renewal', 900), ('notifications', 900)]:
         job = data['jobs'].get(name, {})
         if not job.get('success') or now - job['success'] > limit:
             issues.append(name + ': no recent successful pass')
