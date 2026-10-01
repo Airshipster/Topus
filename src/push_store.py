@@ -39,7 +39,7 @@ def database():
         channel_id TEXT PRIMARY KEY, last_video REAL NOT NULL, last_checked REAL NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS rss_push_gaps (
         video_id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, first_seen REAL NOT NULL,
-        push_received REAL NOT NULL DEFAULT 0);
+        push_received REAL NOT NULL DEFAULT 0, observed_since REAL NOT NULL DEFAULT 0);
     ''')
     event_columns = {row['name'] for row in db.execute('PRAGMA table_info(events)')}
     if 'source' not in event_columns:
@@ -47,6 +47,15 @@ def database():
     lease_columns = {row['name'] for row in db.execute('PRAGMA table_info(leases)')}
     if 'topic_path' not in lease_columns:
         db.execute("ALTER TABLE leases ADD COLUMN topic_path TEXT NOT NULL DEFAULT ''")
+    gap_columns = {row['name'] for row in db.execute('PRAGMA table_info(rss_push_gaps)')}
+    if 'observed_since' not in gap_columns:
+        db.execute('BEGIN IMMEDIATE')
+        gap_columns = {row['name'] for row in db.execute('PRAGMA table_info(rss_push_gaps)')}
+        if 'observed_since' not in gap_columns:
+            db.execute('ALTER TABLE rss_push_gaps ADD COLUMN observed_since REAL NOT NULL DEFAULT 0')
+        db.commit()
+    db.execute('CREATE INDEX IF NOT EXISTS rss_push_gaps_observed '
+               'ON rss_push_gaps(push_received,first_seen) WHERE observed_since>0')
     try:
         yield db
         db.commit()
