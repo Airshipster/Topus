@@ -40,7 +40,7 @@ def save_result(channel, videos, error, now=None, track_push_gap=False, queue_di
         try:
             previous = json.loads(previous_row['payload']) if previous_row else []
         except (TypeError, ValueError):
-            previous = []
+            previous = None
         continuous = bool(previous_row and not previous_row['error'] and isinstance(previous, list)
                           and 0 <= checked - previous_row['checked'] <= OBSERVATION_MAX_AGE_SECONDS)
         db.execute('INSERT INTO rss_discovery VALUES (?,?,?,?) ON CONFLICT(channel_id) '

@@ -124,3 +124,12 @@ class DiscoveryTests(unittest.TestCase):
         with database() as db:
             row = db.execute('SELECT video_id,observed_since FROM rss_push_gaps').fetchone()
         self.assertEqual(tuple(row), ('oldvideo123', 0))
+
+    def test_corrupt_snapshot_is_recovered_without_claiming_a_push_gap(self):
+        channel = 'UC' + 'h' * 22
+        save_result(channel, [], '', now=100)
+        with database() as db:
+            db.execute('UPDATE rss_discovery SET payload=? WHERE channel_id=?', ('{', channel))
+        self.assertEqual(save_result(channel, [{'video_id':'newvideo123'}], '', now=200,
+                                     queue_discoveries=True), 1)
+        self.assertEqual(push_gap_health(now=801)['open'], 0)
