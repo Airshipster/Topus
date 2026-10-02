@@ -10,6 +10,13 @@ from push_store import database, verify_key
 from sheets import authenticate_google_sheets, load_settings, load_projects, get_all_active_channels, format_timestamp
 
 TOPIC_PATH = '/feeds/videos.xml'
+LEGACY_TOPIC_PATH = '/xml/feeds/videos.xml'
+
+def topic_for_renewal(lease, now=None):
+    now = time.time() if now is None else now
+    if lease['topic_path'] == LEGACY_TOPIC_PATH and lease['expires'] < now+86400:
+        return LEGACY_TOPIC_PATH
+    return TOPIC_PATH
 
 
 def hub_backoff(status, retry_after='', now=None):
@@ -47,8 +54,9 @@ def reconcile_inventory(channels, complete):
 def require_verified_coverage():
     # HTTP acceptance is not a confirmed lease; callbacks commit verification.
     with database() as db:
-        missing = db.execute('SELECT count(*) FROM leases WHERE enabled=1 AND (expires<=? OR topic_path!=?)',
-                             (time.time(), TOPIC_PATH)).fetchone()[0]
+        missing = db.execute('SELECT count(*) FROM leases WHERE enabled=1 AND '
+                             '(expires<=? OR topic_path NOT IN (?,?))',
+                             (time.time(), TOPIC_PATH, LEGACY_TOPIC_PATH)).fetchone()[0]
     if missing:
         raise RuntimeError(f'WEBSUB_UNVERIFIED_{missing}')
 
@@ -87,15 +95,17 @@ def run():
                            (time.time(), json.dumps(minimal)))
     reconcile_inventory(channels, complete=not incomplete)
     with database() as db:
-        due = [r['channel_id'] for r in db.execute('SELECT channel_id FROM leases WHERE enabled=1 '
+        due = [dict(r) for r in db.execute('SELECT channel_id,topic_path,expires FROM leases WHERE enabled=1 '
                     'AND (expires<? OR topic_path!=?) '
-                    'AND requested<? ORDER BY requested,channel_id LIMIT 30',
-                    (time.time() + 86400, TOPIC_PATH, time.time() - 300)) if r['channel_id'] in channels]
+                    'AND requested<? ORDER BY (expires<?) DESC,requested,channel_id LIMIT 10',
+                    (time.time() + 86400, TOPIC_PATH, time.time() - 300, time.time()+86400)) if r['channel_id'] in channels]
 
     pacing = threading.Lock()
     last_request = [0.0]
 
-    def renew(channel):
+    def renew(lease):
+        channel = lease['channel_id']
+        topic_path = topic_for_renewal(lease)
         with pacing:
             if not hub_ready():
                 return None
@@ -105,15 +115,15 @@ def run():
             last_request[0] = time.monotonic()
             requested = time.time()
             with database() as db:
-                db.execute("UPDATE leases SET requested=?,error='awaiting verification' WHERE channel_id=?",
-                           (requested, channel))
+                db.execute("UPDATE leases SET requested=?,requested_topic=?,error='awaiting verification' WHERE channel_id=?",
+                           (requested, topic_path, channel))
         try:
             response = requests.post('https://pubsubhubbub.appspot.com/subscribe', data={
                 'hub.callback': callback + '?verify=' + verify_key(channel),
-                'hub.topic': 'https://www.youtube.com' + TOPIC_PATH + '?channel_id=' + channel,
+                'hub.topic': 'https://www.youtube.com' + topic_path + '?channel_id=' + channel,
                 'hub.mode': 'subscribe', 'hub.verify': 'async', 'hub.lease_seconds': '432000',
                 'hub.secret': secret,
-            }, timeout=(5, 12))
+            }, timeout=(5, 30))
             hub_backoff(response.status_code, response.headers.get('Retry-After', ''))
             error = '' if response.status_code in (202, 204) else f'HTTP {response.status_code}'
         except requests.RequestException as exc:
@@ -153,6 +163,8 @@ def run():
                 updates.append({'range': gspread.utils.rowcol_to_a1(n, ri+1), 'values': [[renewed]]})
         else:
             status = '⚠️ server: ' + (lease['error'] or 'official topic verification queued')
+            if lease['expires'] > time.time() and lease['topic_path'] == LEGACY_TOPIC_PATH:
+                status = '⚠️ server: legacy lease verified; official topic pending'
         if len(row) <= si or row[si] != status:
             updates.append({'range': gspread.utils.rowcol_to_a1(n, si+1), 'values': [[status]]})
     if updates:
@@ -168,8 +180,9 @@ def run():
     if new_rows:
         worksheet.append_rows(new_rows, value_input_option='USER_ENTERED')
     attempted = [result for result in results if result is not None]
-    verified = sum(r['enabled'] and r['expires']>time.time() and r['topic_path']==TOPIC_PATH for r in leases.values())
-    print(f'Subscription batch: requested={len(attempted)}, accepted={sum(attempted)}, verified={verified}', flush=True)
+    verified = sum(r['enabled'] and r['expires']>time.time() and r['topic_path'] in (TOPIC_PATH,LEGACY_TOPIC_PATH) for r in leases.values())
+    official = sum(r['enabled'] and r['expires']>time.time() and r['topic_path']==TOPIC_PATH for r in leases.values())
+    print(f'Subscription batch: requested={len(attempted)}, accepted={sum(attempted)}, verified={verified}, official={official}', flush=True)
     if attempted and not any(attempted):
         raise RuntimeError('All subscription requests failed')
     if incomplete:

@@ -24,7 +24,7 @@ def database():
         channel_id TEXT PRIMARY KEY, requested REAL NOT NULL DEFAULT 0,
         verified REAL NOT NULL DEFAULT 0, expires REAL NOT NULL DEFAULT 0,
         error TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,
-        topic_path TEXT NOT NULL DEFAULT '');
+        topic_path TEXT NOT NULL DEFAULT '', requested_topic TEXT NOT NULL DEFAULT '');
       CREATE TABLE IF NOT EXISTS jobs (
         name TEXT PRIMARY KEY, started REAL, completed REAL, success REAL,
         error TEXT NOT NULL DEFAULT '');
@@ -47,6 +47,12 @@ def database():
     lease_columns = {row['name'] for row in db.execute('PRAGMA table_info(leases)')}
     if 'topic_path' not in lease_columns:
         db.execute("ALTER TABLE leases ADD COLUMN topic_path TEXT NOT NULL DEFAULT ''")
+    if 'requested_topic' not in lease_columns:
+        db.execute('BEGIN IMMEDIATE')
+        lease_columns = {row['name'] for row in db.execute('PRAGMA table_info(leases)')}
+        if 'requested_topic' not in lease_columns:
+            db.execute("ALTER TABLE leases ADD COLUMN requested_topic TEXT NOT NULL DEFAULT ''")
+        db.commit()
     gap_columns = {row['name'] for row in db.execute('PRAGMA table_info(rss_push_gaps)')}
     if 'observed_since' not in gap_columns:
         db.execute('BEGIN IMMEDIATE')
@@ -88,11 +94,13 @@ def queue_event(video_id, channel_id, *, received=None, source='Push · server',
 
 
 def confirm(channel_id, supplied, lease, topic_path='/feeds/videos.xml'):
-    if not re.fullmatch(r'UC[\w-]{22}', channel_id) or not hmac.compare_digest(verify_key(channel_id), supplied):
+    if topic_path not in ('/feeds/videos.xml','/xml/feeds/videos.xml') or not re.fullmatch(r'UC[\w-]{22}', channel_id) or not hmac.compare_digest(verify_key(channel_id), supplied):
         return False
     with database() as db:
-        row = db.execute('SELECT requested,enabled FROM leases WHERE channel_id=?', (channel_id,)).fetchone()
+        row = db.execute('SELECT requested,requested_topic,enabled FROM leases WHERE channel_id=?', (channel_id,)).fetchone()
         if not row or not row['enabled'] or time.time() - row['requested'] > 3600:
+            return False
+        if row['requested_topic'] and row['requested_topic'] != topic_path:
             return False
         db.execute("UPDATE leases SET verified=?,expires=?,error='',topic_path=? WHERE channel_id=?",
                    (time.time(), time.time() + min(lease, 864000), topic_path, channel_id))

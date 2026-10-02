@@ -4,10 +4,18 @@ import unittest
 from unittest.mock import patch
 
 from push_store import database
-from renew_direct import reconcile_inventory, hub_backoff, hub_ready, renewal_pause, TOPIC_PATH
+from renew_direct import reconcile_inventory, hub_backoff, hub_ready, renewal_pause, topic_for_renewal, TOPIC_PATH
 
 
 class RenewalInventoryTest(unittest.TestCase):
+    def test_expiring_verified_legacy_lease_is_preserved_during_provider_outage(self):
+        self.assertEqual(topic_for_renewal({'topic_path':'/xml/feeds/videos.xml','expires':1100},now=1000),
+                         '/xml/feeds/videos.xml')
+        self.assertEqual(topic_for_renewal({'topic_path':'/xml/feeds/videos.xml','expires':100000},now=1000),
+                         TOPIC_PATH)
+        self.assertEqual(topic_for_renewal({'topic_path':'','expires':0},now=1000),TOPIC_PATH)
+        self.assertEqual(topic_for_renewal({'topic_path':TOPIC_PATH,'expires':1100},now=1000),TOPIC_PATH)
+
     def test_official_topic_and_bounded_migration_continuation(self):
         self.assertEqual(TOPIC_PATH, '/feeds/videos.xml')
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'TOPUS_PUSH_DB': directory + '/push.db'}):
