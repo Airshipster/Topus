@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
-from push_store import database
+from push_store import database, queue_event
 
 
 class BudgetExhausted(RuntimeError):
@@ -141,6 +141,8 @@ def run(channels):
                 db.execute('DELETE FROM api_rescue_videos WHERE received<?', (time.time()-7*86400,))
                 db.execute("UPDATE api_rescue_channels SET checked=?,payload=?,error='' WHERE channel_id=?",
                            (time.time(),json.dumps(videos),channel))
+                for video in videos:
+                    queue_event(video['video_id'], channel, source='YouTube API backup', connection=db)
             recovered += 1
         except BudgetExhausted as exc:
             print(str(exc),flush=True)

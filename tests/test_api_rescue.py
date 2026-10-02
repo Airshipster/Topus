@@ -59,6 +59,24 @@ class RescueTests(unittest.TestCase):
     def test_quota_day_is_pacific_not_server_timezone(self):
         self.assertEqual(api.quota_day(1789794000),'2026-09-18')
 
+    def test_rescued_video_is_queued_immediately_and_only_once(self):
+        channel = 'UC' + 'a' * 22
+        api.initialize()
+        with database() as db:
+            db.execute('INSERT INTO api_rescue_channels(channel_id,uploads) VALUES (?,?)', (channel, 'uploads'))
+        item = {'contentDetails': {'videoId': 'abcdefghijk',
+                'videoPublishedAt': '2026-10-02T00:00:00Z'},
+                'snippet': {'title': 'Fixture', 'channelTitle': 'Fixture'}}
+        fixture = Mock(YOUTUBE_API_KEYS=['fixture'], YOUTUBE_API_KEY='', RSS_FALLBACK_AGE_HOURS=999999)
+        sheets = Mock(format_timestamp=lambda value: value.isoformat())
+        with patch.dict(sys.modules, {'config': fixture, 'sheets': sheets}), \
+             patch.object(api, 'request', return_value=[item]):
+            api.run({channel})
+            api.run({channel})
+        with database() as db:
+            rows = db.execute('SELECT video_id,source,mirrored FROM events').fetchall()
+        self.assertEqual([tuple(row) for row in rows], [('abcdefghijk', 'YouTube API backup', 0)])
+
     def test_invalid_success_is_not_accepted(self):
         response = Mock(status_code=200)
         response.json.return_value = {'items':[]}
