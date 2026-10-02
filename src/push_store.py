@@ -87,7 +87,7 @@ def queue_event(video_id, channel_id, *, received=None, source='Push · server',
         return bool(insert(db).rowcount)
 
 
-def confirm(channel_id, supplied, lease, topic_path='/xml/feeds/videos.xml'):
+def confirm(channel_id, supplied, lease, topic_path='/feeds/videos.xml'):
     if not re.fullmatch(r'UC[\w-]{22}', channel_id) or not hmac.compare_digest(verify_key(channel_id), supplied):
         return False
     with database() as db:

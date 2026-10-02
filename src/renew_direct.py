@@ -9,6 +9,8 @@ import config
 from push_store import database, verify_key
 from sheets import authenticate_google_sheets, load_settings, load_projects, get_all_active_channels, format_timestamp
 
+TOPIC_PATH = '/feeds/videos.xml'
+
 
 def hub_backoff(status, retry_after='', now=None):
     now = time.time() if now is None else now
@@ -45,10 +47,19 @@ def reconcile_inventory(channels, complete):
 def require_verified_coverage():
     # HTTP acceptance is not a confirmed lease; callbacks commit verification.
     with database() as db:
-        missing = db.execute('SELECT count(*) FROM leases WHERE enabled=1 AND expires<=?',
-                             (time.time(),)).fetchone()[0]
+        missing = db.execute('SELECT count(*) FROM leases WHERE enabled=1 AND (expires<=? OR topic_path!=?)',
+                             (time.time(), TOPIC_PATH)).fetchone()[0]
     if missing:
         raise RuntimeError(f'WEBSUB_UNVERIFIED_{missing}')
+
+def renewal_pause(now=None):
+    now = time.time() if now is None else now
+    if not hub_ready(now):
+        return 120
+    with database() as db:
+        migrating = db.execute('SELECT 1 FROM leases WHERE enabled=1 AND topic_path!=? AND requested<? LIMIT 1',
+                               (TOPIC_PATH, now-300)).fetchone()
+    return 5 if migrating else 120
 
 
 def run():
@@ -77,9 +88,9 @@ def run():
     reconcile_inventory(channels, complete=not incomplete)
     with database() as db:
         due = [r['channel_id'] for r in db.execute('SELECT channel_id FROM leases WHERE enabled=1 '
-                    "AND (expires<? OR topic_path!='/xml/feeds/videos.xml') "
+                    'AND (expires<? OR topic_path!=?) '
                     'AND requested<? ORDER BY requested,channel_id LIMIT 30',
-                    (time.time() + 86400, time.time() - 300)) if r['channel_id'] in channels]
+                    (time.time() + 86400, TOPIC_PATH, time.time() - 300)) if r['channel_id'] in channels]
 
     pacing = threading.Lock()
     last_request = [0.0]
@@ -99,7 +110,7 @@ def run():
         try:
             response = requests.post('https://pubsubhubbub.appspot.com/subscribe', data={
                 'hub.callback': callback + '?verify=' + verify_key(channel),
-                'hub.topic': 'https://www.youtube.com/xml/feeds/videos.xml?channel_id=' + channel,
+                'hub.topic': 'https://www.youtube.com' + TOPIC_PATH + '?channel_id=' + channel,
                 'hub.mode': 'subscribe', 'hub.verify': 'async', 'hub.lease_seconds': '432000',
                 'hub.secret': secret,
             }, timeout=(5, 12))
@@ -135,13 +146,13 @@ def run():
         seen.add(channel)
         if not lease:
             continue
-        if lease['verified'] and lease['expires'] > time.time():
+        if lease['verified'] and lease['expires'] > time.time() and lease['topic_path'] == TOPIC_PATH:
             status = '✅ server lease verified'
             renewed = format_timestamp(datetime.fromtimestamp(lease['verified'], timezone.utc))
             if len(row) <= ri or row[ri] != renewed:
                 updates.append({'range': gspread.utils.rowcol_to_a1(n, ri+1), 'values': [[renewed]]})
         else:
-            status = '⚠️ server: ' + (lease['error'] or 'renewal queued')
+            status = '⚠️ server: ' + (lease['error'] or 'official topic verification queued')
         if len(row) <= si or row[si] != status:
             updates.append({'range': gspread.utils.rowcol_to_a1(n, si+1), 'values': [[status]]})
     if updates:
@@ -157,7 +168,8 @@ def run():
     if new_rows:
         worksheet.append_rows(new_rows, value_input_option='USER_ENTERED')
     attempted = [result for result in results if result is not None]
-    print(f'Subscription batch: requested={len(attempted)}, accepted={sum(attempted)}, verified={sum(r["expires"]>time.time() for r in leases.values())}', flush=True)
+    verified = sum(r['enabled'] and r['expires']>time.time() and r['topic_path']==TOPIC_PATH for r in leases.values())
+    print(f'Subscription batch: requested={len(attempted)}, accepted={sum(attempted)}, verified={verified}', flush=True)
     if attempted and not any(attempted):
         raise RuntimeError('All subscription requests failed')
     if incomplete:

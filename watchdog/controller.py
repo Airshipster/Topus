@@ -155,7 +155,8 @@ def renewal_loop():
             except Exception as exc:
                 print('Renewal scheduler error: ' + type(exc).__name__, flush=True)
             running['renewal'] = False
-        time.sleep(120)
+        from renew_direct import renewal_pause
+        time.sleep(renewal_pause() if ACTIVE else 120)
 
 
 def discovery_loop():

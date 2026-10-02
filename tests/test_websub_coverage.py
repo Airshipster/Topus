@@ -34,7 +34,12 @@ class CoverageTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'WEBSUB_UNVERIFIED_1'):
                 require_verified_coverage()
             with database() as db:
-                db.execute('UPDATE leases SET expires=? WHERE channel_id=?', (time.time()+3600, 'pending'))
+                db.execute('UPDATE leases SET expires=?,topic_path=? WHERE channel_id=?',
+                           (time.time()+3600, '/xml/feeds/videos.xml', 'pending'))
+            with self.assertRaisesRegex(RuntimeError, 'WEBSUB_UNVERIFIED_1'):
+                require_verified_coverage()
+            with database() as db:
+                db.execute("UPDATE leases SET topic_path='/feeds/videos.xml' WHERE channel_id='pending'")
             require_verified_coverage()
 
     def test_canonical_and_legacy_topics_keep_signature_check(self):
