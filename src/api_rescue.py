@@ -24,6 +24,8 @@ def initialize():
           CREATE TABLE IF NOT EXISTS api_rescue_videos (
             channel_id TEXT NOT NULL, video_id TEXT NOT NULL, payload TEXT NOT NULL,
             received REAL NOT NULL, PRIMARY KEY(channel_id,video_id));
+          CREATE TABLE IF NOT EXISTS api_rescue_state (
+            key TEXT PRIMARY KEY, value REAL NOT NULL);
         ''')
 
 
@@ -74,6 +76,19 @@ def select_channels(channels, limit):
     return [dict(r) for r in rows if r['channel_id'] in channels][:limit]
 
 
+def claim_pass(now=None):
+    initialize()
+    current = time.time() if now is None else now
+    with database() as db:
+        db.execute('BEGIN IMMEDIATE')
+        previous = db.execute("SELECT value FROM api_rescue_state WHERE key='last_pass'").fetchone()
+        if previous and current - previous['value'] < 1800:
+            return False
+        db.execute("INSERT INTO api_rescue_state VALUES ('last_pass',?) ON CONFLICT(key) "
+                   'DO UPDATE SET value=excluded.value', (current,))
+    return True
+
+
 def read_result(channel):
     initialize()
     with database() as db:
@@ -93,7 +108,20 @@ def run(channels):
     from sheets import format_timestamp
     keys = config.YOUTUBE_API_KEYS or ([config.YOUTUBE_API_KEY] if config.YOUTUBE_API_KEY else [])
     if not keys:
+        # Cached inventories and hot scans do not call load_inventory/load_settings.
+        try:
+            from sheets import authenticate_google_sheets, load_settings
+            client = authenticate_google_sheets()
+            load_settings(client.open_by_key(config.SPREADSHEET_ID))
+        except Exception as exc:
+            print('API_RESCUE_CONFIGURATION_' + type(exc).__name__, flush=True)
+            return
+        keys = config.YOUTUBE_API_KEYS or ([config.YOUTUBE_API_KEY] if config.YOUTUBE_API_KEY else [])
+    if not keys:
         print('API_RESCUE_NO_KEY', flush=True)
+        return
+    if not channels or not claim_pass():
+        print('API_RESCUE_THROTTLED', flush=True)
         return
     # At most 80 uploads reads + two mapping reads per half-hour, within 4000/day.
     selected = select_channels(channels, 80)

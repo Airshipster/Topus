@@ -4,6 +4,7 @@ import sys
 import tempfile
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -46,6 +47,50 @@ class RescueTests(unittest.TestCase):
         with database() as db:
             db.execute("UPDATE api_rescue_channels SET attempted=1 WHERE channel_id IN ('a','b')")
         self.assertEqual(api.select_channels({'a','b','c'},1)[0]['channel_id'],'c')
+
+    def test_hot_and_full_scans_share_a_durable_half_hour_pass(self):
+        self.assertTrue(api.claim_pass(now=100))
+        self.assertFalse(api.claim_pass(now=101))
+        self.assertFalse(api.claim_pass(now=1899))
+        self.assertTrue(api.claim_pass(now=1900))
+
+    def test_concurrent_scans_cannot_both_claim_the_api_pass(self):
+        api.initialize()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            claims = list(pool.map(lambda _: api.claim_pass(now=100), range(4)))
+        self.assertEqual(sum(claims), 1)
+
+    def test_missing_runtime_key_uses_existing_master_settings(self):
+        fixture = Mock(YOUTUBE_API_KEYS=[], YOUTUBE_API_KEY='', SPREADSHEET_ID='master-fixture')
+        sheets = Mock(format_timestamp=lambda value: value.isoformat())
+        def load_settings(sheet):
+            fixture.YOUTUBE_API_KEYS = ['assigned-fixture']
+        sheets.load_settings.side_effect = load_settings
+        with patch.dict(sys.modules, {'config': fixture, 'sheets': sheets}), \
+             patch.object(api, 'select_channels', return_value=[]):
+            api.run({'channel'})
+        sheets.authenticate_google_sheets.return_value.open_by_key.assert_called_once_with('master-fixture')
+        sheets.load_settings.assert_called_once()
+        self.assertEqual(fixture.YOUTUBE_API_KEYS, ['assigned-fixture'])
+
+    def test_existing_runtime_key_is_not_replaced(self):
+        fixture = Mock(YOUTUBE_API_KEYS=['assigned-fixture'], YOUTUBE_API_KEY='')
+        sheets = Mock(format_timestamp=lambda value: value.isoformat())
+        with patch.dict(sys.modules, {'config': fixture, 'sheets': sheets}), \
+             patch.object(api, 'select_channels', return_value=[]):
+            api.run({'channel'})
+        sheets.authenticate_google_sheets.assert_not_called()
+        sheets.load_settings.assert_not_called()
+
+    def test_configuration_failure_does_not_spend_budget_or_claim_pass(self):
+        fixture = Mock(YOUTUBE_API_KEYS=[], YOUTUBE_API_KEY='', SPREADSHEET_ID='master-fixture')
+        sheets = Mock(format_timestamp=lambda value: value.isoformat())
+        sheets.authenticate_google_sheets.side_effect = RuntimeError('unavailable')
+        with patch.dict(sys.modules, {'config': fixture, 'sheets': sheets}), \
+             patch.object(api, 'request') as request:
+            api.run({'channel'})
+        request.assert_not_called()
+        self.assertTrue(api.claim_pass(now=100))
 
     def test_candidate_survives_source_failure_and_is_deduplicated(self):
         api.initialize()
