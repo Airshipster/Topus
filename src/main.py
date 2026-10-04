@@ -85,7 +85,11 @@ def source_method_for_channel(method, channel_info):
 
 def source_method_for_event(event, channel_info):
     source = str(event.get('source') or '').strip().lower()
-    return source_method_for_channel('RSS' if source.startswith('rss') else 'Push', channel_info)
+    if source == 'youtube api backup':
+        method = 'RSS [YouTube API backup]'
+    else:
+        method = 'RSS' if source.startswith('rss') else 'Push'
+    return source_method_for_channel(method, channel_info)
 
 
 def publication_status_detail(video):
