@@ -127,3 +127,66 @@ class RescueTests(unittest.TestCase):
         response.json.return_value = {'items':[]}
         with patch.object(api.requests,'get',return_value=response):
             with self.assertRaises(ValueError): api.request('channels',{},'fixture')
+
+    def test_upload_pagination_reaches_checkpoint_and_retains_all_pages(self):
+        api.initialize()
+        row = {'channel_id': 'a', 'uploads': 'uploads', 'payload': json.dumps([{'video_id': 'known'}])}
+        item = lambda video: {'contentDetails': {'videoId': video, 'videoPublishedAt': '2026-10-04T00:00:00Z'}}
+        collected = []
+        with patch.object(api, 'request', side_effect=[api.ApiPage([item('new')], 'second'), api.ApiPage([item('known')])]) as request:
+            self.assertTrue(api.scan_uploads(row, 'fixture', datetime_cutoff(), lambda page: collected.extend(page)))
+        self.assertEqual(request.call_args_list[1].args[1]['pageToken'], 'second')
+        self.assertEqual([i['contentDetails']['videoId'] for i in collected], ['new', 'known'])
+        with database() as db:
+            progress = db.execute('SELECT checkpoint,token FROM api_rescue_progress').fetchone()
+        self.assertEqual(tuple(progress), ('new', ''))
+
+    def test_unfinished_scan_resumes_tail_and_does_not_skip_intervening_uploads(self):
+        api.initialize()
+        row = {'channel_id': 'a', 'uploads': 'uploads', 'payload': json.dumps([{'video_id': 'known'}])}
+        item = lambda video: {'contentDetails': {'videoId': video, 'videoPublishedAt': '2026-10-04T00:00:00Z'}}
+        with patch.object(api, 'request', side_effect=[api.ApiPage([item('head')], 'one'),
+             api.ApiPage([item('b')], 'two'), api.ApiPage([item('c')], 'three')]):
+            self.assertFalse(api.scan_uploads(row, 'fixture', datetime_cutoff(), lambda page: None))
+        with database() as db:
+            progress = db.execute('SELECT checkpoint,token FROM api_rescue_progress').fetchone()
+        self.assertEqual(tuple(progress), ('known', 'three'))
+        with patch.object(api, 'request', side_effect=[api.ApiPage([item('newer')], 'one'),
+             api.ApiPage([item('known')])]) as request:
+            self.assertTrue(api.scan_uploads(row, 'fixture', datetime_cutoff(), lambda page: None))
+        self.assertEqual(request.call_args_list[1].args[1]['pageToken'], 'three')
+        with database() as db:
+            checkpoint = db.execute('SELECT checkpoint FROM api_rescue_progress').fetchone()[0]
+        self.assertEqual(checkpoint, 'head')
+
+    def test_page_failure_never_advances_checkpoint_or_loses_successful_head(self):
+        api.initialize()
+        row = {'channel_id': 'a', 'uploads': 'uploads', 'payload': json.dumps([{'video_id': 'known'}])}
+        collected = []
+        with patch.object(api, 'request', side_effect=[api.ApiPage([{'contentDetails': {'videoId': 'new'}}], 'next'),
+             api.BudgetExhausted('limit')]):
+            with self.assertRaises(api.BudgetExhausted):
+                api.scan_uploads(row, 'fixture', datetime_cutoff(), lambda page: collected.extend(page))
+        self.assertEqual(len(collected), 1)
+        with database() as db:
+            progress = db.execute('SELECT checkpoint,token FROM api_rescue_progress').fetchone()
+        self.assertEqual(tuple(progress), ('known', 'next'))
+
+    def test_expired_token_restarts_tail_without_advancing_checkpoint(self):
+        api.initialize()
+        row = {'channel_id': 'a', 'uploads': 'uploads', 'payload': json.dumps([{'video_id': 'known'}])}
+        first = api.ApiPage([{'contentDetails': {'videoId': 'new'}}], 'next')
+        with patch.object(api, 'request', side_effect=[first, api.InvalidPageToken('expired')]):
+            with self.assertRaises(api.InvalidPageToken):
+                api.scan_uploads(row, 'fixture', datetime_cutoff(), lambda page: None)
+        with database() as db:
+            progress = db.execute('SELECT checkpoint,token FROM api_rescue_progress').fetchone()
+        self.assertEqual(tuple(progress), ('known', ''))
+        with patch.object(api, 'request', side_effect=[first, api.ApiPage([{'contentDetails': {'videoId': 'known'}}])]) as request:
+            self.assertTrue(api.scan_uploads(row, 'fixture', datetime_cutoff(), lambda page: None))
+        self.assertEqual(request.call_args_list[1].args[1]['pageToken'], 'next')
+
+
+def datetime_cutoff():
+    from datetime import datetime, timezone
+    return datetime(2026, 10, 1, tzinfo=timezone.utc)

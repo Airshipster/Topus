@@ -13,6 +13,16 @@ class BudgetExhausted(RuntimeError):
     pass
 
 
+class InvalidPageToken(RuntimeError):
+    pass
+
+
+class ApiPage(list):
+    def __init__(self, items, next_token=''):
+        super().__init__(items)
+        self.next_token = next_token
+
+
 def initialize():
     with database() as db:
         db.executescript('''
@@ -26,6 +36,9 @@ def initialize():
             received REAL NOT NULL, PRIMARY KEY(channel_id,video_id));
           CREATE TABLE IF NOT EXISTS api_rescue_state (
             key TEXT PRIMARY KEY, value REAL NOT NULL);
+          CREATE TABLE IF NOT EXISTS api_rescue_progress (
+            channel_id TEXT PRIMARY KEY, checkpoint TEXT NOT NULL DEFAULT '',
+            head TEXT NOT NULL DEFAULT '', token TEXT NOT NULL DEFAULT '', cutoff TEXT NOT NULL DEFAULT '');
         ''')
 
 
@@ -60,11 +73,68 @@ def request(endpoint, params, key):
             with database() as db:
                 db.execute('UPDATE api_rescue_budget SET blocked=1 WHERE day=?', (quota_day(),))
             raise BudgetExhausted('YOUTUBE_QUOTA_EXHAUSTED')
+        if response.status_code == 400 and 'invalidPageToken' in reasons:
+            raise InvalidPageToken('API_RESCUE_PAGE_TOKEN_EXPIRED')
         raise RuntimeError('API_RESCUE_HTTP_'+str(response.status_code))
     expected = {'channels':'youtube#channelListResponse', 'playlistItems':'youtube#playlistItemListResponse'}
     if body.get('kind') != expected[endpoint] or not isinstance(body.get('items'),list):
         raise ValueError('API_RESCUE_INVALID_RESPONSE')
-    return body['items']
+    return ApiPage(body['items'], body.get('nextPageToken', ''))
+
+
+def scan_uploads(row, key, cutoff, consume):
+    """Refresh the head, then resume a bounded tail without advancing an unfinished checkpoint."""
+    channel = row['channel_id']
+    with database() as db:
+        progress = db.execute('SELECT * FROM api_rescue_progress WHERE channel_id=?', (channel,)).fetchone()
+    progress = dict(progress) if progress else {}
+    checkpoint = progress.get('checkpoint', '')
+    if not checkpoint and row.get('payload'):
+        previous = json.loads(row['payload'])
+        checkpoint = previous[0].get('video_id', '') if previous else ''
+    params = {'part': 'snippet,contentDetails', 'playlistId': row['uploads'], 'maxResults': 50}
+    first = request('playlistItems', params, key)
+    head = next((item.get('contentDetails', {}).get('videoId') for item in first
+                 if item.get('contentDetails', {}).get('videoId')), '')
+    scan_head = progress.get('head') or head
+    scan_cutoff = progress.get('cutoff') or cutoff.isoformat()
+
+    def apply(page):
+        consume(page)
+        ids = [item.get('contentDetails', {}).get('videoId') for item in page]
+        if checkpoint:
+            return checkpoint in ids or not getattr(page, 'next_token', '')
+        stamps = [item.get('contentDetails', {}).get('videoPublishedAt') for item in page]
+        valid = [stamp for stamp in stamps if stamp]
+        return not getattr(page, 'next_token', '') or bool(valid and all(
+            datetime.fromisoformat(stamp.replace('Z', '+00:00')) < datetime.fromisoformat(scan_cutoff)
+            for stamp in valid))
+
+    complete = apply(first)
+    token = '' if complete else progress.get('token') or getattr(first, 'next_token', '')
+
+    def save():
+        with database() as db:
+            db.execute('INSERT INTO api_rescue_progress VALUES (?,?,?,?,?) ON CONFLICT(channel_id) '
+                       'DO UPDATE SET checkpoint=excluded.checkpoint,head=excluded.head,token=excluded.token,cutoff=excluded.cutoff',
+                       (channel, (head if not progress.get('token') else scan_head) if complete else checkpoint,
+                        '' if complete else scan_head, '' if complete else token, '' if complete else scan_cutoff))
+    save()
+    # Additional pages use the same durable daily budget; unfinished work resumes next pass.
+    for _ in range(2):
+        if complete or not token:
+            break
+        try:
+            page = request('playlistItems', {**params, 'pageToken': token}, key)
+        except InvalidPageToken:
+            # A new scan restarts from the head, preserving the known checkpoint and received events.
+            token = ''
+            save()
+            raise
+        complete = apply(page)
+        token = '' if complete else getattr(page, 'next_token', '')
+        save()
+    return complete
 
 
 def select_channels(channels, limit):
@@ -147,31 +217,34 @@ def run(channels):
                 uploads = row['uploads']
             if not uploads:
                 raise RuntimeError('API_CHANNEL_UNAVAILABLE')
-            items = request('playlistItems', {'part':'snippet,contentDetails','playlistId':uploads,
-                                             'maxResults':50}, keys[0])
             videos = []
             cutoff = datetime.now(timezone.utc)-timedelta(hours=config.RSS_FALLBACK_AGE_HOURS)
-            for item in items:
-                details, snippet = item.get('contentDetails',{}), item.get('snippet',{})
-                published = details.get('videoPublishedAt')
-                if not published or not details.get('videoId'):
-                    continue
-                stamp = datetime.fromisoformat(published.replace('Z','+00:00'))
-                if stamp < cutoff:
-                    continue
-                videos.append({'video_id':details['videoId'], 'channel_id':channel,
-                    'title':snippet.get('title',''), 'channel':snippet.get('channelTitle',''),
-                    'url':'https://www.youtube.com/watch?v='+details['videoId'],
-                    'published':format_timestamp(stamp), 'discovery_method':'YouTube API backup'})
+            def consume(items):
+                page_videos = []
+                for item in items:
+                    details, snippet = item.get('contentDetails',{}), item.get('snippet',{})
+                    published = details.get('videoPublishedAt')
+                    if not published or not details.get('videoId'):
+                        continue
+                    stamp = datetime.fromisoformat(published.replace('Z','+00:00'))
+                    if stamp < cutoff:
+                        continue
+                    page_videos.append({'video_id':details['videoId'], 'channel_id':channel,
+                        'title':snippet.get('title',''), 'channel':snippet.get('channelTitle',''),
+                        'url':'https://www.youtube.com/watch?v='+details['videoId'],
+                        'published':format_timestamp(stamp), 'discovery_method':'YouTube API backup'})
+                with database() as db:
+                    db.executemany('INSERT OR IGNORE INTO api_rescue_videos VALUES (?,?,?,?)',
+                                   [(channel,v['video_id'],json.dumps(v),time.time()) for v in page_videos])
+                    for video in page_videos:
+                        queue_event(video['video_id'], channel, source='YouTube API backup', connection=db)
+                videos.extend(page_videos)
+            complete = scan_uploads({**row, 'uploads': uploads}, keys[0], cutoff, consume)
             with database() as db:
-                db.executemany('INSERT OR IGNORE INTO api_rescue_videos VALUES (?,?,?,?)',
-                               [(channel,v['video_id'],json.dumps(v),time.time()) for v in videos])
                 db.execute('DELETE FROM api_rescue_videos WHERE received<?', (time.time()-7*86400,))
-                db.execute("UPDATE api_rescue_channels SET checked=?,payload=?,error='' WHERE channel_id=?",
-                           (time.time(),json.dumps(videos),channel))
-                for video in videos:
-                    queue_event(video['video_id'], channel, source='YouTube API backup', connection=db)
-            recovered += 1
+                db.execute("UPDATE api_rescue_channels SET checked=?,payload=?,error=? WHERE channel_id=?",
+                           (time.time(),json.dumps(videos),'' if complete else 'API_RESCUE_HISTORY_PENDING',channel))
+            recovered += int(complete)
         except BudgetExhausted as exc:
             print(str(exc),flush=True)
             break
