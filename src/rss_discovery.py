@@ -9,6 +9,7 @@ from push_store import database, queue_event
 HOT_RETENTION_SECONDS = 7 * 86400
 PUSH_GRACE_SECONDS = 10 * 60
 OBSERVATION_MAX_AGE_SECONDS = 2100
+FAILED_SOURCE_RETRY_SECONDS = 1800
 
 
 def initialize():
@@ -81,11 +82,14 @@ def save_result(channel, videos, error, now=None, track_push_gap=False, queue_di
 
 def hot_channels(now=None):
     initialize()
-    cutoff = (time.time() if now is None else now) - HOT_RETENTION_SECONDS
+    current = time.time() if now is None else now
+    cutoff = current - HOT_RETENTION_SECONDS
     with database() as db:
         return {row['channel_id'] for row in db.execute(
             'SELECT h.channel_id FROM rss_hotset h JOIN leases l ON l.channel_id=h.channel_id '
-            'WHERE h.last_video>=? AND l.enabled=1', (cutoff,)
+            'LEFT JOIN rss_discovery r ON r.channel_id=h.channel_id '
+            "WHERE h.last_video>=? AND l.enabled=1 AND (r.error IS NULL OR r.error='' OR r.checked<=?)",
+            (cutoff, current - FAILED_SOURCE_RETRY_SECONDS)
         )}
 
 

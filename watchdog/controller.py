@@ -159,6 +159,14 @@ def renewal_loop():
         time.sleep(renewal_pause() if ACTIVE else 120)
 
 
+def next_discovery_job(full_started, hot_started, now):
+    if full_started is None or now - full_started >= 1800:
+        return 'rss-discovery'
+    if hot_started is None or now - hot_started >= 300:
+        return 'rss-hot-discovery'
+    return None
+
+
 def discovery_loop():
     while True:
         with database() as db:
@@ -166,18 +174,13 @@ def discovery_loop():
             hot = db.execute("SELECT started FROM jobs WHERE name='rss-hot-discovery'").fetchone()
         if ACTIVE:
             now = time.time()
-            if not full or now - (full['started'] or 0) >= 300:
+            job = next_discovery_job(full['started'] if full else None,
+                                     hot['started'] if hot else None, now)
+            if job:
                 try:
-                    run_job('rss-discovery')
+                    run_job(job)
                 except Exception as exc:
                     print('RSS discovery scheduler error: ' + type(exc).__name__, flush=True)
-                finally:
-                    wake_pending_discoveries()
-            elif not hot or now - (hot['started'] or 0) >= 300:
-                try:
-                    run_job('rss-hot-discovery')
-                except Exception as exc:
-                    print('Hot RSS discovery scheduler error: ' + type(exc).__name__, flush=True)
                 finally:
                     wake_pending_discoveries()
         time.sleep(5)

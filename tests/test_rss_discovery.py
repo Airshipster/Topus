@@ -46,6 +46,17 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(hot_channels(now=101), {'channel'})
         self.assertEqual(hot_channels(now=100 + 8 * 86400), set())
 
+    def test_failed_hot_source_waits_thirty_minutes_without_losing_channel(self):
+        with database() as db:
+            db.execute("INSERT INTO leases(channel_id,enabled) VALUES ('channel',1)")
+        save_result('channel', [{'video_id': 'video-one'}], '', now=100)
+        save_result('channel', None, 'HTTP_404', now=200)
+        self.assertEqual(hot_channels(now=500), set())
+        self.assertEqual(hot_channels(now=1999), set())
+        self.assertEqual(hot_channels(now=2000), {'channel'})
+        save_result('channel', [], '', now=2001)
+        self.assertEqual(hot_channels(now=2002), {'channel'})
+
     def test_hot_scan_records_only_new_videos_as_push_gaps(self):
         channel = 'UC' + 'a' * 22
         save_result(channel, [{'video_id':'oldvideo123'}], '', now=100)

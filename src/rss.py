@@ -141,17 +141,19 @@ def check_rss_feed(channel_id):
             failure_reasons.pop(channel_id, None)
             failed_channels.discard(channel_id)
         return videos
+    attempts = 0
     for attempt, direct in enumerate((True, False, True)):
         if attempt:
             time.sleep(0.5 * attempt)
+        attempts += 1
         videos = _check_rss_feed_once(channel_id, direct=direct)
-        if failure_reasons.get(channel_id) in ('HTTP_401', 'HTTP_403'):
+        if failure_reasons.get(channel_id) in ('HTTP_401', 'HTTP_403', 'HTTP_404', 'HTTP_429'):
             break
         if videos is not None:
             failure_reasons.pop(channel_id, None)
             failed_channels.discard(channel_id)
             return videos
-    print(f'RSS_SOURCE_FAILED channel={channel_id} reason={failure_reasons.get(channel_id, "UNKNOWN")} attempts=3', flush=True)
+    print(f'RSS_SOURCE_FAILED channel={channel_id} reason={failure_reasons.get(channel_id, "UNKNOWN")} attempts={attempts}', flush=True)
     return None
 
 def rss_fallback_check(client, project, published_videos, project_channels=None, return_seen=False, rss_cache=None):
