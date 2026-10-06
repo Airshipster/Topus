@@ -17,6 +17,13 @@ class InvalidPageToken(RuntimeError):
     pass
 
 
+class UpstreamError(RuntimeError):
+    def __init__(self, status, reasons):
+        self.status = status
+        self.reasons = tuple(reasons)
+        super().__init__('API_RESCUE_HTTP_' + str(status))
+
+
 class ApiPage(list):
     def __init__(self, items, next_token=''):
         super().__init__(items)
@@ -75,11 +82,14 @@ def request(endpoint, params, key):
             raise BudgetExhausted('YOUTUBE_QUOTA_EXHAUSTED')
         if response.status_code == 400 and 'invalidPageToken' in reasons:
             raise InvalidPageToken('API_RESCUE_PAGE_TOKEN_EXPIRED')
-        raise RuntimeError('API_RESCUE_HTTP_'+str(response.status_code))
+        raise UpstreamError(response.status_code, reasons)
     expected = {'channels':'youtube#channelListResponse', 'playlistItems':'youtube#playlistItemListResponse'}
-    if body.get('kind') != expected[endpoint] or not isinstance(body.get('items'),list):
+    items = body.get('items')
+    if items is None and body.get('pageInfo', {}).get('totalResults') == 0:
+        items = []
+    if body.get('kind') != expected[endpoint] or not isinstance(items,list):
         raise ValueError('API_RESCUE_INVALID_RESPONSE')
-    return ApiPage(body['items'], body.get('nextPageToken', ''))
+    return ApiPage(items, body.get('nextPageToken', ''))
 
 
 def scan_uploads(row, key, cutoff, consume):
@@ -100,7 +110,15 @@ def scan_uploads(row, key, cutoff, consume):
     scan_cutoff = progress.get('cutoff') or cutoff.isoformat()
 
     def apply(page):
-        consume(page)
+        if checkpoint:
+            boundary = next((i + 1 for i, item in enumerate(page)
+                if item.get('contentDetails', {}).get('videoId') == checkpoint), len(page))
+            consume(page[:boundary])
+        else:
+            # Initial seeding is age-bounded; catch-up to a known checkpoint is not.
+            consume([item for item in page if item.get('contentDetails', {}).get('videoPublishedAt')
+                and datetime.fromisoformat(item['contentDetails']['videoPublishedAt'].replace('Z', '+00:00'))
+                >= datetime.fromisoformat(scan_cutoff)])
         ids = [item.get('contentDetails', {}).get('videoId') for item in page]
         if checkpoint:
             return checkpoint in ids or not getattr(page, 'next_token', '')
@@ -227,8 +245,6 @@ def run(channels):
                     if not published or not details.get('videoId'):
                         continue
                     stamp = datetime.fromisoformat(published.replace('Z','+00:00'))
-                    if stamp < cutoff:
-                        continue
                     page_videos.append({'video_id':details['videoId'], 'channel_id':channel,
                         'title':snippet.get('title',''), 'channel':snippet.get('channelTitle',''),
                         'url':'https://www.youtube.com/watch?v='+details['videoId'],
@@ -248,6 +264,13 @@ def run(channels):
         except BudgetExhausted as exc:
             print(str(exc),flush=True)
             break
+        except UpstreamError as exc:
+            # Keep useful API status without persisting request URLs or credentials.
+            label = 'API_RESCUE_HTTP_' + str(exc.status)
+            if 'playlistNotFound' in exc.reasons:
+                label += '_playlistNotFound'
+            with database() as db:
+                db.execute('UPDATE api_rescue_channels SET error=? WHERE channel_id=?', (label, channel))
         except Exception as exc:
             # Never log requests exceptions: their URL can contain the API key.
             with database() as db:

@@ -128,6 +128,67 @@ class RescueTests(unittest.TestCase):
         with patch.object(api.requests,'get',return_value=response):
             with self.assertRaises(ValueError): api.request('channels',{},'fixture')
 
+    def test_explicit_zero_results_without_items_is_a_valid_empty_page(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {'kind': 'youtube#playlistItemListResponse',
+                                     'pageInfo': {'totalResults': 0}}
+        with patch.object(api.requests, 'get', return_value=response):
+            self.assertEqual(api.request('playlistItems', {}, 'fixture'), [])
+
+    def test_missing_items_with_nonzero_results_is_not_accepted(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {'kind': 'youtube#playlistItemListResponse',
+                                     'pageInfo': {'totalResults': 1}}
+        with patch.object(api.requests, 'get', return_value=response):
+            with self.assertRaises(ValueError):
+                api.request('playlistItems', {}, 'fixture')
+
+    def test_upstream_status_and_reason_are_preserved_without_request_data(self):
+        response = Mock(status_code=404)
+        response.json.return_value = {'error': {'errors': [{'reason': 'playlistNotFound'}]}}
+        with patch.object(api.requests, 'get', return_value=response):
+            with self.assertRaises(api.UpstreamError) as raised:
+                api.request('playlistItems', {}, 'private-fixture-key')
+        self.assertEqual(raised.exception.status, 404)
+        self.assertEqual(raised.exception.reasons, ('playlistNotFound',))
+        self.assertNotIn('private-fixture-key', str(raised.exception))
+
+    def test_catch_up_keeps_old_gap_videos_and_stops_at_checkpoint(self):
+        api.initialize()
+        row = {'channel_id': 'a', 'uploads': 'uploads', 'payload': json.dumps([{'video_id': 'known'}])}
+        item = lambda video: {'contentDetails': {'videoId': video, 'videoPublishedAt': '2026-09-01T00:00:00Z'}}
+        collected = []
+        with patch.object(api, 'request', return_value=api.ApiPage([item('missed'), item('known'), item('older')], 'tail')) as request:
+            self.assertTrue(api.scan_uploads(row, 'fixture', datetime_cutoff(), collected.extend))
+        self.assertEqual([i['contentDetails']['videoId'] for i in collected], ['missed', 'known'])
+        self.assertEqual(request.call_count, 1)
+
+    def test_initial_seed_keeps_only_recent_videos(self):
+        api.initialize()
+        row = {'channel_id': 'a', 'uploads': 'uploads'}
+        items = [{'contentDetails': {'videoId': 'recent', 'videoPublishedAt': '2026-10-04T00:00:00Z'}},
+                 {'contentDetails': {'videoId': 'old', 'videoPublishedAt': '2026-09-01T00:00:00Z'}}]
+        collected = []
+        with patch.object(api, 'request', return_value=api.ApiPage(items)):
+            self.assertTrue(api.scan_uploads(row, 'fixture', datetime_cutoff(), collected.extend))
+        self.assertEqual([i['contentDetails']['videoId'] for i in collected], ['recent'])
+
+    def test_old_catch_up_video_reaches_durable_event_queue(self):
+        channel = 'UC' + 'a' * 22
+        api.initialize()
+        with database() as db:
+            db.execute('INSERT INTO api_rescue_channels(channel_id,uploads,payload) VALUES (?,?,?)',
+                       (channel, 'uploads', json.dumps([{'video_id': 'known-video'}])))
+        item = {'contentDetails': {'videoId': 'abcdefghijk', 'videoPublishedAt': '2020-01-01T00:00:00Z'},
+                'snippet': {'title': 'Fixture', 'channelTitle': 'Fixture'}}
+        fixture = Mock(YOUTUBE_API_KEYS=['fixture'], YOUTUBE_API_KEY='', RSS_FALLBACK_AGE_HOURS=168)
+        sheets = Mock(format_timestamp=lambda value: value.isoformat())
+        with patch.dict(sys.modules, {'config': fixture, 'sheets': sheets}), \
+             patch.object(api, 'request', return_value=api.ApiPage([item])):
+            api.run({channel})
+        with database() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM events WHERE video_id=?', ('abcdefghijk',)).fetchone()[0], 1)
+
     def test_upload_pagination_reaches_checkpoint_and_retains_all_pages(self):
         api.initialize()
         row = {'channel_id': 'a', 'uploads': 'uploads', 'payload': json.dumps([{'video_id': 'known'}])}
