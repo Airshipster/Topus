@@ -127,6 +127,9 @@ def report_push_gap_health():
 
 def read_result(channel, now=None):
     initialize()
+    from rss_circuit import is_open
+    if is_open(now):
+        return None, 'RSS_UPSTREAM_COOLDOWN'
     with database() as db:
         row = db.execute('SELECT * FROM rss_discovery WHERE channel_id=?', (channel,)).fetchone()
     if row is None:
@@ -189,30 +192,67 @@ def load_inventory(config):
 
 def collect(channels, config, mode):
     from rss import check_rss_feed, failure_reasons
+    import rss_circuit as circuit
+    initialize()
+    channels = set(channels)
+    decision = circuit.claim()
     failures = 0
     failed = set()
     queued = 0
-    with ThreadPoolExecutor(max_workers=max(1, min(12, int(config.RSS_WORKERS)))) as pool:
-        futures = {pool.submit(check_rss_feed, channel): channel for channel in channels}
-        for future in as_completed(futures):
-            channel = futures[future]
-            try:
-                videos = future.result()
-                error = failure_reasons.get(channel, 'RSS_DISCOVERY_FAILED') if videos is None else ''
-            except Exception as exc:
-                videos, error = None, type(exc).__name__
-            queued += save_result(channel, videos, error, track_push_gap=(mode == 'hot'),
-                                  queue_discoveries=(mode == 'full'))
-            failures += bool(error)
-            if error:
-                failed.add(channel)
+    checked = 0
+    skipped = 0
+
+    def fetch(group):
+        nonlocal checked, failures, queued
+        errors = []
+        with ThreadPoolExecutor(max_workers=max(1, min(12, int(config.RSS_WORKERS)))) as pool:
+            futures = {pool.submit(check_rss_feed, channel): channel for channel in group}
+            for future in as_completed(futures):
+                channel = futures[future]
+                try:
+                    videos = future.result()
+                    error = failure_reasons.get(channel, 'RSS_DISCOVERY_FAILED') if videos is None else ''
+                except Exception as exc:
+                    videos, error = None, type(exc).__name__
+                queued += save_result(channel, videos, error, track_push_gap=(mode == 'hot'),
+                                      queue_discoveries=(mode == 'full'))
+                checked += 1
+                failures += bool(error)
+                errors.append(error)
+                if error:
+                    failed.add(channel)
+        return errors
+
+    ordered = circuit.ordered_channels(channels)
+    if decision == 'skip':
+        skipped = len(channels)
+        failed.update(channels)
+    elif decision == 'probe' or len(channels) >= circuit.MIN_INVENTORY:
+        probe = ordered[:circuit.PROBE_SIZE]
+        errors = fetch(probe)
+        all_missing = len(errors) == circuit.PROBE_SIZE and all(error == 'HTTP_404' for error in errors)
+        if all_missing or (decision == 'probe' and all(errors)):
+            circuit.defer()
+            skipped = len(channels) - len(probe)
+            failed.update(ordered[len(probe):])
+            print(f'RSS_UPSTREAM_CIRCUIT state=open probed={len(probe)} skipped={skipped}', flush=True)
+        else:
+            if decision == 'probe':
+                circuit.recover()
+                print('RSS_UPSTREAM_CIRCUIT state=recovered', flush=True)
+            fetch(ordered[len(probe):])
+    else:
+        fetch(ordered)
     if failed:
         from api_rescue import run as rescue
         rescue(failed)
     with database() as db:
         db.execute('DELETE FROM rss_discovery WHERE checked<?', (time.time()-7*86400,))
     report_push_gap_health()
-    print(f'RSS_DISCOVERY mode={mode} completed={len(channels)} failed={failures} queued={queued}', flush=True)
+    print(f'RSS_DISCOVERY mode={mode} completed={checked} failed={failures} queued={queued} '
+          f'skipped={skipped} total={len(channels)}', flush=True)
+    if skipped:
+        raise RuntimeError('RSS_DISCOVERY_UPSTREAM_COOLDOWN')
     if failures:
         raise RuntimeError(f'RSS_DISCOVERY_FAILED_{failures}')
 
