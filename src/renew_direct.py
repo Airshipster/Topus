@@ -12,6 +12,33 @@ from sheets import authenticate_google_sheets, load_settings, load_projects, get
 TOPIC_PATH = '/feeds/videos.xml'
 LEGACY_TOPIC_PATH = '/xml/feeds/videos.xml'
 
+
+def select_renewal_batch(leases, channels, now, limit=10):
+    priority_projects = {name.strip().casefold() for name in
+                         os.environ.get('TOPUS_PRIORITY_PROJECTS', 'SciTopus').split(',') if name.strip()}
+    first_attempts, retries = [], []
+    for lease in leases:
+        channel = lease['channel_id']
+        if channel not in channels or not lease.get('enabled', 1):
+            continue
+        if lease['requested'] >= now - 300:
+            continue
+        if lease['expires'] >= now + 86400 and lease['topic_path'] == TOPIC_PATH:
+            continue
+        projects = channels[channel].get('projects', [])
+        priority = any(str(name).strip().casefold() in priority_projects for name in projects)
+        # Do not let unconfirmed retries outrank other projects' first renewal.
+        retry = lease['requested'] > max(lease['verified'], lease['expires'] - 86400)
+        if retry:
+            key = (lease['requested'], not priority, channel)
+            retries.append((key, lease))
+        else:
+            key = (not priority, lease['expires'] >= now + 86400, lease['requested'], channel)
+            first_attempts.append((key, lease))
+    ordered = sorted(first_attempts, key=lambda item: item[0]) + sorted(retries, key=lambda item: item[0])
+    return [lease for _, lease in ordered[:max(0, limit)]]
+
+
 def topic_for_renewal(lease, now=None):
     now = time.time() if now is None else now
     if lease['topic_path'] == LEGACY_TOPIC_PATH and lease['expires'] < now+86400:
@@ -94,11 +121,12 @@ def run():
                 db.execute('INSERT INTO inventory_cache VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET updated=excluded.updated,payload=excluded.payload',
                            (time.time(), json.dumps(minimal)))
     reconcile_inventory(channels, complete=not incomplete)
+    now = time.time()
     with database() as db:
-        due = [dict(r) for r in db.execute('SELECT channel_id,topic_path,expires FROM leases WHERE enabled=1 '
+        candidates = [dict(r) for r in db.execute('SELECT channel_id,topic_path,expires,requested,verified FROM leases WHERE enabled=1 '
                     'AND (expires<? OR topic_path!=?) '
-                    'AND requested<? ORDER BY (expires<?) DESC,requested,channel_id LIMIT 10',
-                    (time.time() + 86400, TOPIC_PATH, time.time() - 300, time.time()+86400)) if r['channel_id'] in channels]
+                    'AND requested<?', (now + 86400, TOPIC_PATH, now - 300))]
+    due = select_renewal_batch(candidates, channels, now)
 
     pacing = threading.Lock()
     last_request = [0.0]
