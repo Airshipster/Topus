@@ -54,6 +54,8 @@ def _check_rss_feed_once(channel_id, direct=False):
         
         if response.status_code != 200:
             failure_reasons[channel_id] = 'HTTP_' + str(response.status_code)
+            from rss_diagnostics import log_http_failure
+            log_http_failure(response, direct=direct)
             return None
         
         if len(response.content) == 0:
