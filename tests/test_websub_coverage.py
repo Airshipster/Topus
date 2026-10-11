@@ -18,14 +18,25 @@ class CoverageTests(unittest.TestCase):
                 'TOPUS_PUSH_DB':directory+'/push.db','TOPUS_HUB_SECRET':'fixture'}):
             with database() as db:
                 db.execute('INSERT INTO leases(channel_id,requested,requested_topic) VALUES (?,?,?)',
-                           (channel,time.time(),'/feeds/videos.xml'))
+                           (channel,time.time(),'/xml/feeds/videos.xml'))
             key = verify_key(channel)
-            self.assertFalse(confirm(channel,key,3600,'/xml/feeds/videos.xml'))
-            self.assertTrue(confirm(channel,key,3600,'/feeds/videos.xml'))
-            self.assertFalse(confirm(channel,key,3600,'/xml/feeds/videos.xml'))
+            self.assertFalse(confirm(channel,key,3600,'/feeds/videos.xml'))
+            self.assertTrue(confirm(channel,key,3600,'/xml/feeds/videos.xml'))
+            self.assertFalse(confirm(channel,key,3600,'/feeds/videos.xml'))
             with database() as db:
                 self.assertEqual(db.execute('SELECT topic_path FROM leases WHERE channel_id=?',(channel,)).fetchone()[0],
-                                 '/feeds/videos.xml')
+                                 '/xml/feeds/videos.xml')
+
+    def test_health_separates_verified_lease_from_correct_delivery_topic(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+                'TOPUS_PUSH_DB':directory+'/push.db'}):
+            with database() as db:
+                db.executemany('INSERT INTO leases(channel_id,expires,topic_path) VALUES (?,?,?)',
+                               [('old',time.time()+3600,'/feeds/videos.xml'),
+                                ('correct',time.time()+3600,'/xml/feeds/videos.xml')])
+            subscriptions = health()['subscriptions']
+        self.assertEqual(subscriptions['verified_active'], 2)
+        self.assertEqual(subscriptions['delivery_topic_active'], 1)
 
     def test_callback_health_tracks_delivery_without_payload_data(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'TOPUS_PUSH_DB': directory + '/push.db'}):

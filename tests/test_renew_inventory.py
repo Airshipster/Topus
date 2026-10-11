@@ -8,20 +8,19 @@ from renew_direct import reconcile_inventory, hub_backoff, hub_ready, renewal_pa
 
 
 class RenewalInventoryTest(unittest.TestCase):
-    def test_expiring_verified_legacy_lease_is_preserved_during_provider_outage(self):
-        self.assertEqual(topic_for_renewal({'topic_path':'/xml/feeds/videos.xml','expires':1100},now=1000),
-                         '/xml/feeds/videos.xml')
-        self.assertEqual(topic_for_renewal({'topic_path':'/xml/feeds/videos.xml','expires':100000},now=1000),
-                         TOPIC_PATH)
+    def test_every_renewal_uses_the_exact_youtube_delivery_topic(self):
+        for expires in (0, 1100, 100000):
+            self.assertEqual(topic_for_renewal({'topic_path':'/feeds/videos.xml','expires':expires},now=1000),
+                             TOPIC_PATH)
         self.assertEqual(topic_for_renewal({'topic_path':'','expires':0},now=1000),TOPIC_PATH)
         self.assertEqual(topic_for_renewal({'topic_path':TOPIC_PATH,'expires':1100},now=1000),TOPIC_PATH)
 
     def test_official_topic_and_bounded_migration_continuation(self):
-        self.assertEqual(TOPIC_PATH, '/feeds/videos.xml')
+        self.assertEqual(TOPIC_PATH, '/xml/feeds/videos.xml')
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'TOPUS_PUSH_DB': directory + '/push.db'}):
             self.assertEqual(renewal_pause(now=1000), 120)
             with database() as db:
-                db.execute("INSERT INTO leases(channel_id,topic_path) VALUES ('active','/xml/feeds/videos.xml')")
+                db.execute("INSERT INTO leases(channel_id,topic_path) VALUES ('active','/feeds/videos.xml')")
                 db.execute("INSERT INTO leases(channel_id,enabled) VALUES ('disabled',0)")
             self.assertEqual(renewal_pause(now=1000), 5)
             hub_backoff(503, '600', now=1000)

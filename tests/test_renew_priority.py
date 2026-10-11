@@ -51,6 +51,6 @@ class RenewalPriorityTests(unittest.TestCase):
 
     def test_new_channel_and_topic_migration_are_first_attempts(self):
         leases = [self.lease('new', requested=0, verified=0, expires=0, topic_path=''),
-                  self.lease('migration', expires=self.now + 200000, topic_path='/xml/feeds/videos.xml')]
+                  self.lease('migration', expires=self.now + 200000, topic_path='/feeds/videos.xml')]
         channels = {'new': {'projects': ['SciTopus']}, 'migration': {'projects': ['Other']}}
         self.assertEqual(self.select(leases, channels), ['new', 'migration'])

@@ -9,8 +9,10 @@ import config
 from push_store import database, verify_key
 from sheets import authenticate_google_sheets, load_settings, load_projects, get_all_active_channels, format_timestamp
 
-TOPIC_PATH = '/feeds/videos.xml'
-LEGACY_TOPIC_PATH = '/xml/feeds/videos.xml'
+# The hub matches this string exactly; /feeds/ verifies but misses delivery.
+# https://developers.google.com/youtube/v3/guides/push_notifications
+TOPIC_PATH = '/xml/feeds/videos.xml'
+LEGACY_TOPIC_PATH = '/feeds/videos.xml'
 
 
 def select_renewal_batch(leases, channels, now, limit=10):
@@ -40,9 +42,6 @@ def select_renewal_batch(leases, channels, now, limit=10):
 
 
 def topic_for_renewal(lease, now=None):
-    now = time.time() if now is None else now
-    if lease['topic_path'] == LEGACY_TOPIC_PATH and lease['expires'] < now+86400:
-        return LEGACY_TOPIC_PATH
     return TOPIC_PATH
 
 

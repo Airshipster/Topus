@@ -93,7 +93,7 @@ def queue_event(video_id, channel_id, *, received=None, source='Push · server',
         return bool(insert(db).rowcount)
 
 
-def confirm(channel_id, supplied, lease, topic_path='/feeds/videos.xml'):
+def confirm(channel_id, supplied, lease, topic_path='/xml/feeds/videos.xml'):
     if topic_path not in ('/feeds/videos.xml','/xml/feeds/videos.xml') or not re.fullmatch(r'UC[\w-]{22}', channel_id) or not hmac.compare_digest(verify_key(channel_id), supplied):
         return False
     with database() as db:
@@ -232,7 +232,9 @@ def health():
                 'last_received': None, 'last_accepted': None, 'last_rejected': None,
                 'last_rejection_code': ''},
             'subscriptions': dict(db.execute('SELECT count(*) total, sum(expires>?) verified_active, '
-                                            'sum(expires<=?) expired FROM leases WHERE enabled=1',
-                                            (time.time(), time.time())).fetchone()),
+                                            'sum(expires<=?) expired, '
+                                            "sum(expires>? AND topic_path='/xml/feeds/videos.xml') delivery_topic_active "
+                                            'FROM leases WHERE enabled=1',
+                                            (time.time(), time.time(), time.time())).fetchone()),
             'jobs': {r['name']: dict(r) for r in db.execute('SELECT * FROM jobs')},
         }
