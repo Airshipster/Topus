@@ -58,6 +58,23 @@ class ResumeRescueTests(unittest.TestCase):
         self.progress(A, head='new', token='next')
         self.assertEqual(rss_discovery.rescue_targets({A, B}, {A, B}), {A, B})
 
+    def errors(self, error):
+        api_rescue.initialize()
+        with database() as db:
+            db.execute('INSERT INTO api_rescue_channels(channel_id,error) VALUES (?,?)', (A, error))
+
+    def test_connection_failure_is_retried_after_rss_recovery(self):
+        self.errors('ConnectionError')
+        self.assertEqual(rss_discovery.rescue_targets({A}, set()), {A})
+
+    def test_retryable_upstream_error_is_retried(self):
+        self.errors('API_RESCUE_HTTP_503_backendError')
+        self.assertEqual(rss_discovery.rescue_targets({A}, set()), {A})
+
+    def test_absent_playlist_is_not_an_unbounded_retry_target(self):
+        self.errors('API_RESCUE_HTTP_404_playlistNotFound')
+        self.assertEqual(rss_discovery.rescue_targets({A}, set()), set())
+
     def collect(self, mode):
         config = Mock(RSS_WORKERS=1)
         with patch.object(rss, 'check_rss_feed', return_value=[]), \

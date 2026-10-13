@@ -201,6 +201,15 @@ def rescue_targets(channels, failed):
             targets.update(row['channel_id'] for row in db.execute(
                 "SELECT channel_id FROM api_rescue_progress WHERE token<>'' OR head<>''")
                 if row['channel_id'] in active)
+        known = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                           "AND name='api_rescue_channels'").fetchone()
+        if known:
+            for row in db.execute("SELECT channel_id,error FROM api_rescue_channels WHERE error<>''"):
+                transient = row['error'] in ('ConnectionError', 'Timeout', 'ReadTimeout', 'ConnectTimeout')
+                transient = transient or row['error'].startswith(tuple(
+                    'API_RESCUE_HTTP_' + str(status) for status in (429, 500, 502, 503, 504)))
+                if transient and row['channel_id'] in active:
+                    targets.add(row['channel_id'])
     return targets
 
 
