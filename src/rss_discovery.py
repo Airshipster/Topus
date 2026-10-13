@@ -190,6 +190,20 @@ def load_inventory(config):
     return channels
 
 
+def rescue_targets(channels, failed):
+    """Finish durable catch-up scans even after their RSS feeds recover."""
+    active = set(channels)
+    targets = set(failed) & active
+    with database() as db:
+        exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                            "AND name='api_rescue_progress'").fetchone()
+        if exists:
+            targets.update(row['channel_id'] for row in db.execute(
+                "SELECT channel_id FROM api_rescue_progress WHERE token<>'' OR head<>''")
+                if row['channel_id'] in active)
+    return targets
+
+
 def collect(channels, config, mode):
     from rss import check_rss_feed, failure_reasons
     import rss_circuit as circuit
@@ -243,9 +257,10 @@ def collect(channels, config, mode):
             fetch(ordered[len(probe):])
     else:
         fetch(ordered)
-    if failed:
+    targets = rescue_targets(channels, failed) if mode == 'full' else failed
+    if targets:
         from api_rescue import run as rescue
-        rescue(failed)
+        rescue(targets)
     with database() as db:
         db.execute('DELETE FROM rss_discovery WHERE checked<?', (time.time()-7*86400,))
     report_push_gap_health()
