@@ -6,12 +6,38 @@ from unittest.mock import Mock, patch
 from urllib.parse import urlencode
 
 import controller
-from push_store import accept_xml, database, health, record_callback
+from push_store import accept_xml, confirm, database, health, record_callback, verify_key
 from rss_discovery import push_gap_health, save_result
 from renew_direct import require_verified_coverage
 
 
 class CoverageTests(unittest.TestCase):
+    def test_late_legacy_verification_cannot_replace_the_current_official_request(self):
+        channel = 'UCabcdefghijklmnopqrstuv'
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+                'TOPUS_PUSH_DB':directory+'/push.db','TOPUS_HUB_SECRET':'fixture'}):
+            with database() as db:
+                db.execute('INSERT INTO leases(channel_id,requested,requested_topic) VALUES (?,?,?)',
+                           (channel,time.time(),'/xml/feeds/videos.xml'))
+            key = verify_key(channel)
+            self.assertFalse(confirm(channel,key,3600,'/feeds/videos.xml'))
+            self.assertTrue(confirm(channel,key,3600,'/xml/feeds/videos.xml'))
+            self.assertFalse(confirm(channel,key,3600,'/feeds/videos.xml'))
+            with database() as db:
+                self.assertEqual(db.execute('SELECT topic_path FROM leases WHERE channel_id=?',(channel,)).fetchone()[0],
+                                 '/xml/feeds/videos.xml')
+
+    def test_health_separates_verified_lease_from_correct_delivery_topic(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+                'TOPUS_PUSH_DB':directory+'/push.db'}):
+            with database() as db:
+                db.executemany('INSERT INTO leases(channel_id,expires,topic_path) VALUES (?,?,?)',
+                               [('old',time.time()+3600,'/feeds/videos.xml'),
+                                ('correct',time.time()+3600,'/xml/feeds/videos.xml')])
+            subscriptions = health()['subscriptions']
+        self.assertEqual(subscriptions['verified_active'], 2)
+        self.assertEqual(subscriptions['delivery_topic_active'], 1)
+
     def test_callback_health_tracks_delivery_without_payload_data(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'TOPUS_PUSH_DB': directory + '/push.db'}):
             record_callback('accepted', counts={'entries': 3, 'new_events': 2,
@@ -34,7 +60,11 @@ class CoverageTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'WEBSUB_UNVERIFIED_1'):
                 require_verified_coverage()
             with database() as db:
-                db.execute('UPDATE leases SET expires=? WHERE channel_id=?', (time.time()+3600, 'pending'))
+                db.execute('UPDATE leases SET expires=?,topic_path=? WHERE channel_id=?',
+                           (time.time()+3600, '/xml/feeds/videos.xml', 'pending'))
+            require_verified_coverage()
+            with database() as db:
+                db.execute("UPDATE leases SET topic_path='/feeds/videos.xml' WHERE channel_id='pending'")
             require_verified_coverage()
 
     def test_canonical_and_legacy_topics_keep_signature_check(self):

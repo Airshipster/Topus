@@ -4,6 +4,17 @@ import controller
 
 
 class DiscoverySchedulerTests(unittest.TestCase):
+    def test_full_inventory_is_not_scanned_every_five_minutes(self):
+        self.assertEqual(controller.next_discovery_job(100, 100, 400), 'rss-hot-discovery')
+        self.assertIsNone(controller.next_discovery_job(100, 400, 401))
+        self.assertEqual(controller.next_discovery_job(100, 1600, 1899), None)
+        self.assertEqual(controller.next_discovery_job(100, 1600, 1900), 'rss-discovery')
+
+    def test_cold_start_and_full_scan_take_priority(self):
+        self.assertEqual(controller.next_discovery_job(None, None, 100), 'rss-discovery')
+        self.assertEqual(controller.next_discovery_job(100, None, 101), 'rss-hot-discovery')
+        self.assertEqual(controller.next_discovery_job(100, 100, 1900), 'rss-discovery')
+
     def test_empty_scan_does_not_preempt_publication(self):
         with patch.object(controller, 'database') as database, patch.object(controller, 'wake') as wake:
             database.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = None

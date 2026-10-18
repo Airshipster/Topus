@@ -8,6 +8,8 @@ from push_store import database, queue_event
 
 HOT_RETENTION_SECONDS = 7 * 86400
 PUSH_GRACE_SECONDS = 10 * 60
+OBSERVATION_MAX_AGE_SECONDS = 2100
+FAILED_SOURCE_RETRY_SECONDS = 1800
 
 
 def initialize():
@@ -34,12 +36,14 @@ def save_result(channel, videos, error, now=None, track_push_gap=False, queue_di
     queued = 0
     with database() as db:
         previous_row = db.execute(
-            'SELECT payload FROM rss_discovery WHERE channel_id=?', (channel,)
+            'SELECT checked,payload,error FROM rss_discovery WHERE channel_id=?', (channel,)
         ).fetchone()
         try:
             previous = json.loads(previous_row['payload']) if previous_row else []
         except (TypeError, ValueError):
-            previous = []
+            previous = None
+        continuous = bool(previous_row and not previous_row['error'] and isinstance(previous, list)
+                          and 0 <= checked - previous_row['checked'] <= OBSERVATION_MAX_AGE_SECONDS)
         db.execute('INSERT INTO rss_discovery VALUES (?,?,?,?) ON CONFLICT(channel_id) '
                    'DO UPDATE SET checked=excluded.checked,payload=excluded.payload,error=excluded.error',
                    (channel, checked, json.dumps(videos), error))
@@ -62,9 +66,14 @@ def save_result(channel, videos, error, now=None, track_push_gap=False, queue_di
                     (video_id, channel),
                 ).fetchone()
                 push_received = float(push_row['received'] or 0)
-                db.execute('INSERT OR IGNORE INTO rss_push_gaps('
-                           'video_id,channel_id,first_seen,push_received) VALUES (?,?,?,?)',
-                           (video_id, channel, checked, push_received))
+                # An initial/recovered feed snapshot cannot prove a missed callback.
+                if continuous:
+                    db.execute('INSERT INTO rss_push_gaps('
+                               'video_id,channel_id,first_seen,push_received,observed_since) VALUES (?,?,?,?,?) '
+                               'ON CONFLICT(video_id) DO UPDATE SET first_seen=excluded.first_seen,'
+                               'push_received=excluded.push_received,observed_since=excluded.observed_since '
+                               'WHERE rss_push_gaps.observed_since=0',
+                               (video_id, channel, checked, push_received, previous_row['checked']))
                 if not push_received:
                     queued += queue_event(video_id, channel, received=checked,
                                           source='RSS · server', connection=db)
@@ -73,11 +82,14 @@ def save_result(channel, videos, error, now=None, track_push_gap=False, queue_di
 
 def hot_channels(now=None):
     initialize()
-    cutoff = (time.time() if now is None else now) - HOT_RETENTION_SECONDS
+    current = time.time() if now is None else now
+    cutoff = current - HOT_RETENTION_SECONDS
     with database() as db:
         return {row['channel_id'] for row in db.execute(
             'SELECT h.channel_id FROM rss_hotset h JOIN leases l ON l.channel_id=h.channel_id '
-            'WHERE h.last_video>=? AND l.enabled=1', (cutoff,)
+            'LEFT JOIN rss_discovery r ON r.channel_id=h.channel_id '
+            "WHERE h.last_video>=? AND l.enabled=1 AND (r.error IS NULL OR r.error='' OR r.checked<=?)",
+            (cutoff, current - FAILED_SOURCE_RETRY_SECONDS)
         )}
 
 
@@ -89,7 +101,7 @@ def push_gap_health(now=None):
                    (current - HOT_RETENTION_SECONDS,))
         row = db.execute(
             'SELECT count(*) total, min(first_seen) oldest FROM rss_push_gaps '
-            'WHERE push_received=0 AND first_seen<=?',
+            'WHERE observed_since>0 AND push_received=0 AND first_seen<=?',
             (current - PUSH_GRACE_SECONDS,),
         ).fetchone()
     return {'open': int(row['total'] or 0), 'oldest': row['oldest'],
@@ -106,7 +118,7 @@ def report_push_gap_health():
                 'active': bool(result['open']),
                 'summary': ('Push не доставил события для видео, найденных резервным RSS: '
                             f"{result['open']}" if result['open'] else
-                            'Доставка Push снова подтверждается событиями.'),
+                            'Нет подтверждённых пропусков событий Push.'),
             })
         except Exception as exc:
             result['report_error'] = type(exc).__name__
@@ -115,6 +127,9 @@ def report_push_gap_health():
 
 def read_result(channel, now=None):
     initialize()
+    from rss_circuit import is_open
+    if is_open(now):
+        return None, 'RSS_UPSTREAM_COOLDOWN'
     with database() as db:
         row = db.execute('SELECT * FROM rss_discovery WHERE channel_id=?', (channel,)).fetchone()
     if row is None:
@@ -175,33 +190,93 @@ def load_inventory(config):
     return channels
 
 
+def rescue_targets(channels, failed):
+    """Finish durable catch-up scans even after their RSS feeds recover."""
+    active = set(channels)
+    targets = set(failed) & active
+    with database() as db:
+        exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                            "AND name='api_rescue_progress'").fetchone()
+        if exists:
+            targets.update(row['channel_id'] for row in db.execute(
+                "SELECT channel_id FROM api_rescue_progress WHERE token<>'' OR head<>''")
+                if row['channel_id'] in active)
+        known = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                           "AND name='api_rescue_channels'").fetchone()
+        if known:
+            for row in db.execute("SELECT channel_id,error FROM api_rescue_channels WHERE error<>''"):
+                transient = row['error'] in ('ConnectionError', 'Timeout', 'ReadTimeout', 'ConnectTimeout')
+                transient = transient or row['error'].startswith(tuple(
+                    'API_RESCUE_HTTP_' + str(status) for status in (429, 500, 502, 503, 504)))
+                if transient and row['channel_id'] in active:
+                    targets.add(row['channel_id'])
+    return targets
+
+
 def collect(channels, config, mode):
     from rss import check_rss_feed, failure_reasons
+    import rss_circuit as circuit
+    initialize()
+    channels = set(channels)
+    decision = circuit.claim()
     failures = 0
     failed = set()
     queued = 0
-    with ThreadPoolExecutor(max_workers=max(1, min(12, int(config.RSS_WORKERS)))) as pool:
-        futures = {pool.submit(check_rss_feed, channel): channel for channel in channels}
-        for future in as_completed(futures):
-            channel = futures[future]
-            try:
-                videos = future.result()
-                error = failure_reasons.get(channel, 'RSS_DISCOVERY_FAILED') if videos is None else ''
-            except Exception as exc:
-                videos, error = None, type(exc).__name__
-            queued += save_result(channel, videos, error, track_push_gap=(mode == 'hot'),
-                                  queue_discoveries=(mode == 'full'))
-            failures += bool(error)
-            if error:
-                failed.add(channel)
-    if failed:
+    checked = 0
+    skipped = 0
+
+    def fetch(group):
+        nonlocal checked, failures, queued
+        errors = []
+        with ThreadPoolExecutor(max_workers=max(1, min(12, int(config.RSS_WORKERS)))) as pool:
+            futures = {pool.submit(check_rss_feed, channel): channel for channel in group}
+            for future in as_completed(futures):
+                channel = futures[future]
+                try:
+                    videos = future.result()
+                    error = failure_reasons.get(channel, 'RSS_DISCOVERY_FAILED') if videos is None else ''
+                except Exception as exc:
+                    videos, error = None, type(exc).__name__
+                queued += save_result(channel, videos, error, track_push_gap=(mode == 'hot'),
+                                      queue_discoveries=(mode == 'full'))
+                checked += 1
+                failures += bool(error)
+                errors.append(error)
+                if error:
+                    failed.add(channel)
+        return errors
+
+    ordered = circuit.ordered_channels(channels)
+    if decision == 'skip':
+        skipped = len(channels)
+        failed.update(channels)
+    elif decision == 'probe' or len(channels) >= circuit.MIN_INVENTORY:
+        probe = ordered[:circuit.PROBE_SIZE]
+        errors = fetch(probe)
+        all_missing = len(errors) == circuit.PROBE_SIZE and all(error == 'HTTP_404' for error in errors)
+        if all_missing or (decision == 'probe' and all(errors)):
+            circuit.defer()
+            skipped = len(channels) - len(probe)
+            failed.update(ordered[len(probe):])
+            print(f'RSS_UPSTREAM_CIRCUIT state=open probed={len(probe)} skipped={skipped}', flush=True)
+        else:
+            if decision == 'probe':
+                circuit.recover()
+                print('RSS_UPSTREAM_CIRCUIT state=recovered', flush=True)
+            fetch(ordered[len(probe):])
+    else:
+        fetch(ordered)
+    targets = rescue_targets(channels, failed) if mode == 'full' else failed
+    if targets:
         from api_rescue import run as rescue
-        rescue(failed)
+        rescue(targets)
     with database() as db:
         db.execute('DELETE FROM rss_discovery WHERE checked<?', (time.time()-7*86400,))
-    if mode == 'hot':
-        report_push_gap_health()
-    print(f'RSS_DISCOVERY mode={mode} completed={len(channels)} failed={failures} queued={queued}', flush=True)
+    report_push_gap_health()
+    print(f'RSS_DISCOVERY mode={mode} completed={checked} failed={failures} queued={queued} '
+          f'skipped={skipped} total={len(channels)}', flush=True)
+    if skipped:
+        raise RuntimeError('RSS_DISCOVERY_UPSTREAM_COOLDOWN')
     if failures:
         raise RuntimeError(f'RSS_DISCOVERY_FAILED_{failures}')
 

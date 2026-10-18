@@ -28,6 +28,15 @@ class RssRetryTests(unittest.TestCase):
             self.assertIsNone(rss.check_rss_feed('fixture'))
             self.assertEqual(get.call_count, 1)
 
+    def test_not_found_and_rate_limit_do_not_call_proxy_or_retry(self):
+        for status in (404, 429):
+            with self.subTest(status=status), patch('rss.requests.get', return_value=Mock(status_code=status)) as get, \
+                    patch('rss.time.sleep'), patch('builtins.print') as log:
+                self.assertIsNone(rss.check_rss_feed('fixture'))
+                self.assertEqual(get.call_count, 1)
+                self.assertEqual(rss.failure_reasons['fixture'], 'HTTP_' + str(status))
+                self.assertIn('attempts=1', log.call_args.args[0])
+
     def test_invalid_html_is_not_an_empty_success(self):
         html = Mock(status_code=200, content=b'<html/>')
         with patch('rss.requests.get', return_value=html) as get, patch('rss.time.sleep'), patch('builtins.print'):

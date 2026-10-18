@@ -46,6 +46,17 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(hot_channels(now=101), {'channel'})
         self.assertEqual(hot_channels(now=100 + 8 * 86400), set())
 
+    def test_failed_hot_source_waits_thirty_minutes_without_losing_channel(self):
+        with database() as db:
+            db.execute("INSERT INTO leases(channel_id,enabled) VALUES ('channel',1)")
+        save_result('channel', [{'video_id': 'video-one'}], '', now=100)
+        save_result('channel', None, 'HTTP_404', now=200)
+        self.assertEqual(hot_channels(now=500), set())
+        self.assertEqual(hot_channels(now=1999), set())
+        self.assertEqual(hot_channels(now=2000), {'channel'})
+        save_result('channel', [], '', now=2001)
+        self.assertEqual(hot_channels(now=2002), {'channel'})
+
     def test_hot_scan_records_only_new_videos_as_push_gaps(self):
         channel = 'UC' + 'a' * 22
         save_result(channel, [{'video_id':'oldvideo123'}], '', now=100)
@@ -87,3 +98,49 @@ class DiscoveryTests(unittest.TestCase):
                                      queue_discoveries=True), 1)
         self.assertEqual(save_result(channel, [{'video_id':'newvideo123'}], '', now=300,
                                      queue_discoveries=True), 0)
+
+    def test_initial_snapshot_is_queued_but_not_a_proven_push_gap(self):
+        channel = 'UC' + 'e' * 22
+        self.assertEqual(save_result(channel, [{'video_id':'oldvideo123'}], '', now=100,
+                                     queue_discoveries=True), 1)
+        self.assertEqual(push_gap_health(now=801)['open'], 0)
+
+    def test_recovered_or_stale_snapshot_does_not_prove_push_gap(self):
+        channel = 'UC' + 'f' * 22
+        save_result(channel, [], '', now=100)
+        self.assertEqual(save_result(channel, [{'video_id':'oldvideo123'}], '', now=2300,
+                                     queue_discoveries=True), 1)
+        save_result(channel, None, 'HTTP_503', now=2400)
+        self.assertEqual(save_result(channel, [{'video_id':'newvideo123'}], '', now=2500,
+                                     queue_discoveries=True), 1)
+        self.assertEqual(push_gap_health(now=3201)['open'], 0)
+
+    def test_legacy_gaps_are_unverified_until_a_new_observation(self):
+        channel = 'UC' + 'g' * 22
+        with database() as db:
+            db.execute('INSERT INTO rss_push_gaps(video_id,channel_id,first_seen) VALUES (?,?,?)',
+                       ('newvideo123', channel, 100))
+        self.assertEqual(push_gap_health(now=801)['open'], 0)
+        save_result(channel, [], '', now=900)
+        save_result(channel, [{'video_id':'newvideo123'}], '', now=1000, track_push_gap=True)
+        self.assertEqual(push_gap_health(now=1601)['open'], 1)
+
+    def test_observation_column_migrates_without_losing_legacy_rows(self):
+        import sqlite3
+        with sqlite3.connect(os.environ['TOPUS_PUSH_DB']) as db:
+            db.execute('CREATE TABLE rss_push_gaps(video_id TEXT PRIMARY KEY,channel_id TEXT,'
+                       'first_seen REAL,push_received REAL DEFAULT 0)')
+            db.execute("INSERT INTO rss_push_gaps VALUES ('oldvideo123','channel',100,0)")
+        self.assertEqual(push_gap_health(now=801)['open'], 0)
+        with database() as db:
+            row = db.execute('SELECT video_id,observed_since FROM rss_push_gaps').fetchone()
+        self.assertEqual(tuple(row), ('oldvideo123', 0))
+
+    def test_corrupt_snapshot_is_recovered_without_claiming_a_push_gap(self):
+        channel = 'UC' + 'h' * 22
+        save_result(channel, [], '', now=100)
+        with database() as db:
+            db.execute('UPDATE rss_discovery SET payload=? WHERE channel_id=?', ('{', channel))
+        self.assertEqual(save_result(channel, [{'video_id':'newvideo123'}], '', now=200,
+                                     queue_discoveries=True), 1)
+        self.assertEqual(push_gap_health(now=801)['open'], 0)

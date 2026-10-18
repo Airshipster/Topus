@@ -51,4 +51,5 @@ def log_http_failure(response, *, direct):
         print('RSS_HTTP_EVIDENCE ' + json.dumps(http_failure_evidence(response, direct=direct),
                                                sort_keys=True), flush=True)
     except Exception:
+        # Diagnostics must never change the feed outcome or retry behavior.
         return
