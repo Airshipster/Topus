@@ -28,6 +28,15 @@ class RecoveryPolicyTests(unittest.TestCase):
             for status in ['pending','published','filtered','expired','unavailable']:
                 self.assertEqual(sheets.status_name_from_text(prefix+': '+status+'. details'),status)
 
+    def test_header_counts_all_retained_rows_and_backup_labels(self):
+        old='=COUNTIF(OFFSET(INDEX(A:ZZ;ROW()+1;COLUMN());0;0;10000;1);"*RSS:*")'
+        fixed=sheets.normalized_activity_header_formula(old)
+        self.assertIn('ROWS(A:A)-ROW()',fixed)
+        self.assertIn('"*RSS*:*"',fixed)
+        self.assertNotIn(';10000;',fixed)
+        self.assertEqual(sheets.normalized_activity_header_formula(fixed),fixed)
+        self.assertEqual(sheets.normalized_activity_header_formula('Событие'),'Событие')
+
     def test_scitopus_manual_replay_cannot_bypass_week(self):
         from main import get_stale_reason
         with patch.dict(os.environ,{'TOPUS_MAX_PUBLISH_AGE_HOURS_OVERRIDE':''}),\

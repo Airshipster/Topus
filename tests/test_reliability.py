@@ -56,6 +56,8 @@ class ReliabilityTests(unittest.TestCase):
             self.assertEqual(journal.send_public('token', 'channel', 'text', 'project', 'video'), 123)
             self.assertEqual(journal.send_public('token', 'channel', 'text', 'project', 'video'), '123')
             self.assertEqual(post.call_count, 1)
+            self.assertEqual(post.call_args.kwargs['json']['link_preview_options'],
+                             {'is_disabled': False, 'url': 'https://www.youtube.com/watch?v=video'})
 
     def test_verified_lease_not_just_accepted_request(self):
         channel = 'UC' + 'a' * 22

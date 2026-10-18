@@ -36,7 +36,7 @@ function migrateLogsChannelIdColumn_(ss) {
   }
 
   logs.getRange(1, channelCol).setValue('Channel ID');
-  logs.getRange(1, eventCol).setFormula('="Событие"&CHAR(10)&"Push: "&COUNTIF(OFFSET(INDEX(A:ZZ;ROW()+1;COLUMN());0;0;10000;1);"*Push:*")&", RSS: "&COUNTIF(OFFSET(INDEX(A:ZZ;ROW()+1;COLUMN());0;0;10000;1);"*RSS*:*")');
+  logs.getRange(1, eventCol).setFormula('="Событие"&CHAR(10)&"Push: "&COUNTIF(OFFSET(INDEX(A:ZZ;ROW()+1;COLUMN());0;0;ROWS(A:A)-ROW();1);"*Push:*")&", RSS: "&COUNTIF(OFFSET(INDEX(A:ZZ;ROW()+1;COLUMN());0;0;ROWS(A:A)-ROW();1);"*RSS*:*")');
 
   var lastRow = logs.getLastRow();
   if (lastRow <= 1) {

@@ -63,7 +63,9 @@ def send_public(bot_token, channel_id, message, project, video_id, published_at=
         return None
     try:
         response = requests.post(f'https://api.telegram.org/bot{bot_token}/sendMessage', json={
-            'chat_id': channel_id, 'text': message, 'parse_mode': 'HTML', 'disable_web_page_preview': False,
+            'chat_id': channel_id, 'text': message, 'parse_mode': 'HTML',
+            'link_preview_options': {'is_disabled': False,
+                                     'url': 'https://www.youtube.com/watch?v=' + video_id},
         }, timeout=(10, 30))
         body = response.json()
         message_id = body.get('result', {}).get('message_id')

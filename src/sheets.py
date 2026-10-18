@@ -68,7 +68,7 @@ VIDEO_HEADERS = [
 ]
 
 LOG_HEADERS = ['Проект', 'Timestamp GMT+4', 'Video ID', 'Channel ID', 'Событие']
-LOG_EVENT_HEADER_FORMULA = '="Событие"&CHAR(10)&"Push: "&COUNTIF(OFFSET(INDEX(A:ZZ;ROW()+1;COLUMN());0;0;10000;1);"*Push:*")&", RSS: "&COUNTIF(OFFSET(INDEX(A:ZZ;ROW()+1;COLUMN());0;0;10000;1);"*RSS*:*")'
+LOG_EVENT_HEADER_FORMULA = '="Событие"&CHAR(10)&"Push: "&COUNTIF(OFFSET(INDEX(A:ZZ;ROW()+1;COLUMN());0;0;ROWS(A:A)-ROW();1);"*Push:*")&", RSS: "&COUNTIF(OFFSET(INDEX(A:ZZ;ROW()+1;COLUMN());0;0;ROWS(A:A)-ROW();1);"*RSS*:*")'
 
 _LOCK_ROW_INFO = None
 _RUN_STATUS_ROW = None
@@ -1807,6 +1807,12 @@ def apply_log_header_formula(worksheet):
     )
 
 
+def normalized_activity_header_formula(value):
+    if not value.startswith('=') or 'COUNTIF' not in value:
+        return value
+    return value.replace('"*RSS:', '"*RSS*:').replace(';0;0;10000;1)', ';0;0;ROWS(A:A)-ROW();1)')
+
+
 def repair_activity_header_formulas(sheet):
     for name,header in [(config.SHEET_NAME_VIDEOS,'Системный статус'),('Логи','Событие')]:
         worksheet=sheet.worksheet(name)
@@ -1816,8 +1822,9 @@ def repair_activity_header_formulas(sheet):
             continue
         address=gspread.utils.rowcol_to_a1(1,column+1)
         value=worksheet.acell(address,value_render_option='FORMULA').value or ''
-        if value.startswith('=') and 'COUNTIF' in value and '"*RSS:' in value:
-            worksheet.update(range_name=address,values=[[value.replace('"*RSS:','"*RSS*:')]],
+        replacement = normalized_activity_header_formula(value)
+        if replacement != value:
+            worksheet.update(range_name=address,values=[[replacement]],
                              value_input_option='USER_ENTERED')
 
 
