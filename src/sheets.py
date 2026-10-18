@@ -1451,7 +1451,18 @@ def row_status_blocks_retry(status):
     return bool(status and status not in ('pending', 'failed', 'retry') and not status.startswith('deleted'))
 
 def update_video_publication_status(sheet, video_id, project_name, tg_message_id=None, status='published', error='', video=None, mark_tg_published=False):
-    """Обновление статуса публикации существующей строки видео"""
+    return update_video_publication_status_batch(sheet, [{
+        'video_id': video_id, 'project_name': project_name,
+        'tg_message_id': tg_message_id, 'status': status, 'error': error,
+        'video': video, 'mark_tg_published': mark_tg_published,
+        'timestamp': format_timestamp(),
+    }]) == 1
+
+
+def update_video_publication_status_batch(sheet, entries):
+    """Mirror confirmed results with one shared read, preserving each send time."""
+    if not entries:
+        return 0
     try:
         worksheet = ensure_videos_worksheet(sheet)
         values = get_values_with_quota_retry(worksheet)
@@ -1465,50 +1476,52 @@ def update_video_publication_status(sheet, video_id, project_name, tg_message_id
         if project_col_index is not None:
             project_col_letter = a1_column(project_col_index + 1)
             project_formulas = get_values_with_quota_retry(worksheet, f'{project_col_letter}:{project_col_letter}', value_render_option='FORMULA')
-        target_row = None
-        target_data = {}
-
+        targets = {}
         for row_index, row in enumerate(values[1:], start=2):
             data = row_as_dict(headers, row)
             row_project_name = project_name_from_cell(first_value(data, ['Проект']))
             row_video_id = video_id_from_url(first_value(data, ['Ссылка на видео', 'Video ID']))
-            if row_video_id == video_id and row_project_name == project_name:
-                target_row = row_index
-                target_data = data
+            targets[(row_video_id, row_project_name)] = (row_index, data)
 
-        if not target_row:
-            print(f"  ⚠️  Could not find video row to update: {video_id} / {project_name}")
-            return False
-
-        timestamp = format_timestamp()
-        yt_published = first_value(target_data, ['Дата публикации YT GMT+4', 'Дата публикации YT UTC'])
-        effective_yt_published = effective_youtube_publication_timestamp(video, yt_published)
-        method, _ = status_method_from_text(first_value(target_data, ['Системный статус']))
-        method = method or str((video or {}).get('source_method') or '').strip()
-        current_project_cell = first_value(target_data, ['Проект'])
-        project_formula = cell_value(project_formulas[target_row - 1], 0) if target_row - 1 < len(project_formulas) else ''
-        if str(project_formula).strip().startswith('='):
-            current_project_cell = project_formula
-        column_updates = {
-            'Проект': project_post_link_formula_from_cell(current_project_cell, project_name, tg_message_id) if tg_message_id else current_project_cell,
-            'Дата публикации YT GMT+4': sheet_datetime_value(effective_yt_published) if effective_yt_published else '',
-            'TG message_id': sheet_numeric_value(tg_message_id) if tg_message_id else '',
-            'Дата публикации TG GMT+4': sheet_datetime_value(timestamp) if tg_message_id or mark_tg_published else '',
-            'Разница в минутах': stream_adjusted_publication_delay_minutes(video, effective_yt_published, timestamp) if tg_message_id or mark_tg_published else '',
-            'Системный статус': combined_status(status, error, method),
-        }
-        updates = [
-            {
+        updates = []
+        matched = 0
+        for entry in entries:
+            video_id, project_name = entry['video_id'], entry['project_name']
+            target = targets.get((video_id, project_name))
+            if not target:
+                print(f"  Could not find video row to update: {video_id} / {project_name}")
+                continue
+            target_row, target_data = target
+            video = entry.get('video')
+            tg_message_id = entry.get('tg_message_id')
+            mark_tg_published = entry.get('mark_tg_published', False)
+            timestamp = entry.get('timestamp') or format_timestamp()
+            yt_published = first_value(target_data, ['Дата публикации YT GMT+4', 'Дата публикации YT UTC'])
+            effective_yt_published = effective_youtube_publication_timestamp(video, yt_published)
+            method, _ = status_method_from_text(first_value(target_data, ['Системный статус']))
+            method = method or str((video or {}).get('source_method') or '').strip()
+            current_project_cell = first_value(target_data, ['Проект'])
+            project_formula = cell_value(project_formulas[target_row - 1], 0) if target_row - 1 < len(project_formulas) else ''
+            if str(project_formula).strip().startswith('='):
+                current_project_cell = project_formula
+            column_updates = {
+                'Проект': project_post_link_formula_from_cell(current_project_cell, project_name, tg_message_id) if tg_message_id else current_project_cell,
+                'Дата публикации YT GMT+4': sheet_datetime_value(effective_yt_published) if effective_yt_published else '',
+                'TG message_id': sheet_numeric_value(tg_message_id) if tg_message_id else '',
+                'Дата публикации TG GMT+4': sheet_datetime_value(timestamp) if tg_message_id or mark_tg_published else '',
+                'Разница в минутах': stream_adjusted_publication_delay_minutes(video, effective_yt_published, timestamp) if tg_message_id or mark_tg_published else '',
+                'Системный статус': combined_status(entry.get('status', 'published'), entry.get('error', ''), method),
+            }
+            updates.extend({
                 'range': gspread.utils.rowcol_to_a1(target_row, indexes[header]),
                 'values': [[value]],
-            }
-            for header, value in column_updates.items()
-            if header in indexes
-        ]
-        batch_update_with_quota_retry(worksheet, updates, value_input_option='USER_ENTERED')
-        return True
+            } for header, value in column_updates.items() if header in indexes)
+            matched += 1
+        for offset in range(0, len(updates), config.BATCH_SIZE):
+            batch_update_with_quota_retry(worksheet, updates[offset:offset + config.BATCH_SIZE], value_input_option='USER_ENTERED')
+        return matched
     except Exception as e:
-        print(f"  ⚠️  Error updating publication status for {video_id}: {e}")
+        print(f"  Error updating publication status batch: {e}")
         raise
 
 
@@ -1613,6 +1626,8 @@ def delete_stale_unpublished_video_rows(sheet):
         for row in values[1:]:
             data = row_as_dict(headers, row)
             status_name = status_name_from_text(first_value(data, ['Системный статус']))
+            if status_name == 'notification-pending' and not first_value(data, ['TG message_id']):
+                continue
             if not row_status_blocks_retry(status_name):
                 continue
             project_name = project_name_from_cell(first_value(data, ['Проект']))
@@ -1627,7 +1642,7 @@ def delete_stale_unpublished_video_rows(sheet):
             status_name = status_name_from_text(status_text)
             if status_name == 'published':
                 continue
-            if status_name not in ('pending', ''):
+            if status_name not in ('pending', 'notification-pending', ''):
                 continue
 
             status_index = find_column_index(headers, ['Системный статус'])

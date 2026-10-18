@@ -33,6 +33,7 @@ from sheets import (
     update_project_channel_counts,
     update_project_provisioning_statuses,
     update_video_publication_status,
+    update_video_publication_status_batch,
     update_last_run,
     update_run_status,
     update_youtube_quota,
@@ -61,6 +62,8 @@ def get_stale_reason(published_at, project=None, video=None):
 
     emergency_limit = os.environ.get('TOPUS_MAX_PUBLISH_AGE_HOURS_OVERRIDE', '').strip()
     limit_hours = int(emergency_limit) if emergency_limit else publication_age_limit(project)
+    if str((project or {}).get('name') or '').casefold() == 'scitopus':
+        limit_hours = min(limit_hours, publication_age_limit(project))
 
     age_hours = (current_local_datetime() - published).total_seconds() / 3600
     if age_hours > limit_hours:
@@ -438,6 +441,20 @@ def main():
     
     master_sheet = None
     lock_acquired = False
+    publication_updates = []
+
+    def flush_publication_updates():
+        if publication_updates:
+            matched = update_video_publication_status_batch(master_sheet, publication_updates)
+            if matched != len(publication_updates):
+                raise RuntimeError('PUBLICATION_MIRROR_ROW_MISSING')
+            publication_updates.clear()
+
+    def record_publication_status(video_id, project_name, **fields):
+        publication_updates.append(dict(video_id=video_id, project_name=project_name,
+                                        timestamp=format_timestamp(), **fields))
+        if len(publication_updates) >= 10:
+            flush_publication_updates()
     
     try:
         client = authenticate_google_sheets()
@@ -913,7 +930,7 @@ def main():
                 print(f"  🚫 Skipping publish stale: {video['title'][:50]} ({stale_reason})")
                 timestamp = format_timestamp()
                 log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], video.get('channel_id', ''), stale_reason, 'filtered', video.get('source_method', '')])
-                update_video_publication_status(master_sheet, video['video_id'], project['name'], status='filtered', error=stale_reason)
+                record_publication_status(video['video_id'], project['name'], status='filtered', error=stale_reason)
                 total_filtered += 1
                 continue
             
@@ -932,8 +949,7 @@ def main():
                     sent = worker_result.get('sent', queued)
                     print(f"    ✅ Bot subscriber notifications sent: {sent}/{queued}")
                     log_entries.append([timestamp, project['name'], 'Video published', video['video_id'], video.get('channel_id', ''), f"Bot subscribers sent: {sent}/{queued}", 'success', source_method])
-                    update_video_publication_status(
-                        master_sheet,
+                    record_publication_status(
                         video['video_id'],
                         project['name'],
                         status='published',
@@ -947,8 +963,7 @@ def main():
                     # the source event look unprocessed and trigger a full replay.
                     print("    ⚠️  Bot subscriber notification queued for separate retry")
                     log_entries.append([timestamp, project['name'], 'Personal notification pending', video['video_id'], video.get('channel_id', ''), 'Worker notification pending', 'warning', source_method])
-                    update_video_publication_status(
-                        master_sheet,
+                    record_publication_status(
                         video['video_id'],
                         project['name'],
                         status='notification-pending',
@@ -975,8 +990,7 @@ def main():
                     print(f"    👤 Worker subscriber notifications queued: {worker_result.get('queued', 0)}")
                 timestamp = format_timestamp()
                 log_entries.append([timestamp, project['name'], 'Video published', video['video_id'], video.get('channel_id', ''), f"Telegram msg: {tg_message_id}", 'success', source_method])
-                update_video_publication_status(
-                    master_sheet,
+                record_publication_status(
                     video['video_id'],
                     project['name'],
                     tg_message_id=tg_message_id,
@@ -989,11 +1003,13 @@ def main():
                 print(f"    ❌ Failed to publish")
                 timestamp = format_timestamp()
                 log_entries.append([timestamp, project['name'], 'Publish failed', video['video_id'], video.get('channel_id', ''), 'Telegram error', 'error', source_method])
-                update_video_publication_status(master_sheet, video['video_id'], project['name'], status='failed', error='Telegram error')
+                record_publication_status(video['video_id'], project['name'], status='failed', error='Telegram error')
                 total_failed += 1
             
             time.sleep(1 / config.TELEGRAM_RATE_LIMIT)
         
+        flush_publication_updates()
+
         # СОХРАНЯЕМ ЛОГИ БАТЧЕМ
         if log_entries:
             print(f"\n📝 Saving logs...")
@@ -1058,8 +1074,12 @@ def main():
         raise
         
     finally:
-        if master_sheet and lock_acquired:
-            release_lock(master_sheet)
+        try:
+            if master_sheet:
+                flush_publication_updates()
+        finally:
+            if master_sheet and lock_acquired:
+                release_lock(master_sheet)
 
 
 if __name__ == "__main__":

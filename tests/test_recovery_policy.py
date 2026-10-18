@@ -35,6 +35,51 @@ class RecoveryPolicyTests(unittest.TestCase):
             self.assertTrue(get_stale_reason('10.10.2026 09:00:00',{'name':'SciTopus'},
                                             {'manual_replay':True}))
             self.assertFalse(get_stale_reason('13.10.2026 09:00:00',{'name':'SciTopus'}))
+        with patch.dict(os.environ,{'TOPUS_MAX_PUBLISH_AGE_HOURS_OVERRIDE':'500'}),\
+             patch('main.current_local_datetime',return_value=datetime(2026,10,18,10)):
+            self.assertTrue(get_stale_reason('10.10.2026 09:00:00',{'name':'SciTopus'}))
+
+    def test_publication_results_share_reads_and_keep_individual_send_times(self):
+        headers=sheets.VIDEO_HEADERS
+        first=['SciTopus','Channel','https://youtube.com/channel/channel',
+               'One','https://youtube.com/watch?v=abcdefghijk',
+               '17.10.2026 09:00:00','18.10.2026 09:00:00','','','','Push: pending']
+        second=list(first)
+        second[3:5]=['Two','https://youtube.com/watch?v=bcdefghijkl']
+        second[-1]='Bot: RSS [YouTube API backup]: pending'
+        values=[headers,first,second]
+        formulas=[['Проект'],['=HYPERLINK("https://t.me/SciTopus";"SciTopus")'],['SciTopus']]
+        entries=[{'video_id':'abcdefghijk','project_name':'SciTopus','tg_message_id':24907,
+                  'timestamp':'18.10.2026 10:00:00'},
+                 {'video_id':'bcdefghijkl','project_name':'SciTopus','mark_tg_published':True,
+                  'timestamp':'18.10.2026 10:01:00'}]
+        with patch.object(sheets,'ensure_videos_worksheet',return_value=SimpleNamespace()),\
+             patch.object(sheets,'get_values_with_quota_retry',side_effect=[values,formulas]) as read,\
+             patch.object(sheets,'batch_update_with_quota_retry') as write:
+            count=sheets.update_video_publication_status_batch(None,entries)
+        self.assertEqual(count,2)
+        self.assertEqual(read.call_count,2)
+        updates={item['range']:item['values'][0][0]
+                 for call in write.call_args_list for item in call.args[1]}
+        self.assertEqual(updates['J2'],24907)
+        self.assertIn('SciTopus/24907',updates['A2'])
+        self.assertEqual(updates['I2'],sheets.sheet_datetime_value(entries[0]['timestamp']))
+        self.assertEqual(updates['I3'],sheets.sheet_datetime_value(entries[1]['timestamp']))
+        self.assertIn('RSS [YouTube API backup]: published',updates['K3'])
+
+    def test_old_notification_pending_expires_without_resending(self):
+        old=['SciTopus','Channel','https://youtube.com/channel/channel','One',
+             'https://youtube.com/watch?v=abcdefghijk','01.09.2026 09:00:00',
+             '01.09.2026 09:00:00','','','','Bot: Push: notification-pending']
+        with patch.object(sheets,'ensure_videos_worksheet',return_value=SimpleNamespace()),\
+             patch.object(sheets,'get_values_with_quota_retry',return_value=[sheets.VIDEO_HEADERS,old]),\
+             patch.object(sheets,'current_local_datetime',return_value=datetime(2026,10,18,10)),\
+             patch.object(sheets,'batch_update_with_quota_retry') as write:
+            count=sheets.delete_stale_unpublished_video_rows(None)
+        self.assertEqual(count,1)
+        text=write.call_args.args[1][0]['values'][0][0]
+        self.assertIn('Stale video',text)
+        self.assertNotIn('Duplicate',text)
 
     def test_terminal_rows_expire_but_unfinished_work_survives(self):
         now=datetime(2026,10,18,10)
