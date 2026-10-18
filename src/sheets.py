@@ -2223,8 +2223,8 @@ def delete_old_activity_rows(sheet, retention_days=None):
     for worksheet_name, date_headers in targets:
         try:
             worksheet = sheet.worksheet(worksheet_name)
-            values = get_values_with_quota_retry(worksheet)
-            if len(values) <= 1:
+            values = get_values_with_quota_retry(worksheet, '1:1')
+            if not values:
                 continue
 
             headers = [str(value).strip() for value in values[0]]
@@ -2234,33 +2234,41 @@ def delete_old_activity_rows(sheet, retention_days=None):
                 failures.append(worksheet_name)
                 continue
 
+            status_header = ('Системный статус' if worksheet_name == config.SHEET_NAME_VIDEOS
+                             else 'Обработано' if worksheet_name == config.SHEET_NAME_PUSH_EVENTS else None)
+            status_col = find_column_index(headers,[status_header]) if status_header else None
+            if status_header and status_col is None:
+                raise ValueError('RETENTION_STATUS_COLUMN_MISSING')
+            columns=[date_col]+([status_col] if status_col is not None else [])
+            ranges=[f'{a1_column(column+1)}2:{a1_column(column+1)}{worksheet.row_count}' for column in columns]
+            selected=worksheet.batch_get(ranges)
+            dates=selected[0]
+            statuses=selected[1] if len(selected)>1 else []
             rows_to_delete = []
-            for row_index, row in enumerate(values[1:], start=2):
-                if not any(str(cell).strip() for cell in row):
-                    continue
-                data = row_as_dict(headers, row)
+            for offset, row in enumerate(dates):
+                status_value=cell_value(statuses[offset],0) if offset<len(statuses) else ''
                 if worksheet_name == config.SHEET_NAME_VIDEOS:
-                    status = status_name_from_text(first_value(data, ['Системный статус']))
+                    status = status_name_from_text(status_value)
                     if status not in ('published', 'filtered', 'expired', 'unavailable'):
                         continue
-                if worksheet_name == config.SHEET_NAME_PUSH_EVENTS and data.get('Обработано') != '✅':
+                if worksheet_name == config.SHEET_NAME_PUSH_EVENTS and status_value != '✅':
                     continue
-                row_date = parse_datetime_value(cell_value(row, date_col))
+                row_date = parse_datetime_value(cell_value(row, 0))
                 if row_date and row_date < cutoff:
-                    rows_to_delete.append(row_index)
+                    rows_to_delete.append(offset+2)
 
             deleted = delete_rows_batch(sheet, worksheet, rows_to_delete)
             if deleted:
                 total_deleted += deleted
                 print(f"  🧹 Deleted old rows from {worksheet_name}: {deleted}")
+                if worksheet.row_count-deleted<TARGET_WORKSHEET_ROWS:
+                    worksheet.resize(rows=TARGET_WORKSHEET_ROWS)
         except gspread.exceptions.WorksheetNotFound:
             continue
         except Exception as e:
             print(f"  ⚠️  Error deleting old rows from {worksheet_name}: {e}")
             failures.append(worksheet_name)
 
-    if total_deleted:
-        ensure_non_settings_sheet_row_counts(sheet)
     if failures:
         raise RuntimeError('ACTIVITY_RETENTION_INCOMPLETE')
     return total_deleted

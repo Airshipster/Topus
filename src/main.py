@@ -153,6 +153,10 @@ def maintenance_only_mode():
     return value.lower() in ('1', 'true', 'yes')
 
 
+def retention_only_mode():
+    return os.environ.get('TOPUS_RETENTION_ONLY','').lower() in ('1','true','yes')
+
+
 def repair_pending_only_mode():
     value = os.environ.get('TOPUS_REPAIR_PENDING_ONLY', '')
     return value.lower() in ('1', 'true', 'yes')
@@ -164,6 +168,8 @@ def unlock_only_mode():
 
 
 def run_mode_name():
+    if retention_only_mode():
+        return 'retention-only'
     if unlock_only_mode():
         return 'unlock-only'
     if repair_pending_only_mode():
@@ -442,6 +448,17 @@ def main():
                 print(f"\n⚠️  Google Sheets read quota is busy; push-only run will retry on the next dispatch: {error}")
                 raise RuntimeError('Google Sheets unavailable; push work remains pending') from error
             raise
+
+        if retention_only_mode():
+            from sheets import repair_activity_header_formulas
+            from activity_retention import mark_retention_completed
+            load_settings(master_sheet)
+            delete_stale_unpublished_video_rows(master_sheet)
+            deleted=delete_old_activity_rows(master_sheet)
+            repair_activity_header_formulas(master_sheet)
+            mark_retention_completed()
+            update_run_status(master_sheet,f'complete: retention-only, deleted={deleted}',run_status_details())
+            return
 
         if unlock_only_mode():
             print("  🔓 Unlock-only mode: clearing publisher lock")

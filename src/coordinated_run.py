@@ -60,7 +60,7 @@ def run(client=None, spawn=subprocess.Popen, clock=time.monotonic):
         env = os.environ.copy()
         env.update(TOPUS_PUBLISHER_LEASE=token, TOPUS_CONTROL_REQUIRED='true')
         maintenance = any(env.get(key, '').lower() == 'true' for key in
-            ('TOPUS_MAINTENANCE_ONLY', 'TOPUS_UNLOCK_ONLY', 'TOPUS_SYNC_ONLY', 'TOPUS_REPAIR_PENDING_ONLY', 'TOPUS_FORCE_SUBSCRIPTION_SYNC'))
+            ('TOPUS_MAINTENANCE_ONLY', 'TOPUS_RETENTION_ONLY', 'TOPUS_UNLOCK_ONLY', 'TOPUS_SYNC_ONLY', 'TOPUS_REPAIR_PENDING_ONLY', 'TOPUS_FORCE_SUBSCRIPTION_SYNC'))
         if maintenance:
             env['TOPUS_PUSH_ONLY'] = 'false'
         elif env.get('TOPUS_PUSH_ONLY', '') == 'auto':

@@ -38,9 +38,9 @@ class RecoveryPolicyTests(unittest.TestCase):
 
     def test_terminal_rows_expire_but_unfinished_work_survives(self):
         now=datetime(2026,10,18,10)
-        videos=SimpleNamespace(title='Глобальные видео',id=1)
-        logs=SimpleNamespace(title='Логи',id=2)
-        push=SimpleNamespace(title='Push события',id=3)
+        videos=SimpleNamespace(title='Глобальные видео',id=1,row_count=20000)
+        logs=SimpleNamespace(title='Логи',id=2,row_count=20000)
+        push=SimpleNamespace(title='Push события',id=3,row_count=20000)
         mapping={w.title:w for w in [videos,logs,push]}
         old='01.09.2026 12:00:00'
         data={videos.title:[['Системный статус','Дата обработки GMT+4'],
@@ -50,8 +50,16 @@ class RecoveryPolicyTests(unittest.TestCase):
             logs.title:[['Timestamp GMT+4'],[old]],
             push.title:[['Timestamp GMT+4','Обработано'],[old,'✅'],[old,'❌']]}
         deleted={}
+        for worksheet in mapping.values():
+            def selected(ranges,w=worksheet):
+                result=[]
+                for address in ranges:
+                    col=ord(address[0])-ord('A')
+                    result.append([[r[col]] if len(r)>col else [] for r in data[w.title][1:]])
+                return result
+            worksheet.batch_get=selected
         def remove(ss,w,rows): deleted[w.title]=list(rows);return len(rows)
-        with patch.object(sheets,'get_values_with_quota_retry',side_effect=lambda w:data[w.title]),\
+        with patch.object(sheets,'get_values_with_quota_retry',side_effect=lambda w,*args:data[w.title][:1]),\
              patch.object(sheets,'current_local_datetime',return_value=now),\
              patch.object(sheets,'delete_rows_batch',side_effect=remove),\
              patch.object(sheets,'ensure_non_settings_sheet_row_counts'):

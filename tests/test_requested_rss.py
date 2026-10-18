@@ -17,6 +17,7 @@ class RequestedRssTests(unittest.TestCase):
 
     def setUp(self):
         controller.requested_rss.clear()
+        controller.requested_retention.clear()
         controller.wake.clear()
 
     def test_authenticated_request_queues_without_running(self):
@@ -29,3 +30,13 @@ class RequestedRssTests(unittest.TestCase):
         self.request(b'{"mode":"rss"}', 'wrong').reply.assert_called_with(401, {'error':'unauthorized'})
         self.request(b'{"mode":"other"}').reply.assert_called_with(400, {'error':'invalid_request'})
         self.assertFalse(controller.requested_rss.is_set())
+
+    def test_retention_is_queued_on_same_serialized_publisher(self):
+        with patch.object(controller,'run_job') as run:
+            self.request(b'{"mode":"retention"}').reply.assert_called_with(202,{'accepted':True,'owner':'server'})
+            self.assertTrue(controller.requested_retention.is_set())
+            run.assert_not_called()
+
+    def test_retention_requires_existing_admin_authorization(self):
+        self.request(b'{"mode":"retention"}','wrong').reply.assert_called_with(401,{'error':'unauthorized'})
+        self.assertFalse(controller.requested_retention.is_set())

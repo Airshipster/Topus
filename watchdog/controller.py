@@ -17,11 +17,15 @@ from push_store import database, accept_xml, confirm, health, record_callback
 from rss_discovery import push_gap_health
 from delivery_journal import summary
 from control_client import ControlClient, configured
+from activity_retention import retention_due
 
 ACTIVE = os.environ.get('TOPUS_WATCHDOG_ACTIVE', 'false').lower() == 'true'
 TOKEN = os.environ.get('TOPUS_WATCHDOG_TOKEN', '')
 wake = threading.Event()
 requested_rss = threading.Event()
+requested_retention = threading.Event()
+if retention_due():
+    requested_retention.set()
 running = {'publisher': None, 'renewal': False, 'tick': time.time()}
 lock = threading.Lock()
 
@@ -33,6 +37,7 @@ def run_job(name, mode=None):
     env = os.environ.copy()
     env.update({'GOOGLE_SERVICE_ACCOUNT_JSON': Path(env['GOOGLE_SERVICE_ACCOUNT_JSON_FILE']).read_text(),
                 'TOPUS_PUSH_ONLY': 'true' if mode == 'push' else 'false',
+                'TOPUS_RETENTION_ONLY': 'true' if name == 'retention' else 'false',
                 'TOPUS_SYNC_ONLY': 'false', 'TOPUS_RUN_SOURCE': 'server-controller',
                 'TOPUS_PUBLISHER_OWNER': 'server', 'PYTHONUNBUFFERED': '1'})
     # Preserve configured age filters: no silent 72-hour publication override.
@@ -121,7 +126,10 @@ def publisher_loop():
             rss = jobs.get('rss', {})
             push = jobs.get('push', {})
             # Cadence is measured from start, never postponed by an unrelated success.
-            if wake.is_set():
+            if requested_retention.is_set():
+                requested_retention.clear()
+                mode = 'retention'
+            elif wake.is_set():
                 mode = 'push'
                 wake.clear()
             elif requested_rss.is_set() or now - (rss.get('started') or 0) >= 1800:
@@ -300,10 +308,12 @@ class Handler(BaseHTTPRequestHandler):
             raw = self.rfile.read(length)
             if route == '/run':
                 options = json.loads(raw) if raw else {}
-                if not isinstance(options, dict) or options.get('mode', 'push') not in ('push', 'rss'):
+                if not isinstance(options, dict) or options.get('mode', 'push') not in ('push', 'rss', 'retention'):
                     raise ValueError('invalid mode')
                 if options.get('mode') == 'rss':
                     requested_rss.set()
+                if options.get('mode') == 'retention':
+                    requested_retention.set()
             wake.set()
             self.reply(202, {'accepted': True, 'owner': 'server'})
         except PermissionError:
