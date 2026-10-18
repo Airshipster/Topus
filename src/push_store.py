@@ -160,7 +160,7 @@ def mirror_events(sheet):
     import config
     from control_client import configured, ControlClient
     with database() as db:
-        events = [dict(r) for r in db.execute('SELECT * FROM events WHERE mirrored=0 ORDER BY received LIMIT 100')]
+        events = prioritized_pending_events(db,limit=500)
     local_events = events
     control = ControlClient() if configured() else None
     if control:
@@ -168,7 +168,7 @@ def mirror_events(sheet):
             control.request('/events', {'events': [{**e, 'event_id': e['fingerprint'],
                                                     'source': e.get('source') or 'Push · server'}
                                                   for e in local_events[start:start + 25]]})
-        events = control.request('/events/pending', {}).get('events', [])
+        events = control.request('/events/pending', {'limit':500}).get('events', [])
     if not events:
         return
     worksheet = sheet.worksheet(config.SHEET_NAME_PUSH_EVENTS)
@@ -200,6 +200,27 @@ def mirror_events(sheet):
     with database() as db:
         db.executemany('UPDATE events SET mirrored=1 WHERE fingerprint=?', [(e['fingerprint'],) for e in local_events])
         db.execute('DELETE FROM events WHERE mirrored=1 AND received<?', (time.time() - 7 * 86400,))
+
+
+def prioritized_pending_events(db, limit=100):
+    import json
+    import sqlite3
+    priority=[]
+    try:
+        cached=db.execute('SELECT payload FROM inventory_cache WHERE id=1').fetchone()
+        inventory=json.loads(cached['payload']) if cached else {}
+        priority=[channel for channel,item in inventory.items()
+                  if 'SciTopus' in item.get('projects',[])]
+    except (sqlite3.OperationalError,ValueError,TypeError,AttributeError):
+        pass
+    if not priority:
+        return [dict(r) for r in db.execute('SELECT * FROM events WHERE mirrored=0 ORDER BY received LIMIT ?',
+                                           (limit,))]
+    placeholders=','.join('?' for _ in priority)
+    sql=('SELECT * FROM events WHERE mirrored=0 ORDER BY CASE '
+         f"WHEN source LIKE 'Push%' AND channel_id IN ({placeholders}) THEN 0 "
+         f'WHEN channel_id IN ({placeholders}) THEN 1 ELSE 2 END, received LIMIT ?')
+    return [dict(r) for r in db.execute(sql,(*priority,*priority,limit))]
 
 
 def health():

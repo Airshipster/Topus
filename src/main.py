@@ -44,6 +44,7 @@ from worker_notifications import notify_worker_subscribers
 from youtube_client import get_last_youtube_api_error, get_video_info_from_api, get_videos_info_from_api, get_youtube_api_calls
 from delivery_journal import send_public
 from retry_queue import pending_events
+from publication_policy import publication_age_limit
 
 
 def parse_datetime(value):
@@ -51,7 +52,7 @@ def parse_datetime(value):
 
 
 def get_stale_reason(published_at, project=None, video=None):
-    if video and video.get('manual_replay'):
+    if video and video.get('manual_replay') and str((project or {}).get('name') or '').casefold() != 'scitopus':
         return ''
     effective_published_at = effective_youtube_publication_timestamp(video, published_at)
     published = parse_datetime(effective_published_at)
@@ -59,9 +60,7 @@ def get_stale_reason(published_at, project=None, video=None):
         return ''
 
     emergency_limit = os.environ.get('TOPUS_MAX_PUBLISH_AGE_HOURS_OVERRIDE', '').strip()
-    limit_hours = int(emergency_limit) if emergency_limit else config.MAX_PUBLISH_AGE_HOURS
-    if project and not emergency_limit:
-        limit_hours = project.get('max_publish_age_hours') or limit_hours
+    limit_hours = int(emergency_limit) if emergency_limit else publication_age_limit(project)
 
     age_hours = (current_local_datetime() - published).total_seconds() / 3600
     if age_hours > limit_hours:
@@ -85,7 +84,11 @@ def source_method_for_channel(method, channel_info):
 
 def source_method_for_event(event, channel_info):
     source = str(event.get('source') or '').strip().lower()
-    return source_method_for_channel('RSS' if source.startswith('rss') else 'Push', channel_info)
+    if source == 'youtube api backup':
+        method = 'RSS [YouTube API backup]'
+    else:
+        method = 'RSS' if source.startswith('rss') else 'Push'
+    return source_method_for_channel(method, channel_info)
 
 
 def publication_status_detail(video):
@@ -587,6 +590,7 @@ def main():
         
         # Аккумуляторы для батчевой записи
         videos_to_save = []
+        deferred_status_updates = []
         log_entries = []
         rss_cache = {}
         video_info_cache = {}
@@ -707,13 +711,7 @@ def main():
                         if event.get('retry_accepted'):
                             reason = 'Deferred premiere or stream is unavailable in YouTube API'
                             print(f"  ⏭️  Closing unavailable deferred video: {event['video_id']}")
-                            update_video_publication_status(
-                                master_sheet,
-                                event['video_id'],
-                                project['name'],
-                                status='unavailable',
-                                error=reason,
-                            )
+                            deferred_status_updates.append((event['video_id'],project['name'],'unavailable',reason))
                             log_entries.append([
                                 format_timestamp(), project['name'], 'Deferred video unavailable',
                                 event['video_id'], event['channel_id'], reason,
@@ -753,7 +751,7 @@ def main():
                         timestamp = format_timestamp()
                         log_entries.append([timestamp, project['name'], 'Video filtered', video['video_id'], video.get('channel_id', ''), stale_reason, 'filtered', source_method])
                         if event.get('retry_accepted'):
-                            update_video_publication_status(master_sheet, video['video_id'], project['name'], status='expired', error=stale_reason, video=video)
+                            deferred_status_updates.append((video['video_id'],project['name'],'expired',stale_reason))
                         queue_push_event_mark(event, project['name'])
                         published_videos.add(key)
                         total_filtered += 1
@@ -868,6 +866,8 @@ def main():
         
         # СОХРАНЯЕМ ВСЕ ВИДЕО БАТЧАМИ
         print(f"\n💾 Saving {len(videos_to_save)} videos to table...")
+        from sheets import close_deferred_videos_batch
+        close_deferred_videos_batch(master_sheet,deferred_status_updates)
         saved_publications = set(save_videos_batch(master_sheet, videos_to_save))
         print(f"  ✅ Saved {len(saved_publications)} new publication rows")
         for key in saved_publications:
@@ -985,9 +985,14 @@ def main():
                 entry[5] = f'{entry[5]} | Executor: {executor}'
             log_events_batch(master_sheet, log_entries)
 
-        if not push_only_mode():
+        from activity_retention import retention_due, mark_retention_completed
+        if not push_only_mode() or retention_due():
             print("\n🧹 Applying activity retention...")
+            delete_stale_unpublished_video_rows(master_sheet)
             delete_old_activity_rows(master_sheet)
+            from sheets import repair_activity_header_formulas
+            repair_activity_header_formulas(master_sheet)
+            mark_retention_completed()
         
         # Обновление метаданных
         print("\n📝 Updating metadata...")

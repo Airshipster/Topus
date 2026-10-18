@@ -68,7 +68,7 @@ VIDEO_HEADERS = [
 ]
 
 LOG_HEADERS = ['Проект', 'Timestamp GMT+4', 'Video ID', 'Channel ID', 'Событие']
-LOG_EVENT_HEADER_FORMULA = '="Событие"&CHAR(10)&"Push: "&COUNTIF(OFFSET(INDEX(A:ZZ;ROW()+1;COLUMN());0;0;10000;1);"*Push:*")&", RSS: "&COUNTIF(OFFSET(INDEX(A:ZZ;ROW()+1;COLUMN());0;0;10000;1);"*RSS:*")'
+LOG_EVENT_HEADER_FORMULA = '="Событие"&CHAR(10)&"Push: "&COUNTIF(OFFSET(INDEX(A:ZZ;ROW()+1;COLUMN());0;0;10000;1);"*Push:*")&", RSS: "&COUNTIF(OFFSET(INDEX(A:ZZ;ROW()+1;COLUMN());0;0;10000;1);"*RSS*:*")'
 
 _LOCK_ROW_INFO = None
 _RUN_STATUS_ROW = None
@@ -342,17 +342,18 @@ def project_name_from_cell(value):
 
 def status_method_from_text(value):
     text = str(clean_sheet_value(value) or '').strip()
-    match = re.match(r'^((?:Bot:\s*)?(?:Push|RSS)):\s*(.*)$', text, flags=re.IGNORECASE)
+    match = re.match(r'^((?:Bot:\s*)?(?:Push|RSS)(?:\s*\[YouTube API backup\])?):\s*(.*)$', text, flags=re.IGNORECASE)
     if not match:
         return '', text
     method = re.sub(r'\s+', ' ', match.group(1).replace(':', ': ')).strip()
     method = method.replace(':  ', ': ')
-    parts = [part.strip().lower() for part in method.split(':')]
+    backup = bool(re.search(r'\[YouTube API backup\]',method,flags=re.IGNORECASE))
+    parts = [part.strip().lower().split(' [',1)[0] for part in method.split(':')]
     if parts[0] == 'bot':
         method = f"Bot: {'RSS' if parts[-1] == 'rss' else 'Push'}"
     else:
         method = 'RSS' if parts[0] == 'rss' else 'Push'
-    return method, match.group(2).strip()
+    return method + (' [YouTube API backup]' if backup else ''), match.group(2).strip()
 
 
 def status_name_from_text(value):
@@ -1345,15 +1346,13 @@ def save_videos_batch(sheet, videos_data):
 
             if existing:
                 if existing['status'] in ('pending', 'failed', 'retry') or str(existing['status']).startswith('deleted'):
-                    if is_filtered:
-                        update_video_publication_status(sheet, video['video_id'], project_name,
-                            status='filtered', error=row_error, video=video)
-                    elif is_pending_hold:
+                    if is_filtered or is_pending_hold:
                         status_col = find_column_index(headers, ['Системный статус'])
                         if status_col is None:
                             raise ValueError('Global Videos is missing Системный статус column')
                         existing_method, _ = status_method_from_text(existing.get('status_text'))
-                        status_value = combined_status('pending', row_error, source_method or existing_method)
+                        status_value = combined_status('filtered' if is_filtered else 'pending', row_error,
+                                                       source_method or existing_method)
                         pending_status_updates.append({
                             'range': gspread.utils.rowcol_to_a1(existing['row_index'], status_col + 1),
                             'values': [[status_value]],
@@ -1406,6 +1405,45 @@ def save_videos_batch(sheet, videos_data):
     except Exception as e:
         print(f"  ❌ Critical error in save_videos_batch: {e}")
         raise
+
+
+def close_deferred_videos_batch(sheet, items):
+    if not items:
+        return 0
+    worksheet=ensure_videos_worksheet(sheet)
+    values=get_values_with_quota_retry(worksheet)
+    if not values:
+        return 0
+    headers=values[0]
+    column=find_column_index(headers,['Системный статус'])
+    if column is None:
+        raise ValueError('Global Videos is missing status column')
+    wanted={(video,project):(status,error) for video,project,status,error in items}
+    rows=[]
+    published=set()
+    for number,row in enumerate(values[1:],2):
+        item=row_as_dict(headers,row)
+        key=(video_id_from_url(first_value(item,['Ссылка на видео','Video ID'])),
+             project_name_from_cell(first_value(item,['Проект'])))
+        value=first_value(item,['Системный статус'])
+        if status_name_from_text(value)=='published' or first_value(item,['TG message_id']):
+            published.add(key)
+        if key in wanted:
+            rows.append((number,key,value))
+    updates=[]
+    for number,key,value in rows:
+        if key in published:
+            continue
+        status,error=wanted[key]
+        method,_=status_method_from_text(value)
+        replacement=combined_status(status,error,method)
+        if replacement!=value:
+            updates.append({'range':gspread.utils.rowcol_to_a1(number,column+1),
+                            'values':[[replacement]]})
+    if updates:
+        batch_update_with_quota_retry(worksheet,updates,value_input_option='USER_ENTERED')
+        print(f'  Closed deferred statuses in one batch: {len(updates)}')
+    return len(updates)
 
 
 def row_status_blocks_retry(status):
@@ -1615,8 +1653,10 @@ def delete_stale_unpublished_video_rows(sheet):
                 continue
 
             age_hours = (now - yt_published).total_seconds() / 3600
-            if age_hours > config.MAX_PUBLISH_AGE_HOURS:
-                reason = f"Stale video ({age_hours:.1f}h old, limit {config.MAX_PUBLISH_AGE_HOURS}h)"
+            from publication_policy import publication_age_limit
+            limit_hours = publication_age_limit({'name':project_name})
+            if age_hours > limit_hours:
+                reason = f"Stale video ({age_hours:.1f}h old, limit {limit_hours}h)"
                 updates.append({
                     'range': gspread.utils.rowcol_to_a1(row_index, status_col),
                     'values': [[combined_status('filtered', reason, method)]],
@@ -1625,7 +1665,7 @@ def delete_stale_unpublished_video_rows(sheet):
 
             processed_at = parse_datetime_value(first_value(data, ['Дата обработки GMT+4', 'Дата обработки Asia/Baku', 'Дата обработки UTC']))
             pending_age_hours = (now - processed_at).total_seconds() / 3600 if processed_at else age_hours
-            if pending_age_hours > PENDING_RETRY_WINDOW_HOURS:
+            if project_name.casefold() != 'scitopus' and pending_age_hours > PENDING_RETRY_WINDOW_HOURS:
                 reason = f"Pending retry window expired ({pending_age_hours:.1f}h old)"
                 updates.append({
                     'range': gspread.utils.rowcol_to_a1(row_index, status_col),
@@ -1750,6 +1790,20 @@ def apply_log_header_formula(worksheet):
         values=[[LOG_EVENT_HEADER_FORMULA]],
         value_input_option='USER_ENTERED',
     )
+
+
+def repair_activity_header_formulas(sheet):
+    for name,header in [(config.SHEET_NAME_VIDEOS,'Системный статус'),('Логи','Событие')]:
+        worksheet=sheet.worksheet(name)
+        headers=get_values_with_quota_retry(worksheet,'1:1')[0]
+        column=find_column_index(headers,[header])
+        if column is None:
+            continue
+        address=gspread.utils.rowcol_to_a1(1,column+1)
+        value=worksheet.acell(address,value_render_option='FORMULA').value or ''
+        if value.startswith('=') and 'COUNTIF' in value and '"*RSS:' in value:
+            worksheet.update(range_name=address,values=[[value.replace('"*RSS:','"*RSS*:')]],
+                             value_input_option='USER_ENTERED')
 
 
 def ensure_logs_worksheet(sheet):
@@ -2164,6 +2218,7 @@ def delete_old_activity_rows(sheet, retention_days=None):
         (config.SHEET_NAME_VIDEOS, ['Дата обработки GMT+4', 'Дата обработки Asia/Baku', 'Дата обработки UTC']),
     ]
     total_deleted = 0
+    failures = []
 
     for worksheet_name, date_headers in targets:
         try:
@@ -2176,6 +2231,7 @@ def delete_old_activity_rows(sheet, retention_days=None):
             date_col = find_column_index(headers, date_headers)
             if date_col is None:
                 print(f"  ⚠️  Retention skipped for {worksheet_name}: date column not found")
+                failures.append(worksheet_name)
                 continue
 
             rows_to_delete = []
@@ -2185,7 +2241,7 @@ def delete_old_activity_rows(sheet, retention_days=None):
                 data = row_as_dict(headers, row)
                 if worksheet_name == config.SHEET_NAME_VIDEOS:
                     status = status_name_from_text(first_value(data, ['Системный статус']))
-                    if status not in ('published', 'filtered'):
+                    if status not in ('published', 'filtered', 'expired', 'unavailable'):
                         continue
                 if worksheet_name == config.SHEET_NAME_PUSH_EVENTS and data.get('Обработано') != '✅':
                     continue
@@ -2201,9 +2257,12 @@ def delete_old_activity_rows(sheet, retention_days=None):
             continue
         except Exception as e:
             print(f"  ⚠️  Error deleting old rows from {worksheet_name}: {e}")
+            failures.append(worksheet_name)
 
     if total_deleted:
         ensure_non_settings_sheet_row_counts(sheet)
+    if failures:
+        raise RuntimeError('ACTIVITY_RETENTION_INCOMPLETE')
     return total_deleted
 
 def load_settings(sheet):
@@ -2412,7 +2471,9 @@ def load_projects(sheet, update_status=True):
                 row.get('Возраст видео, ч'),
                 config.MAX_PUBLISH_AGE_HOURS,
             )
-            max_publish_age_hours = min(max_publish_age_hours, config.MAX_PUBLISH_AGE_HOURS)
+            from publication_policy import publication_age_limit
+            max_publish_age_hours = publication_age_limit({'name':row.get('Название'),
+                'max_publish_age_hours':max_publish_age_hours})
             if str(row.get('Push API', '')).strip() == '':
                 default_updates.append((row_index, 'Push API', '🟢'))
             if str(row.get('RSS feed', '')).strip() == '':
