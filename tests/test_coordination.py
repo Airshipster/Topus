@@ -49,6 +49,39 @@ class CoordinationTests(unittest.TestCase):
         self.assertFalse(session.request.call_args.kwargs['allow_redirects'])
         self.assertEqual(session.request.call_args.kwargs['timeout'], (5, 20))
 
+    def test_publication_pacing_waits_without_changing_delivery_identity(self):
+        client = ControlClient('https://example.test', 'fixture')
+        with patch.dict(os.environ, {'TOPUS_PUBLISHER_OWNER': 'server', 'TOPUS_PUBLISHER_LEASE': 'lease'}), \
+             patch.object(client, 'request', side_effect=[{'state': 'paced', 'retry_at': 1060.25},
+                                                         {'state': 'sent', 'message_id': '42'}]) as request, \
+             patch('control_client.time.time', return_value=1000), \
+             patch('control_client.time.monotonic', return_value=0), \
+             patch('control_client.time.sleep') as sleep:
+            self.assertEqual(client.send('project', 'abcdefghijk', '-1', 'text'), '42')
+        sleep.assert_called_once_with(60.35)
+        self.assertEqual(request.call_args_list[0], request.call_args_list[1])
+
+    def test_unknown_delivery_is_not_retried_by_pacing_client(self):
+        client = ControlClient('https://example.test', 'fixture')
+        with patch.dict(os.environ, {'TOPUS_PUBLISHER_OWNER': 'server', 'TOPUS_PUBLISHER_LEASE': 'lease'}), \
+             patch.object(client, 'request', return_value={'state': 'uncertain'}) as request, \
+             patch('control_client.time.sleep') as sleep:
+            self.assertIsNone(client.send('project', 'abcdefghijk', '-1', 'text'))
+        request.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_pacing_rejects_unbounded_or_invalid_waits(self):
+        client = ControlClient('https://example.test', 'fixture')
+        for retry_at in (float('nan'), 'tomorrow', 9999999999):
+            with self.subTest(retry_at=retry_at), \
+                 patch.dict(os.environ, {'TOPUS_PUBLISHER_OWNER': 'server', 'TOPUS_PUBLISHER_LEASE': 'lease'}), \
+                 patch.object(client, 'request', return_value={'state': 'paced', 'retry_at': retry_at}), \
+                 patch('control_client.time.time', return_value=1000), \
+                 patch('control_client.time.sleep') as sleep:
+                with self.assertRaisesRegex(ControlUnavailable, 'CONTROL_PACING_'):
+                    client.send('project', 'abcdefghijk', '-1', 'text')
+                sleep.assert_not_called()
+
     def test_standby_does_not_spawn_or_report_rss_success(self):
         client = Mock()
         client.request.return_value = {'token': None}

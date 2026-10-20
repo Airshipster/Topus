@@ -1,5 +1,7 @@
 """Bounded authenticated access to shared ownership and delivery receipts."""
 import os
+import math
+import time
 from urllib.parse import urlsplit
 
 import requests
@@ -47,10 +49,22 @@ class ControlClient:
         lease = os.environ.get('TOPUS_PUBLISHER_LEASE', '')
         if owner not in ('server', 'github') or not lease:
             raise ControlUnavailable('CONTROL_LEASE_MISSING')
-        result = self.request('/send', {'owner': owner, 'lease': lease, 'project': project,
-            'video_id': video_id, 'destination': str(destination), 'text': text,
-            'published_at': published_at})
-        return result.get('message_id') if result.get('state') == 'sent' else None
+        payload = {'owner': owner, 'lease': lease, 'project': project,
+                   'video_id': video_id, 'destination': str(destination), 'text': text,
+                   'published_at': published_at}
+        # Pacing is a pre-send reservation refusal, never an uncertain Telegram I/O.
+        deadline = time.monotonic() + 180
+        while True:
+            result = self.request('/send', payload)
+            if result.get('state') != 'paced':
+                return result.get('message_id') if result.get('state') == 'sent' else None
+            retry_at = result.get('retry_at')
+            if type(retry_at) not in (int, float) or not math.isfinite(retry_at):
+                raise ControlUnavailable('CONTROL_PACING_INVALID')
+            delay = max(1, retry_at - time.time() + 0.1)
+            if delay > 65 or time.monotonic() + delay > deadline:
+                raise ControlUnavailable('CONTROL_PACING_DEFERRED')
+            time.sleep(delay)
 
     def register_projects(self, projects):
         settings = {'project:' + p['name']: {'token': p['bot_token'], 'destination': str(p['channel_id'])}
