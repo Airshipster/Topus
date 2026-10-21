@@ -214,7 +214,7 @@ def rescue_targets(channels, failed):
 
 
 def collect(channels, config, mode):
-    from rss import check_rss_feed, failure_reasons
+    from rss import check_rss_feed, failure_reasons, failure_retry_at
     import rss_circuit as circuit
     initialize()
     channels = set(channels)
@@ -224,10 +224,12 @@ def collect(channels, config, mode):
     queued = 0
     checked = 0
     skipped = 0
+    deferred = decision == 'skip'
 
     def fetch(group):
         nonlocal checked, failures, queued
         errors = []
+        retry_at = 0
         with ThreadPoolExecutor(max_workers=max(1, min(12, int(config.RSS_WORKERS)))) as pool:
             futures = {pool.submit(check_rss_feed, channel): channel for channel in group}
             for future in as_completed(futures):
@@ -244,28 +246,33 @@ def collect(channels, config, mode):
                 errors.append(error)
                 if error:
                     failed.add(channel)
-        return errors
+                    retry_at = max(retry_at, failure_retry_at.get(channel, 0))
+        return errors, retry_at
 
     ordered = circuit.ordered_channels(channels)
     if decision == 'skip':
         skipped = len(channels)
         failed.update(channels)
-    elif decision == 'probe' or len(channels) >= circuit.MIN_INVENTORY:
-        probe = ordered[:circuit.PROBE_SIZE]
-        errors = fetch(probe)
-        all_missing = len(errors) == circuit.PROBE_SIZE and all(error == 'HTTP_404' for error in errors)
-        if all_missing or (decision == 'probe' and all(errors)):
-            circuit.defer()
-            skipped = len(channels) - len(probe)
-            failed.update(ordered[len(probe):])
-            print(f'RSS_UPSTREAM_CIRCUIT state=open probed={len(probe)} skipped={skipped}', flush=True)
-        else:
-            if decision == 'probe':
+    else:
+        # Do not enqueue the whole inventory before learning that the source is down.
+        for start in range(0, len(ordered), circuit.PROBE_SIZE):
+            group = ordered[start:start + circuit.PROBE_SIZE]
+            errors, retry_at = fetch(group)
+            mass_failure = (len(channels) >= circuit.MIN_INVENTORY or decision == 'probe') \
+                and circuit.mass_failure(errors)
+            failed_probe = decision == 'probe' and start == 0 and errors and all(errors)
+            if retry_at or mass_failure or failed_probe:
+                circuit.defer(retry_at=retry_at)
+                deferred = True
+                remaining = ordered[start + len(group):]
+                skipped = len(remaining)
+                failed.update(remaining)
+                print(f'RSS_UPSTREAM_CIRCUIT state=open checked={checked} '
+                      f'batch_failed={sum(bool(error) for error in errors)} skipped={skipped}', flush=True)
+                break
+            if decision == 'probe' and start == 0:
                 circuit.recover()
                 print('RSS_UPSTREAM_CIRCUIT state=recovered', flush=True)
-            fetch(ordered[len(probe):])
-    else:
-        fetch(ordered)
     targets = rescue_targets(channels, failed) if mode == 'full' else failed
     if targets:
         from api_rescue import run as rescue
@@ -275,7 +282,7 @@ def collect(channels, config, mode):
     report_push_gap_health()
     print(f'RSS_DISCOVERY mode={mode} completed={checked} failed={failures} queued={queued} '
           f'skipped={skipped} total={len(channels)}', flush=True)
-    if skipped:
+    if deferred:
         raise RuntimeError('RSS_DISCOVERY_UPSTREAM_COOLDOWN')
     if failures:
         raise RuntimeError(f'RSS_DISCOVERY_FAILED_{failures}')

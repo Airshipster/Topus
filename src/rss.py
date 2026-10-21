@@ -10,6 +10,7 @@ from sheets import format_timestamp, load_youtube_channels
 
 failed_channels = set()
 failure_reasons = {}
+failure_retry_at = {}
 
 
 def confirmed_unavailable_channels(channel_ids):
@@ -51,10 +52,21 @@ def _check_rss_feed_once(channel_id, direct=False):
         url = (f'https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}' if direct
                else f"{config.CLOUDFLARE_WORKER_URL}/?channel={channel_id}")
         response = requests.get(url, timeout=(5, 15))
+        from rss_diagnostics import http_failure_evidence, log_http_failure
+        evidence = http_failure_evidence(response, direct=direct)
+        if (response.status_code in (401, 403, 429)
+                or evidence['bodyKind'] in ('access-challenge', 'quota-error')
+                or evidence['retryAfterSeconds'] is not None):
+            from rss_circuit import RETRY_SECONDS
+            failure_retry_at[channel_id] = time.time() + max(
+                RETRY_SECONDS, evidence['retryAfterSeconds'] or 0)
         
         if response.status_code != 200:
             failure_reasons[channel_id] = 'HTTP_' + str(response.status_code)
-            from rss_diagnostics import log_http_failure
+            log_http_failure(response, direct=direct)
+            return None
+        if evidence['bodyKind'] in ('access-challenge', 'quota-error'):
+            failure_reasons[channel_id] = 'RSS_ACCESS_CHALLENGE'
             log_http_failure(response, direct=direct)
             return None
         
@@ -131,6 +143,8 @@ def _check_rss_feed_once(channel_id, direct=False):
 
 def check_rss_feed(channel_id):
     """Recover transient/proxy failures without dropping a failed source as empty."""
+    failure_reasons.pop(channel_id, None)
+    failure_retry_at.pop(channel_id, None)
     if os.environ.get('TOPUS_RSS_CACHE_ONLY') == 'true':
         from rss_discovery import read_result
         videos, error = read_result(channel_id)
@@ -149,12 +163,15 @@ def check_rss_feed(channel_id):
             time.sleep(0.5 * attempt)
         attempts += 1
         videos = _check_rss_feed_once(channel_id, direct=direct)
-        if failure_reasons.get(channel_id) in ('HTTP_401', 'HTTP_403', 'HTTP_404', 'HTTP_429'):
-            break
         if videos is not None:
             failure_reasons.pop(channel_id, None)
+            failure_retry_at.pop(channel_id, None)
             failed_channels.discard(channel_id)
             return videos
+        error = failure_reasons.get(channel_id, '')
+        if (error in ('HTTP_401', 'HTTP_403', 'HTTP_404', 'HTTP_429', 'RSS_ACCESS_CHALLENGE')
+                or error.startswith('HTTP_5') or failure_retry_at.get(channel_id, 0)):
+            break
     print(f'RSS_SOURCE_FAILED channel={channel_id} reason={failure_reasons.get(channel_id, "UNKNOWN")} attempts={attempts}', flush=True)
     return None
 
@@ -178,34 +195,65 @@ def rss_fallback_check(client, project, published_videos, project_channels=None,
         return channel_id, rss_cache[channel_id]
 
     channel_items = list(project_channels.items())
-    with ThreadPoolExecutor(max_workers=max(1, int(config.RSS_WORKERS))) as executor:
-        futures = {
-            executor.submit(load_channel, channel_id): (i, channel_id, channel_info)
-            for i, (channel_id, channel_info) in enumerate(channel_items)
-        }
+    import rss_circuit as circuit
+    network = os.environ.get('TOPUS_RSS_CACHE_ONLY') != 'true'
+    decision = circuit.claim() if network else 'normal'
+    deferred = decision == 'skip'
+    recovering = decision == 'probe'
+    for start in range(0, len(channel_items), circuit.PROBE_SIZE):
+        group = channel_items[start:start + circuit.PROBE_SIZE]
+        fresh = {channel for channel, _ in group if channel not in rss_cache}
+        if deferred:
+            for channel in fresh:
+                rss_cache[channel] = None
+                failure_reasons[channel] = 'RSS_UPSTREAM_COOLDOWN'
+        errors = []
+        retry_at = 0
+        with ThreadPoolExecutor(max_workers=max(1, min(12, int(config.RSS_WORKERS)))) as executor:
+            futures = {
+                executor.submit(load_channel, channel_id): (start + i, channel_id, channel_info)
+                for i, (channel_id, channel_info) in enumerate(group)
+            }
 
-        for future in as_completed(futures):
-            i, channel_id, channel_info = futures[future]
-            try:
-                _, videos = future.result()
-            except Exception:
-                videos = None
+            for future in as_completed(futures):
+                i, channel_id, channel_info = futures[future]
+                try:
+                    _, videos = future.result()
+                except Exception as exc:
+                    videos = None
+                    failure_reasons[channel_id] = type(exc).__name__
+                if channel_id in fresh:
+                    error = failure_reasons.get(channel_id, 'RSS_DISCOVERY_FAILED') if videos is None else ''
+                    errors.append(error)
+                    if error:
+                        retry_at = max(retry_at, failure_retry_at.get(channel_id, 0))
 
-            if videos is None:
-                failed_channels.add(channel_id)
-                continue
+                if videos is None:
+                    failed_channels.add(channel_id)
+                    continue
 
-            videos_found_count += len(videos)
-            seen_by_channel[channel_id] = {video['video_id'] for video in videos}
+                videos_found_count += len(videos)
+                seen_by_channel[channel_id] = {video['video_id'] for video in videos}
 
-            if i > 0 and i % 10 == 0:
-                print(f"    Progress: {i}/{len(project_channels)} channels (Found: {videos_found_count} videos, New: {len(new_videos)})")
+                if i > 0 and i % 10 == 0:
+                    print(f"    Progress: {i}/{len(project_channels)} channels (Found: {videos_found_count} videos, New: {len(new_videos)})")
 
-            for video in videos:
-                if (video['video_id'], project['name']) not in published_videos:
-                    video['project'] = project
-                    video['channel_info'] = channel_info
-                    new_videos.append(video)
+                for video in videos:
+                    if (video['video_id'], project['name']) not in published_videos:
+                        video['project'] = project
+                        video['channel_info'] = channel_info
+                        new_videos.append(video)
+        if network and not deferred and errors:
+            mass_failure = (len(channel_items) >= circuit.MIN_INVENTORY or recovering) \
+                and circuit.mass_failure(errors)
+            if retry_at or mass_failure or (recovering and all(errors)):
+                circuit.defer(retry_at=retry_at)
+                deferred = True
+                print(f'RSS_UPSTREAM_CIRCUIT state=open source=publisher '
+                      f'checked={start + len(group)} remaining={len(channel_items)-start-len(group)}', flush=True)
+            elif recovering:
+                circuit.recover()
+                recovering = False
     
     print(f"    ✅ RSS scan complete: {videos_found_count} videos total, {len(new_videos)} new")
     

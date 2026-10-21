@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, patch
@@ -17,6 +18,8 @@ class CircuitTests(unittest.TestCase):
         env = patch.dict(os.environ, {'TOPUS_PUSH_DB': directory.name + '/push.db'})
         env.start()
         self.addCleanup(env.stop)
+        rss.failure_reasons.clear()
+        rss.failure_retry_at.clear()
         self.channels = {'UC' + str(index).zfill(22) for index in range(100)}
         self.config = Mock(RSS_WORKERS=12)
         patcher = patch.object(discovery, 'report_push_gap_health')
@@ -44,15 +47,74 @@ class CircuitTests(unittest.TestCase):
             fetch.assert_not_called()
             rescue.assert_called_once_with(self.channels)
 
-    def test_one_success_keeps_full_scan_and_does_not_open_circuit(self):
+    def test_one_success_does_not_allow_ninety_nine_more_requests(self):
         first = circuit.ordered_channels(self.channels)[0]
         with patch.object(rss, 'check_rss_feed', side_effect=lambda c: [] if c == first else self.missing(c)) as fetch, \
              patch.object(api_rescue, 'run') as rescue:
-            with self.assertRaisesRegex(RuntimeError, 'RSS_DISCOVERY_FAILED_99'):
+            with self.assertRaisesRegex(RuntimeError, 'UPSTREAM_COOLDOWN'):
                 discovery.collect(self.channels, self.config, 'full')
-            self.assertEqual(fetch.call_count, 100)
+            self.assertEqual(fetch.call_count, 12)
             self.assertEqual(rescue.call_args.args[0], self.channels - {first})
+        self.assertTrue(circuit.is_open())
+
+    def test_mixed_partial_404_and_500_outage_stops_after_first_batch(self):
+        ordered = sorted(self.channels)
+        errors = dict(zip(ordered[:8], ['HTTP_404'] * 4 + ['HTTP_500'] * 4))
+        def result(channel):
+            rss.failure_reasons[channel] = errors.get(channel, '')
+            return None if channel in errors else []
+        with patch.object(circuit, 'ordered_channels', return_value=ordered), \
+                patch.object(rss, 'check_rss_feed', side_effect=result) as fetch, \
+                patch.object(api_rescue, 'run') as rescue:
+            with self.assertRaisesRegex(RuntimeError, 'UPSTREAM_COOLDOWN'):
+                discovery.collect(self.channels, self.config, 'full')
+        self.assertEqual(fetch.call_count, 12)
+        self.assertEqual(rescue.call_args.args[0], set(ordered[:8] + ordered[12:]))
+
+    def test_outage_after_healthy_probe_does_not_enqueue_the_whole_inventory(self):
+        ordered = sorted(self.channels)
+        healthy = set(ordered[:12])
+        with patch.object(circuit, 'ordered_channels', return_value=ordered), \
+                patch.object(rss, 'check_rss_feed', side_effect=lambda c: [] if c in healthy else self.missing(c)) as fetch, \
+                patch.object(api_rescue, 'run') as rescue:
+            with self.assertRaisesRegex(RuntimeError, 'UPSTREAM_COOLDOWN'):
+                discovery.collect(self.channels, self.config, 'full')
+        self.assertEqual(fetch.call_count, 24)
+        self.assertEqual(rescue.call_args.args[0], self.channels - healthy)
+
+    def test_isolated_channel_failure_does_not_block_healthy_feeds(self):
+        first = sorted(self.channels)[0]
+        with patch.object(rss, 'check_rss_feed', side_effect=lambda c: self.missing(c) if c == first else []) as fetch, \
+                patch.object(api_rescue, 'run') as rescue:
+            with self.assertRaisesRegex(RuntimeError, 'RSS_DISCOVERY_FAILED_1'):
+                discovery.collect(self.channels, self.config, 'full')
+        self.assertEqual(fetch.call_count, 100)
+        rescue.assert_called_once_with({first})
         self.assertFalse(circuit.is_open())
+
+    def test_explicit_rate_limit_persists_actual_wait_and_stops_future_batches(self):
+        deadline = time.time() + 7200
+        first = sorted(self.channels)[0]
+        def result(channel):
+            if channel == first:
+                rss.failure_reasons[channel] = 'HTTP_429'
+                rss.failure_retry_at[channel] = deadline
+                return None
+            return []
+        with patch.object(circuit, 'ordered_channels', return_value=sorted(self.channels)), \
+                patch.object(rss, 'check_rss_feed', side_effect=result) as fetch, \
+                patch.object(api_rescue, 'run'):
+            with self.assertRaisesRegex(RuntimeError, 'UPSTREAM_COOLDOWN'):
+                discovery.collect(self.channels, self.config, 'full')
+        self.assertEqual(fetch.call_count, 12)
+        self.assertEqual(circuit.claim(now=deadline - 1), 'skip')
+        self.assertEqual(circuit.claim(now=deadline), 'probe')
+
+    def test_shorter_pause_cannot_reduce_an_existing_retry_after(self):
+        circuit.defer(now=100, retry_at=10000)
+        circuit.defer(now=200)
+        self.assertEqual(circuit.claim(now=9999), 'skip')
+        self.assertEqual(circuit.claim(now=10000), 'probe')
 
     def test_small_inventory_does_not_assert_host_wide_failure(self):
         with patch.object(rss, 'check_rss_feed', side_effect=self.missing) as fetch, patch.object(api_rescue, 'run'):
@@ -107,15 +169,15 @@ class CircuitTests(unittest.TestCase):
         circuit.recover()
         self.assertEqual(discovery.read_result('channel', now=102), ([], ''))
 
-    def test_non_404_failures_do_not_start_mass_404_circuit(self):
+    def test_mass_500_failure_opens_circuit_instead_of_amplifying_outage(self):
         def failed(channel):
             rss.failure_reasons[channel] = 'HTTP_500'
             return None
         with patch.object(rss, 'check_rss_feed', side_effect=failed) as fetch, patch.object(api_rescue, 'run'):
-            with self.assertRaisesRegex(RuntimeError, 'RSS_DISCOVERY_FAILED_100'):
+            with self.assertRaisesRegex(RuntimeError, 'UPSTREAM_COOLDOWN'):
                 discovery.collect(self.channels, self.config, 'full')
-            self.assertEqual(fetch.call_count, 100)
-        self.assertFalse(circuit.is_open())
+            self.assertEqual(fetch.call_count, 12)
+        self.assertTrue(circuit.is_open())
 
 
 if __name__ == '__main__':
