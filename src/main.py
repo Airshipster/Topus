@@ -47,6 +47,7 @@ from delivery_journal import send_public
 from retry_queue import pending_events
 from publication_policy import publication_age_limit
 from publication_budget import CONTINUE_QUEUE, PublicationBudget
+from event_batches import EVENT_BATCH_LIMIT, prioritize_events
 
 
 def parse_datetime(value):
@@ -516,8 +517,9 @@ def main():
             raise RuntimeError('Publisher lock busy; work not completed')
         lock_acquired = not configured()
         update_run_status(master_sheet, f'running: {run_mode_name()}', run_status_details())
-        from push_store import mirror_events
-        mirror_events(master_sheet)
+        from push_store import mirror_events, cached_priority_science_channels
+        mirrored_backlog = bool(mirror_events(master_sheet))
+        science_channels = cached_priority_science_channels()
         
         print("\n⚙️  Loading settings...")
         settings = load_settings(master_sheet)
@@ -539,12 +541,17 @@ def main():
         if push_only_mode():
             push_events = get_push_events(master_sheet)
             push_events.extend(pending_events(master_sheet))
+            total_pending = len(push_events)
+            push_events = prioritize_events(push_events, EVENT_BATCH_LIMIT, science_channels)
+            pending_batch_remains = total_pending > len(push_events) or mirrored_backlog
             print(f"📬 Unprocessed push events: {len(push_events)}")
             if not push_events:
                 print("\n✅ Push-only mode completed. No pending push events.")
-                update_run_status(master_sheet, 'complete: no pending push events', run_status_details())
-                return
+                update_run_status(master_sheet, 'partial: awaiting mirrored events' if pending_batch_remains
+                                  else 'complete: no pending push events', run_status_details())
+                return CONTINUE_QUEUE if pending_batch_remains else None
             projects = select_push_projects(master_sheet, projects, push_events)
+            projects = sorted(projects, key=lambda project: str(project.get('name') or '').casefold() != 'scitopus')
             if not projects:
                 print("\n✅ Push-only mode completed. No target projects for pending push events.")
                 update_run_status(master_sheet, 'complete: no target projects', run_status_details())
@@ -617,6 +624,9 @@ def main():
             print(f"📬 Unprocessed push events: {len(push_events)}")
         if not push_only_mode():
             push_events.extend(pending_events(master_sheet))
+            total_pending = len(push_events)
+            push_events = prioritize_events(push_events, EVENT_BATCH_LIMIT, science_channels)
+            pending_batch_remains = total_pending > len(push_events) or mirrored_backlog
         
         total_found = 0
         total_published = 0
@@ -917,7 +927,9 @@ def main():
         # ТЕПЕРЬ ПУБЛИКУЕМ В TELEGRAM
         print(f"\n📤 Publishing to Telegram...")
         publication_budget = PublicationBudget()
-        queue_continues = False
+        # Avoid a tight continuation loop when the selected batch could not advance.
+        queue_continues = pending_batch_remains and bool(
+            push_events_to_mark or saved_publications or deferred_status_updates)
         
         for video, project, video_published_date, _, error in videos_to_save:
             if str(error or '').startswith(('FILTERED: ', 'PENDING: ')):

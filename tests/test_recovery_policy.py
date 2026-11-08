@@ -140,7 +140,7 @@ class RecoveryPolicyTests(unittest.TestCase):
         db.executemany('INSERT INTO events VALUES (?,?,?,?,?)',[
             ('other','other',1,0,'Push · server'),('backup','science',2,0,'YouTube API backup'),
             ('fresh','science',3,0,'Push · server')])
-        self.assertEqual([r['video_id'] for r in prioritized_pending_events(db)],['fresh','backup','other'])
+        self.assertEqual([r['video_id'] for r in prioritized_pending_events(db)],['fresh','other','backup'])
         db.close()
 
     def test_deferred_closure_is_batched_and_cannot_overwrite_sent(self):

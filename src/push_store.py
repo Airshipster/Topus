@@ -7,6 +7,7 @@ import sqlite3
 import time
 import xml.etree.ElementTree as ET
 from contextlib import contextmanager
+from event_batches import EVENT_BATCH_LIMIT, prioritize_events
 
 
 @contextmanager
@@ -175,19 +176,45 @@ def mirror_events(sheet):
     from datetime import datetime, timezone
     from sheets import format_timestamp, channel_link
     import config
+    import json
     from control_client import configured, ControlClient
     with database() as db:
-        events = prioritized_pending_events(db,limit=500)
-    local_events = events
+        local_events = prioritized_pending_events(db, limit=EVENT_BATCH_LIMIT)
+        science_channels = priority_science_channels(db)
     control = ControlClient() if configured() else None
+    remote_events = []
     if control:
         for start in range(0, len(local_events), 25):
-            control.request('/events', {'events': [{**e, 'event_id': e['fingerprint'],
-                                                    'source': e.get('source') or 'Push · server'}
-                                                  for e in local_events[start:start + 25]]})
-        events = control.request('/events/pending', {'limit':500}).get('events', [])
+            result = control.request('/events', {'events': [{**e, 'event_id': e['fingerprint'],
+                                                             'source': e.get('source') or 'Push · server'}
+                                                           for e in local_events[start:start + 25]]})
+            if result.get('ok') is not True:
+                raise RuntimeError('CONTROL_EVENT_PERSIST_FAILED')
+        remote_events = control.request('/events/pending', {'limit': 500}).get('events')
+        if not isinstance(remote_events, list) or any(
+            not isinstance(event, dict)
+            or not isinstance(event.get('key'), str) or not event['key']
+            or not isinstance(event.get('channel_id'), str) or not event['channel_id']
+            or not isinstance(event.get('video_id'), str) or not event['video_id']
+            or not isinstance(event.get('received'), (int, float))
+            for event in remote_events
+        ):
+            raise RuntimeError('CONTROL_EVENTS_INVALID')
+    remote_by_key = {event['key']: event for event in remote_events if event.get('key')}
+    matched_keys = set()
+    combined = []
+    for event in local_events:
+        event_key = json.dumps([event['channel_id'], event['video_id'], event['fingerprint']],
+                               ensure_ascii=False, separators=(',', ':'))
+        if event_key in remote_by_key:
+            combined.append({**event, 'key': event_key})
+            matched_keys.add(event_key)
+        else:
+            combined.append(event)
+    combined.extend(event for event in remote_events if event.get('key') not in matched_keys)
+    events = prioritize_events(combined, EVENT_BATCH_LIMIT, science_channels)
     if not events:
-        return
+        return False
     worksheet = sheet.worksheet(config.SHEET_NAME_PUSH_EVENTS)
     values = worksheet.get_all_values()
     headers = values[0]
@@ -211,15 +238,22 @@ def mirror_events(sheet):
     if rows:
         worksheet.append_rows(rows, value_input_option='USER_ENTERED')
     if control:
-        for start in range(0, len(events), 25):
-            control.request('/events/ack', {'owner': os.environ['TOPUS_PUBLISHER_OWNER'],
-                'lease': os.environ['TOPUS_PUBLISHER_LEASE'], 'keys': [e['key'] for e in events[start:start + 25]]})
+        remote_keys = [e['key'] for e in events if e.get('key')]
+        for start in range(0, len(remote_keys), 25):
+            result = control.request('/events/ack', {'owner': os.environ['TOPUS_PUBLISHER_OWNER'],
+                'lease': os.environ['TOPUS_PUBLISHER_LEASE'], 'keys': remote_keys[start:start + 25]})
+            if result.get('ok') is not True:
+                raise RuntimeError('CONTROL_EVENT_ACK_FAILED')
+    selected_local = [e for e in events if e.get('fingerprint')]
     with database() as db:
-        db.executemany('UPDATE events SET mirrored=1 WHERE fingerprint=?', [(e['fingerprint'],) for e in local_events])
+        db.executemany('UPDATE events SET mirrored=1 WHERE fingerprint=?',
+                       [(e['fingerprint'],) for e in selected_local])
         db.execute('DELETE FROM events WHERE mirrored=1 AND received<?', (time.time() - 7 * 86400,))
+        local_remaining = bool(db.execute('SELECT 1 FROM events WHERE mirrored=0 LIMIT 1').fetchone())
+    return local_remaining or len(events) < len(combined) or len(remote_events) >= EVENT_BATCH_LIMIT
 
 
-def prioritized_pending_events(db, limit=100):
+def priority_science_channels(db):
     import json
     import sqlite3
     priority=[]
@@ -230,14 +264,31 @@ def prioritized_pending_events(db, limit=100):
                   if 'SciTopus' in item.get('projects',[])]
     except (sqlite3.OperationalError,ValueError,TypeError,AttributeError):
         pass
-    if not priority:
-        return [dict(r) for r in db.execute('SELECT * FROM events WHERE mirrored=0 ORDER BY received LIMIT ?',
-                                           (limit,))]
-    placeholders=','.join('?' for _ in priority)
-    sql=('SELECT * FROM events WHERE mirrored=0 ORDER BY CASE '
-         f"WHEN source LIKE 'Push%' AND channel_id IN ({placeholders}) THEN 0 "
-         f'WHEN channel_id IN ({placeholders}) THEN 1 ELSE 2 END, received LIMIT ?')
-    return [dict(r) for r in db.execute(sql,(*priority,*priority,limit))]
+    return set(priority)
+
+
+def prioritized_pending_events(db, limit=EVENT_BATCH_LIMIT):
+    if limit <= 0:
+        return []
+    science_channels = priority_science_channels(db)
+    order = 'received'
+    parameters = ()
+    if science_channels:
+        placeholders = ','.join('?' for _ in science_channels)
+        order = f'CASE WHEN channel_id IN ({placeholders}) THEN 0 ELSE 1 END, received'
+        parameters = tuple(sorted(science_channels))
+    push = [dict(row) for row in db.execute(
+        f"SELECT * FROM events WHERE mirrored=0 AND source LIKE 'Push%' ORDER BY {order} LIMIT ?",
+        (*parameters, limit))]
+    background = [dict(row) for row in db.execute(
+        f"SELECT * FROM events WHERE mirrored=0 AND source NOT LIKE 'Push%' ORDER BY {order} LIMIT ?",
+        (*parameters, limit))]
+    return prioritize_events(push + background, limit, science_channels)
+
+
+def cached_priority_science_channels():
+    with database() as db:
+        return priority_science_channels(db)
 
 
 def health():
