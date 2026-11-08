@@ -7,6 +7,9 @@ import time
 from pathlib import Path
 
 from control_client import ControlClient, ControlUnavailable
+from publication_budget import CONTINUE_QUEUE
+
+PUBLISHER_HARD_TIMEOUT_SECONDS = 2400
 
 
 def stop_child(child):
@@ -73,7 +76,7 @@ def run(client=None, spawn=subprocess.Popen, clock=time.monotonic):
             client.heartbeat('rss', False, 'running')
         child = spawn([sys.executable, str(Path(__file__).with_name('main.py'))],
                       env=env, start_new_session=True)
-        deadline = clock() + 1200
+        deadline = clock() + PUBLISHER_HARD_TIMEOUT_SECONDS
         while True:
             try:
                 code = child.wait(timeout=20)
@@ -83,9 +86,10 @@ def run(client=None, spawn=subprocess.Popen, clock=time.monotonic):
                     raise ControlUnavailable('PUBLISHER_TIMEOUT')
                 if not client.request('/lease/renew', payload).get('ok'):
                     raise ControlUnavailable('CONTROL_LEASE_LOST')
-        client.heartbeat(name, code == 0, '' if code == 0 else 'PUBLISHER_FAILED')
+        successful = code in (0, CONTINUE_QUEUE)
+        client.heartbeat(name, successful, '' if successful else 'PUBLISHER_FAILED')
         if rss_pass:
-            if code == 0:
+            if successful:
                 detail = client.request('/runtime').get('beats', {}).get('rss', {}).get('error', '')
                 if detail.startswith('SOURCE_UNAVAILABLE_'):
                     client.heartbeat('rss', True, detail)
@@ -114,7 +118,7 @@ if __name__ == '__main__':
     try:
         result = run()
         # A healthy primary owning work is a normal GitHub standby outcome.
-        raise SystemExit(0 if result == 75 and os.environ.get('TOPUS_PUBLISHER_OWNER') == 'github' else result)
+        raise SystemExit(0 if result in (75, CONTINUE_QUEUE) and os.environ.get('TOPUS_PUBLISHER_OWNER') == 'github' else result)
     except ControlUnavailable as error:
         print(str(error), file=sys.stderr)
         raise SystemExit(1)

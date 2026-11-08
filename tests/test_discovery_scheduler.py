@@ -49,6 +49,18 @@ class DiscoverySchedulerTests(unittest.TestCase):
             self.assertEqual(controller.run_job('rss-discovery'), 1)
             client.return_value.heartbeat.assert_called_once_with('rss', False, 'exit 1')
 
+    def test_cooperative_queue_yield_is_not_recorded_as_job_failure(self):
+        child = Mock()
+        child.poll.return_value = controller.CONTINUE_QUEUE
+        child.returncode = controller.CONTINUE_QUEUE
+        with patch.object(controller, 'database') as database, \
+                patch.object(controller.subprocess, 'Popen', return_value=child), \
+                patch.object(controller.Path, 'read_text', return_value='{}'), \
+                patch.dict(controller.os.environ, {'GOOGLE_SERVICE_ACCOUNT_JSON_FILE': '/fixture.json'}):
+            self.assertEqual(controller.run_job('push', 'push'), controller.CONTINUE_QUEUE)
+        calls = database.return_value.__enter__.return_value.execute.call_args_list
+        self.assertEqual(calls[-1].args[1][1], '')
+
 
 if __name__ == '__main__':
     unittest.main()

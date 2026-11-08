@@ -46,6 +46,7 @@ from youtube_client import get_last_youtube_api_error, get_video_info_from_api, 
 from delivery_journal import send_public
 from retry_queue import pending_events
 from publication_policy import publication_age_limit
+from publication_budget import CONTINUE_QUEUE, PublicationBudget
 
 
 def parse_datetime(value):
@@ -915,6 +916,8 @@ def main():
         
         # ТЕПЕРЬ ПУБЛИКУЕМ В TELEGRAM
         print(f"\n📤 Publishing to Telegram...")
+        publication_budget = PublicationBudget()
+        queue_continues = False
         
         for video, project, video_published_date, _, error in videos_to_save:
             if str(error or '').startswith(('FILTERED: ', 'PENDING: ')):
@@ -933,6 +936,12 @@ def main():
                 record_publication_status(video['video_id'], project['name'], status='filtered', error=stale_reason)
                 total_filtered += 1
                 continue
+
+            if publication_budget.should_yield():
+                print('PUBLICATION_BATCH_YIELD: remaining saved rows stay pending', flush=True)
+                queue_continues = True
+                break
+            publication_budget.attempted()
             
             channel_info = video.get('channel_info', {})
             
@@ -1053,7 +1062,7 @@ def main():
         print(f"{'='*60}")
         update_run_status(
             master_sheet,
-            f'complete: found {total_found}, published {total_published}, filtered {total_filtered}, failed {total_failed}',
+            f'{"partial" if queue_continues else "complete"}: found {total_found}, published {total_published}, filtered {total_filtered}, failed {total_failed}',
             run_status_details(),
         )
         if total_failed or unresolved_sources or any(p.get('channels_error') for p in projects):
@@ -1064,6 +1073,9 @@ def main():
                 control.heartbeat('rss', True, f'SOURCE_UNAVAILABLE_{len(unavailable_sources)}' if unavailable_sources else '')
             control.request('/incident', {'kind':'rss-sources-unavailable', 'active':bool(unavailable_sources),
                 'summary':f'YouTube API: недоступны {len(unavailable_sources)} каналов. Данные сохранены; проверка повторится.'})
+
+        if queue_continues:
+            return CONTINUE_QUEUE
         
     except Exception as e:
         print(f"\n❌❌❌ FATAL ERROR: {e}")
@@ -1083,4 +1095,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main() or 0)

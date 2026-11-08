@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).parents[1] / 'src'))
 from control_client import ControlClient, ControlUnavailable
 from coordinated_run import run
+from publication_budget import CONTINUE_QUEUE
 import delivery_journal
 import push_store
 
@@ -121,6 +122,27 @@ class CoordinationTests(unittest.TestCase):
                 run(client, Mock(return_value=child), clock=lambda: 0)
         stop.assert_called_once_with(child)
         self.assertNotIn(unittest.mock.call('server-publisher', True, ''), client.heartbeat.call_args_list)
+
+    def test_a_healthy_publisher_is_not_killed_after_twenty_minutes(self):
+        client = Mock()
+        client.request.return_value = {'token': 'fixture-lease', 'ok': True}
+        child = Mock()
+        child.wait.side_effect = [subprocess.TimeoutExpired('fixture', 20), 0]
+        with patch.dict(os.environ, {'TOPUS_PUBLISHER_OWNER': 'server', 'TOPUS_PUSH_ONLY': 'true'}), \
+             patch('coordinated_run.stop_child') as stop:
+            self.assertEqual(run(client, Mock(return_value=child), clock=iter([0, 1201]).__next__), 0)
+        client.request.assert_any_call('/lease/renew', {'owner': 'server', 'lease': 'fixture-lease'})
+        stop.assert_not_called()
+
+    def test_cooperative_yield_releases_lease_without_reporting_failure(self):
+        client = Mock()
+        client.request.return_value = {'token': 'fixture-lease', 'ok': True}
+        child = Mock()
+        child.wait.return_value = CONTINUE_QUEUE
+        with patch.dict(os.environ, {'TOPUS_PUBLISHER_OWNER': 'server', 'TOPUS_PUSH_ONLY': 'true'}):
+            self.assertEqual(run(client, Mock(return_value=child)), CONTINUE_QUEUE)
+        client.heartbeat.assert_any_call('server-publisher', True, '')
+        client.request.assert_any_call('/lease/release', {'owner': 'server', 'lease': 'fixture-lease'})
 
     def test_cache_reconciliation_never_replaces_actual_rss_collection_health(self):
         client = Mock()

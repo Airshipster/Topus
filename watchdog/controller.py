@@ -18,6 +18,7 @@ from rss_discovery import push_gap_health
 from delivery_journal import summary
 from control_client import ControlClient, configured
 from activity_retention import retention_due
+from publication_budget import CONTINUE_QUEUE
 
 ACTIVE = os.environ.get('TOPUS_WATCHDOG_ACTIVE', 'false').lower() == 'true'
 TOKEN = os.environ.get('TOPUS_WATCHDOG_TOKEN', '')
@@ -55,9 +56,11 @@ def run_job(name, mode=None):
     preempted = False
     try:
         child = subprocess.Popen([sys.executable, '/app/src/' + script], env=env, start_new_session=True)
-        timeout = 240 if name == 'renewal' else 1200
+        timeout = 240 if name == 'renewal' else (2460 if name in ('push', 'rss', 'retention') else 1200)
         deadline = time.monotonic() + timeout
         while child.poll() is None:
+            if name in ('push', 'rss', 'retention'):
+                running['tick'] = time.time()
             try:
                 child.wait(timeout=min(2, max(0.1, deadline - time.monotonic())))
             except subprocess.TimeoutExpired:
@@ -84,7 +87,7 @@ def run_job(name, mode=None):
                     break
         if not preempted and code is None:
             code = child.returncode
-        if code:
+        if code and code != CONTINUE_QUEUE:
             error = f'exit {code}'
     except Exception as exc:
         error = type(exc).__name__
@@ -143,8 +146,10 @@ def publisher_loop():
             running['publisher'] = mode
             try:
                 code = run_job(mode, mode)
-                failures = failures + 1 if code else 0
-                if code:
+                if code == CONTINUE_QUEUE:
+                    wake.set()
+                failures = failures + 1 if code and code != CONTINUE_QUEUE else 0
+                if code and code != CONTINUE_QUEUE:
                     # Persisted callbacks stay queued while the coordinator is
                     # unavailable; do not amplify its failure with a tight loop.
                     time.sleep(publisher_failure_delay(failures))

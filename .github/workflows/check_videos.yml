@@ -39,7 +39,7 @@ jobs:
   fallback-publisher:
     if: ${{ github.event.inputs.sync_bot_state != 'true' && github.event.client_payload.sync_bot_state != 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
