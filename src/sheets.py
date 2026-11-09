@@ -2,7 +2,7 @@ import json
 import os
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import gspread
@@ -2797,11 +2797,14 @@ def get_push_events(sheet):
         if video_col is None or channel_col is None or status_col is None:
             raise ValueError('Push events headers missing required columns')
         
+        from retry_queue import retry_deferred
         events = []
         for i, row in enumerate(values[1:], start=2):
             row = clean_row(row)
             status = row[status_col] if len(row) > status_col else ''
-            if status == '' or status == '❌':
+            if status in ('', '❌') or str(status).startswith('❌ [api-retry='):
+                if retry_deferred(status):
+                    continue
                 video_id = row[video_col] if len(row) > video_col else ''
                 channel_value = row[channel_col] if len(row) > channel_col else ''
                 channel_id = channel_id_from_link(channel_value) or channel_value
@@ -2819,6 +2822,55 @@ def get_push_events(sheet):
     except Exception as e:
         print(f"❌ Error loading push events: {e}")
         raise
+
+def defer_unavailable_push_events(sheet, events, now=None):
+    """Keep missing metadata in the shared queue with bounded, persisted backoff."""
+    if not events:
+        return 0
+    now = now or datetime.now(timezone.utc)
+    worksheet = sheet.worksheet(config.SHEET_NAME_PUSH_EVENTS)
+    values = get_values_with_quota_retry(worksheet)
+    headers = {str(value).strip(): index for index, value in enumerate(values[0])}
+    video_col = headers['Video ID']
+    channel_col = headers['Ссылка на канал']
+    status_col = headers['Обработано']
+    timestamp_col = headers.get('Timestamp GMT+4', headers.get('Timestamp'))
+    if timestamp_col is None:
+        raise ValueError('Push events timestamp missing')
+    current = {}
+    for row_number, row in enumerate(values[1:], 2):
+        def cell(column):
+            return clean_sheet_value(row[column]) if len(row) > column else ''
+        channel = cell(channel_col)
+        identity = (cell(video_col), channel_id_from_link(channel) or channel,
+                    normalize_timestamp(cell(timestamp_col)))
+        current.setdefault(identity, []).append((row_number, cell(status_col)))
+    updates = []
+    for event in events:
+        identity = (event['video_id'], event['channel_id'], normalize_timestamp(event.get('timestamp', '')))
+        matches = current.get(identity, [])
+        if len(matches) != 1:
+            raise RuntimeError('PUSH_DEFER_IDENTITY_UNRESOLVED')
+        row_number, state = matches[0]
+        if state not in ('', '❌') and not state.startswith('❌ [api-retry='):
+            continue
+        previous = re.search(r'\[api-retry=(\d+)\]', state)
+        attempts = int(previous.group(1)) + 1 if previous else 1
+        received = parse_datetime_value(event.get('timestamp', ''))
+        received_local = received.replace(tzinfo=ZoneInfo('Asia/Baku')) if received and not received.tzinfo else received
+        too_old = bool(received_local and (now - received_local.astimezone(timezone.utc)).total_seconds() >= 7 * 86400)
+        if too_old or attempts > 32:
+            status = '⚠️ YouTube metadata unavailable; manual review'
+        else:
+            delay = min(6 * 3600, 1800 * (2 ** min(attempts - 1, 4)))
+            retry_at = (now + timedelta(seconds=delay)).isoformat().replace('+00:00', 'Z')
+            status = f'❌ [api-retry={attempts}] [retry-after={retry_at}]'
+        updates.append({'range': gspread.utils.rowcol_to_a1(row_number, status_col + 1),
+                        'values': [[status]]})
+    for start in range(0, len(updates), 100):
+        worksheet.batch_update(updates[start:start + 100], value_input_option='USER_ENTERED')
+    return len(updates)
+
 
 def mark_push_event_processed(sheet, row_index, project_name, current_projects=''):
     """Отметка push-события как обработанного"""

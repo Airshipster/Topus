@@ -12,6 +12,7 @@ from sheets import (
     authenticate_google_sheets,
     current_local_datetime,
     deduplicate_settings_rows,
+    defer_unavailable_push_events,
     delete_old_activity_rows,
     format_timestamp,
     delete_stale_unpublished_video_rows,
@@ -641,6 +642,7 @@ def main():
         video_info_cache = {}
         youtube_quota_blocked = False
         push_events_to_mark = {}
+        unavailable_push_events = {}
         publication_event_rows = {}
 
         def get_cached_video_info(video_id):
@@ -739,6 +741,8 @@ def main():
                     video_info_api, youtube_error = get_cached_video_info(event['video_id'])
                 
                     if not video_info_api:
+                        if not event.get('retry_accepted'):
+                            unavailable_push_events[event['row_index']] = event
                         if youtube_error:
                             print(f"  ⚠️  YouTube API unavailable for {event['video_id']}: {youtube_error}")
                             log_entries.append([
@@ -762,7 +766,8 @@ def main():
                                 event['video_id'], event['channel_id'], reason,
                                 'warning', source_method,
                             ])
-                        queue_push_event_mark(event, project['name'])
+                        if event.get('retry_accepted'):
+                            queue_push_event_mark(event, project['name'])
                         continue
                 
                     video = {
@@ -919,6 +924,12 @@ def main():
             event = publication_event_rows.get(key)
             if event:
                 queue_push_event_mark(event, key[1])
+
+        if unavailable_push_events:
+            for row_index in unavailable_push_events:
+                push_events_to_mark.pop(row_index, None)
+            deferred = defer_unavailable_push_events(master_sheet, unavailable_push_events.values())
+            print(f"  ⏳ Deferred push events with unavailable metadata: {deferred}")
 
         if push_events_to_mark:
             print(f"  ✅ Marking processed push events: {len(push_events_to_mark)}")

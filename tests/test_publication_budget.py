@@ -190,6 +190,7 @@ class PublicationBudgetTests(unittest.TestCase):
             'get_published_videos': Mock(return_value=set()),
             'get_videos_info_from_api': lambda ids: {i: (None, 'quotaExceeded') for i in ids},
             'save_videos_batch': Mock(return_value=[]), 'mark_push_events_processed_batch': Mock(),
+            'defer_unavailable_push_events': Mock(return_value=100),
             'log_events_batch': Mock(), 'update_video_publication_status_batch': Mock(),
             'get_youtube_api_calls': Mock(return_value=0), 'update_last_run': Mock(),
         }
@@ -207,6 +208,43 @@ class PublicationBudgetTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'Incomplete pass'):
                 main.main()
         funcs['mark_push_events_processed_batch'].assert_not_called()
+        funcs['defer_unavailable_push_events'].assert_called_once()
+
+    def test_empty_metadata_is_not_acked_even_if_another_project_has_published(self):
+        channel_id = 'UC' + 'a' * 22
+        projects = [{'name': name, 'default_template': 'fixture'} for name in ('SciTopus', 'Other')]
+        event = {'row_index': 2, 'video_id': 'fresh000001', 'channel_id': channel_id,
+                 'timestamp': '09.11.2026 04:00:00', 'source': 'Push · server', 'projects': ''}
+        funcs = {
+            'authenticate_google_sheets': Mock(), 'open_master_sheet_with_retry': Mock(),
+            'acquire_lock_with_wait': Mock(return_value=True), 'release_lock': Mock(),
+            'update_run_status': Mock(), 'load_settings': Mock(return_value={}),
+            'apply_runtime_overrides': Mock(), 'print_detection_latency_note': Mock(),
+            'load_projects': Mock(return_value=projects), 'get_push_events': Mock(return_value=[event]),
+            'pending_events': Mock(return_value=[]), 'select_push_projects': Mock(return_value=projects),
+            'load_project_channels': Mock(return_value=({name: {channel_id: {}} for name in ('SciTopus', 'Other')}, {})),
+            'get_published_videos': Mock(return_value={('fresh000001', 'SciTopus')}),
+            'get_videos_info_from_api': lambda ids: {i: (None, None) for i in ids},
+            'save_videos_batch': Mock(return_value=[]), 'mark_push_events_processed_batch': Mock(),
+            'defer_unavailable_push_events': Mock(return_value=1), 'send_public': Mock(),
+            'log_events_batch': Mock(), 'update_video_publication_status_batch': Mock(),
+            'get_youtube_api_calls': Mock(return_value=0), 'update_last_run': Mock(),
+        }
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict('os.environ', {'TOPUS_PUBLISHER_OWNER': 'server',
+                                                         'TOPUS_PUSH_ONLY': 'true'}, clear=True))
+            stack.enter_context(patch('control_client.configured', return_value=False))
+            stack.enter_context(patch('push_store.mirror_events', return_value=False))
+            stack.enter_context(patch('push_store.cached_priority_science_channels', return_value=set()))
+            stack.enter_context(patch('sheets.close_deferred_videos_batch'))
+            stack.enter_context(patch('activity_retention.retention_due', return_value=False))
+            stack.enter_context(patch('builtins.print'))
+            for name, value in funcs.items():
+                stack.enter_context(patch.object(main, name, value))
+            self.assertIsNone(main.main())
+        funcs['mark_push_events_processed_batch'].assert_not_called()
+        funcs['send_public'].assert_not_called()
+        self.assertEqual(list(funcs['defer_unavailable_push_events'].call_args.args[1]), [event])
 
 
 if __name__ == '__main__':
