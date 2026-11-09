@@ -155,13 +155,19 @@ def scan_uploads(row, key, cutoff, consume):
     return complete
 
 
-def select_channels(channels, limit):
+def select_channels(channels, limit, priority_channels=None):
     initialize()
     with database() as db:
         db.executemany('INSERT OR IGNORE INTO api_rescue_channels(channel_id) VALUES (?)',
                        [(c,) for c in channels])
         rows = db.execute('SELECT * FROM api_rescue_channels ORDER BY attempted,channel_id').fetchall()
-    return [dict(r) for r in rows if r['channel_id'] in channels][:limit]
+    eligible = [dict(r) for r in rows if r['channel_id'] in channels]
+    if not priority_channels or limit <= 0:
+        return eligible[:limit]
+    priority_limit = max(1, limit // 4)
+    selected = [r for r in eligible if r['channel_id'] in priority_channels][:priority_limit]
+    chosen = {r['channel_id'] for r in selected}
+    return selected + [r for r in eligible if r['channel_id'] not in chosen][:limit - len(selected)]
 
 
 def claim_pass(now=None):
@@ -191,7 +197,7 @@ def read_result(channel):
     return json.loads(row['payload'])
 
 
-def run(channels):
+def run(channels, priority_channels=None):
     import config
     from sheets import format_timestamp
     keys = config.YOUTUBE_API_KEYS or ([config.YOUTUBE_API_KEY] if config.YOUTUBE_API_KEY else [])
@@ -212,7 +218,7 @@ def run(channels):
         print('API_RESCUE_THROTTLED', flush=True)
         return
     # At most 80 uploads reads + two mapping reads per half-hour, within 4000/day.
-    selected = select_channels(channels, 80)
+    selected = select_channels(channels, 80, priority_channels)
     recovered = 0
     for row in selected:
         channel = row['channel_id']

@@ -22,6 +22,9 @@ class CircuitTests(unittest.TestCase):
         rss.failure_retry_at.clear()
         self.channels = {'UC' + str(index).zfill(22) for index in range(100)}
         self.config = Mock(RSS_WORKERS=12)
+        pacing = patch.object(discovery.RequestStartPacer, 'wait')
+        pacing.start()
+        self.addCleanup(pacing.stop)
         patcher = patch.object(discovery, 'report_push_gap_health')
         patcher.start()
         self.addCleanup(patcher.stop)

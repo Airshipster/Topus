@@ -48,6 +48,20 @@ class RescueTests(unittest.TestCase):
             db.execute("UPDATE api_rescue_channels SET attempted=1 WHERE channel_id IN ('a','b')")
         self.assertEqual(api.select_channels({'a','b','c'},1)[0]['channel_id'],'c')
 
+    def test_hot_priority_preserves_slots_for_the_full_inventory(self):
+        hot = {f'z{i:03}' for i in range(30)}
+        other = {f'a{i:03}' for i in range(90)}
+        first = api.select_channels(hot | other, 80, hot)
+        selected = {r['channel_id'] for r in first}
+        self.assertEqual(len(selected), 80)
+        self.assertEqual(len(selected & hot), 20)
+        self.assertEqual(len(selected & other), 60)
+        with database() as db:
+            db.executemany('UPDATE api_rescue_channels SET attempted=1 WHERE channel_id=?',
+                           [(channel,) for channel in selected])
+        second = {r['channel_id'] for r in api.select_channels(hot | other, 80, hot)}
+        self.assertTrue((other - selected) <= second)
+
     def test_hot_and_full_scans_share_a_durable_half_hour_pass(self):
         self.assertTrue(api.claim_pass(now=100))
         self.assertFalse(api.claim_pass(now=101))

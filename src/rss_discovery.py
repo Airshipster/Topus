@@ -1,6 +1,7 @@
 """Collect RSS without acquiring the publication lease; persist results atomically."""
 import json
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -10,6 +11,26 @@ HOT_RETENTION_SECONDS = 7 * 86400
 PUSH_GRACE_SECONDS = 10 * 60
 OBSERVATION_MAX_AGE_SECONDS = 2100
 FAILED_SOURCE_RETRY_SECONDS = 1800
+RESCUE_INVENTORY_MAX_AGE_SECONDS = 2 * 3600
+FULL_REUSE_MAX_AGE_SECONDS = 5 * 60
+RSS_REQUEST_START_INTERVAL_SECONDS = 0.2
+
+
+class RequestStartPacer:
+    """Spread source request starts while allowing already-started I/O to overlap."""
+    def __init__(self, interval=RSS_REQUEST_START_INTERVAL_SECONDS, clock=None, sleep=None):
+        self.interval = interval
+        self.clock = clock or time.monotonic
+        self.sleep = sleep or time.sleep
+        self.next_start = 0
+        self.lock = threading.Lock()
+
+    def wait(self):
+        with self.lock:
+            delay = self.next_start - self.clock()
+            if delay > 0:
+                self.sleep(delay)
+            self.next_start = self.clock() + self.interval
 
 
 def initialize():
@@ -210,7 +231,77 @@ def rescue_targets(channels, failed):
                     'API_RESCUE_HTTP_' + str(status) for status in (429, 500, 502, 503, 504)))
                 if transient and row['channel_id'] in active:
                     targets.add(row['channel_id'])
+        episode_exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                                    "AND name='rss_recovery_episode'").fetchone()
+        episode = db.execute('SELECT ended FROM rss_recovery_episode WHERE id=1 AND active=0 AND complete=0').fetchone() if episode_exists else None
+        if episode:
+            states = {row['channel_id']: row for row in db.execute(
+                'SELECT channel_id,checked,error FROM api_rescue_channels')} if known else {}
+            pending = {channel for channel in active if channel not in states or (
+                states[channel]['checked'] < episode['ended']
+                and states[channel]['error'] != 'API_RESCUE_HTTP_404_playlistNotFound')}
+            targets.update(pending)
+            if not pending:
+                db.execute('UPDATE rss_recovery_episode SET complete=1 '
+                           'WHERE id=1 AND active=0 AND ended=?', (episode['ended'],))
     return targets
+
+
+def note_outage(now=None):
+    current = time.time() if now is None else now
+    with database() as db:
+        db.execute('CREATE TABLE IF NOT EXISTS rss_recovery_episode ('
+                   'id INTEGER PRIMARY KEY CHECK (id=1), active INTEGER NOT NULL, '
+                   'started REAL NOT NULL, ended REAL NOT NULL, complete INTEGER NOT NULL)')
+        db.execute('INSERT INTO rss_recovery_episode VALUES (1,1,?,0,0) '
+                   'ON CONFLICT(id) DO UPDATE SET '
+                   'started=CASE WHEN active=1 THEN started ELSE excluded.started END, '
+                   'ended=CASE WHEN active=1 THEN ended ELSE 0 END, active=1, complete=0', (current,))
+
+
+def note_recovered(now=None):
+    current = time.time() if now is None else now
+    with database() as db:
+        exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                            "AND name='rss_recovery_episode'").fetchone()
+        if exists:
+            db.execute('UPDATE rss_recovery_episode SET active=0,ended=?,complete=0 '
+                       'WHERE id=1 AND active=1', (current,))
+
+
+def cached_inventory(now=None):
+    current = time.time() if now is None else now
+    with database() as db:
+        exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='rss_inventory'").fetchone()
+        row = db.execute('SELECT updated,payload FROM rss_inventory WHERE id=1').fetchone() if exists else None
+    if not row or not 0 <= current - row['updated'] < RESCUE_INVENTORY_MAX_AGE_SECONDS:
+        return set()
+    try:
+        values = json.loads(row['payload'])
+    except (TypeError, ValueError):
+        return set()
+    return {value for value in values if isinstance(value, str) and value} if isinstance(values, list) else set()
+
+
+def reusable_hot_results(channels, now=None):
+    """Reuse a recent success for a hot channel without refreshing its timestamp."""
+    current = time.time() if now is None else now
+    with database() as db:
+        rows = db.execute('SELECT r.channel_id,r.checked,r.payload FROM rss_discovery r '
+                          'JOIN rss_hotset h ON h.channel_id=r.channel_id '
+                          'JOIN leases l ON l.channel_id=r.channel_id '
+                          "WHERE r.error='' AND l.enabled=1 AND h.last_video>=? AND r.checked>=?",
+                          (current - HOT_RETENTION_SECONDS, current - FULL_REUSE_MAX_AGE_SECONDS)).fetchall()
+    reusable = set()
+    for row in rows:
+        if row['channel_id'] not in channels or not 0 <= current - row['checked'] <= FULL_REUSE_MAX_AGE_SECONDS:
+            continue
+        try:
+            if isinstance(json.loads(row['payload']), list):
+                reusable.add(row['channel_id'])
+        except (TypeError, ValueError):
+            continue
+    return reusable
 
 
 def collect(channels, config, mode):
@@ -225,13 +316,18 @@ def collect(channels, config, mode):
     checked = 0
     skipped = 0
     deferred = decision == 'skip'
+    pacer = RequestStartPacer()
+
+    def paced_fetch(channel):
+        pacer.wait()
+        return check_rss_feed(channel)
 
     def fetch(group):
         nonlocal checked, failures, queued
         errors = []
         retry_at = 0
         with ThreadPoolExecutor(max_workers=max(1, min(12, int(config.RSS_WORKERS)))) as pool:
-            futures = {pool.submit(check_rss_feed, channel): channel for channel in group}
+            futures = {pool.submit(paced_fetch, channel): channel for channel in group}
             for future in as_completed(futures):
                 channel = futures[future]
                 try:
@@ -249,7 +345,8 @@ def collect(channels, config, mode):
                     retry_at = max(retry_at, failure_retry_at.get(channel, 0))
         return errors, retry_at
 
-    ordered = circuit.ordered_channels(channels)
+    reused = reusable_hot_results(channels) if mode == 'full' and decision == 'normal' else set()
+    ordered = circuit.ordered_channels(channels - reused)
     if decision == 'skip':
         skipped = len(channels)
         failed.update(channels)
@@ -273,15 +370,30 @@ def collect(channels, config, mode):
             if decision == 'probe' and start == 0:
                 circuit.recover()
                 print('RSS_UPSTREAM_CIRCUIT state=recovered', flush=True)
+            if start == 0 and errors and not all(errors):
+                note_recovered()
+    if deferred:
+        # A new outage invalidates reuse for recovery accounting, even when the
+        # observation had been fresh at the beginning of this scan.
+        failed.update(reused)
+        skipped += len(reused)
+        reused.clear()
+        note_outage()
     targets = rescue_targets(channels, failed) if mode == 'full' else failed
     if targets:
         from api_rescue import run as rescue
-        rescue(targets)
+        inventory = cached_inventory() if mode == 'hot' and deferred else set()
+        if inventory:
+            # Hot and full scans share the same half-hour API claim. When the
+            # hot scan wins during an outage, rotate over the entire inventory.
+            rescue(targets | inventory, priority_channels=targets)
+        else:
+            rescue(targets)
     with database() as db:
         db.execute('DELETE FROM rss_discovery WHERE checked<?', (time.time()-7*86400,))
     report_push_gap_health()
-    print(f'RSS_DISCOVERY mode={mode} completed={checked} failed={failures} queued={queued} '
-          f'skipped={skipped} total={len(channels)}', flush=True)
+    print(f'RSS_DISCOVERY mode={mode} completed={checked + len(reused)} failed={failures} queued={queued} '
+          f'skipped={skipped} total={len(channels)} reused={len(reused)} network={checked}', flush=True)
     if deferred:
         raise RuntimeError('RSS_DISCOVERY_UPSTREAM_COOLDOWN')
     if failures:

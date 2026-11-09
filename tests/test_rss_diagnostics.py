@@ -55,6 +55,8 @@ class RssDiagnosticsTests(unittest.TestCase):
         with patch('rss.requests.get', return_value=response) as get, patch('rss.time.sleep'), patch('builtins.print') as log:
             self.assertIsNone(rss.check_rss_feed('fixture'))
             self.assertEqual(get.call_count, 1)
+            self.assertEqual(get.call_args.args[0],
+                             'https://www.youtube.com/feeds/videos.xml?channel_id=fixture')
             self.assertEqual(rss.failure_reasons['fixture'], 'HTTP_404')
             self.assertTrue(any(call.args[0].startswith('RSS_HTTP_EVIDENCE ') for call in log.call_args_list))
 

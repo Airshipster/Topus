@@ -76,7 +76,8 @@ def notify_worker_subscribers(project, video, message):
         if not worker_url or not admin_secret:
             control.heartbeat('personal', False, 'PERSONAL_DELIVERY_UNCONFIGURED')
             return None
-        return deliver_remote(control, queued['key'], worker_url, admin_secret)
+        result = deliver_remote(control, queued['key'], worker_url, admin_secret)
+        return None if result and result.get('review_required') else result
     if not worker_url or not admin_secret:
         return None
     with connection() as db:
@@ -121,10 +122,15 @@ def retry_outbox():
             control.heartbeat('personal', not items, 'PERSONAL_DELIVERY_UNCONFIGURED' if items else '')
             return
         failed = 0
+        review = 0
         for item in items:
-            if deliver_remote(control, item['key'], worker_url, admin_secret) is None:
+            result = deliver_remote(control, item['key'], worker_url, admin_secret)
+            if result is None:
                 failed += 1
-        control.heartbeat('personal', failed == 0, 'PERSONAL_RETRY_PENDING' if failed else '')
+            elif result.get('review_required'):
+                review += 1
+        control.heartbeat('personal', failed == 0,
+                          'PERSONAL_RETRY_PENDING' if failed else 'PERSONAL_DELIVERY_UNCERTAIN' if review else '')
         if failed:
             raise RuntimeError('Personal notification retries pending: ' + str(failed))
         return
@@ -145,6 +151,7 @@ def deliver_remote(control, key, worker_url, admin_secret):
         return None
     result = None
     error = ''
+    uncertain = False
     try:
         response = requests.post(worker_url.rstrip('/') + '/admin/notify', json=claim['payload'],
             headers={'x-admin-secret': admin_secret, 'User-Agent': 'Topus-Control/1.0'},
@@ -153,11 +160,20 @@ def deliver_remote(control, key, worker_url, admin_secret):
             raise RuntimeError('Personal endpoint rejected request')
         result = response.json()
         if not result.get('ok'):
+            queued, sent = result.get('queued'), result.get('sent')
+            uncertain = (result.get('reviewOnly') is True and result.get('ok') is False
+                         and type(queued) is int and type(sent) is int and 0 <= sent < queued)
             raise RuntimeError('Partial personal delivery')
     except Exception as exc:
         error = type(exc).__name__
-    control.request('/notifications/finish', {'key': key, 'claim': claim['claim'], 'ok': not error,
-        'queued': result.get('queued', 0) if result else 0, 'sent': result.get('sent', 0) if result else 0, 'error': error})
+    finish = {'key': key, 'claim': claim['claim'], 'ok': not error,
+              'queued': result.get('queued', 0) if result else 0,
+              'sent': result.get('sent', 0) if result else 0, 'error': error}
+    if uncertain:
+        finish['uncertain'] = True
+    outcome = control.request('/notifications/finish', finish)
+    if uncertain and outcome.get('state') == 'uncertain':
+        return {'review_required': True}
     return result if not error else None
 
 
