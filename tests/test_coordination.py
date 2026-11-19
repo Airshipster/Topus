@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / 'src'))
-from control_client import ControlClient, ControlUnavailable
+from control_client import ControlClient, ControlUnavailable, DeliveryUncertain
 from coordinated_run import run
 from publication_budget import CONTINUE_QUEUE
 import delivery_journal
@@ -67,7 +67,8 @@ class CoordinationTests(unittest.TestCase):
         with patch.dict(os.environ, {'TOPUS_PUBLISHER_OWNER': 'server', 'TOPUS_PUBLISHER_LEASE': 'lease'}), \
              patch.object(client, 'request', return_value={'state': 'uncertain'}) as request, \
              patch('control_client.time.sleep') as sleep:
-            self.assertIsNone(client.send('project', 'abcdefghijk', '-1', 'text'))
+            with self.assertRaisesRegex(DeliveryUncertain, '^TELEGRAM_DELIVERY_UNCERTAIN$'):
+                client.send('project', 'abcdefghijk', '-1', 'text')
         request.assert_called_once()
         sleep.assert_not_called()
 

@@ -30,7 +30,7 @@ def pending_events(sheet):
         item = row_as_dict(values[0], row)
         key = (video_id_from_url(first_value(item, ['Ссылка на видео', 'Video ID'])),
                project_name_from_cell(first_value(item, ['Проект'])))
-        if status_name_from_text(first_value(item, ['Системный статус'])) == 'published' or first_value(item, ['TG message_id']):
+        if status_name_from_text(first_value(item, ['Системный статус'])) in ('published', 'review') or first_value(item, ['TG message_id']):
             blocked.add(key)
     for i, row in enumerate(values[1:], 2):
         item = row_as_dict(values[0], row)

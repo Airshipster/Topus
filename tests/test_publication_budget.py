@@ -8,9 +8,82 @@ sys.path.insert(0, str(Path(__file__).parents[1] / 'src'))
 from publication_budget import CONTINUE_QUEUE, PublicationBudget
 from retry_queue import pending_events
 import main
+from control_client import DeliveryUncertain
 
 
 class PublicationBudgetTests(unittest.TestCase):
+    def test_review_row_blocks_duplicate_failed_rows_without_blocking_other_projects(self):
+        channel = 'https://www.youtube.com/channel/UC' + 'a' * 22
+        headers = ['Проект', 'Ссылка на видео', 'Ссылка на канал', 'Системный статус', 'TG message_id']
+        rows = [['SciTopus', 'https://youtube.com/watch?v=abcdefghijk', channel, 'Push: failed', ''],
+                ['SciTopus', 'https://youtube.com/watch?v=abcdefghijk', channel, 'Push: review', ''],
+                ['CookTopus', 'https://youtube.com/watch?v=abcdefghijk', channel, 'Push: failed', '']]
+        with patch('retry_queue.get_values_with_quota_retry', return_value=[headers] + rows):
+            events = pending_events(Mock())
+        self.assertEqual([(event['video_id'], event['retry_project']) for event in events],
+                         [('abcdefghijk', 'CookTopus')])
+
+    def test_uncertain_delivery_is_held_once_while_other_work_continues(self):
+        channel_id = 'UC' + 'a' * 22
+        project = {'name': 'SciTopus', 'default_template': 'template', 'bot_token': 'fixture',
+                   'channel_id': 'fixture'}
+        headers = ['Проект', 'Ссылка на видео', 'Ссылка на канал', 'Системный статус', 'TG message_id']
+        rows = [['SciTopus', f'https://www.youtube.com/watch?v={video}',
+                 f'https://youtube.com/channel/{channel_id}', 'Push: failed', '']
+                for video in ('abcdefghijk', 'lmnopqrstuv')]
+        calls = []
+
+        def send(_token, _channel, _message, _project, video_id, **_kwargs):
+            calls.append(video_id)
+            if video_id == 'abcdefghijk':
+                raise DeliveryUncertain('TELEGRAM_DELIVERY_UNCERTAIN')
+            return '42'
+
+        def update(_sheet, entries):
+            for entry in entries:
+                row = next(row for row in rows if row[1].endswith(entry['video_id']))
+                row[3] = 'Push: ' + entry['status']
+                row[4] = str(entry.get('tg_message_id') or '')
+            return len(entries)
+
+        funcs = {
+            'authenticate_google_sheets': Mock(), 'open_master_sheet_with_retry': Mock(),
+            'acquire_lock_with_wait': Mock(return_value=True), 'release_lock': Mock(),
+            'update_run_status': Mock(), 'load_settings': Mock(return_value={}),
+            'apply_runtime_overrides': Mock(), 'print_detection_latency_note': Mock(),
+            'load_projects': Mock(return_value=[project]), 'get_push_events': lambda *_: [],
+            'select_push_projects': Mock(return_value=[project]),
+            'load_project_channels': Mock(return_value=({'SciTopus': {channel_id: {}}}, {})),
+            'get_published_videos': lambda *_: set(), 'pending_hold_reason': Mock(return_value=''),
+            'get_stale_reason': Mock(return_value=''), 'should_filter_video': Mock(return_value=(False, '')),
+            'save_videos_batch': lambda _sheet, videos: [(v['video_id'], p['name']) for v, p, *_ in videos],
+            'get_videos_info_from_api': lambda ids: {i: ({'title': i, 'channel': 'fixture',
+                                                          'published': '2026-11-17T00:00:00Z'}, None) for i in ids},
+            'format_message': Mock(return_value='fixture'), 'send_public': send,
+            'notify_worker_subscribers': Mock(return_value=None),
+            'update_video_publication_status_batch': update, 'log_events_batch': Mock(),
+            'get_youtube_api_calls': Mock(return_value=0), 'update_last_run': Mock(),
+        }
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict('os.environ', {'TOPUS_PUBLISHER_OWNER': 'server',
+                                                         'TOPUS_PUSH_ONLY': 'true'}, clear=True))
+            stack.enter_context(patch('control_client.configured', return_value=False))
+            stack.enter_context(patch('push_store.mirror_events', return_value=False))
+            stack.enter_context(patch('push_store.cached_priority_science_channels', return_value=set()))
+            stack.enter_context(patch('sheets.close_deferred_videos_batch'))
+            stack.enter_context(patch('retry_queue.get_values_with_quota_retry', side_effect=lambda *_: [headers] + rows))
+            stack.enter_context(patch('activity_retention.retention_due', return_value=False))
+            stack.enter_context(patch('time.sleep'))
+            stack.enter_context(patch('builtins.print'))
+            for name, value in funcs.items():
+                stack.enter_context(patch.object(main, name, value))
+            main.main()
+            main.main()
+        self.assertEqual(calls, ['abcdefghijk', 'lmnopqrstuv'])
+        self.assertEqual(rows[0][3], 'Push: review')
+        self.assertEqual(rows[0][4], '')
+        self.assertEqual(rows[1][3:], ['Push: published', '42'])
+
     def test_yields_only_between_attempts_and_allows_initial_progress(self):
         now = [100.0]
         budget = PublicationBudget(clock=lambda: now[0], seconds=600)

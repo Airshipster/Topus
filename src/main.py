@@ -45,6 +45,7 @@ from telegram_client import delete_telegram_message, format_message, send_to_tel
 from worker_notifications import notify_worker_subscribers
 from youtube_client import get_last_youtube_api_error, get_video_info_from_api, get_videos_info_from_api, get_youtube_api_calls
 from delivery_journal import send_public
+from control_client import DeliveryUncertain
 from retry_queue import pending_events
 from publication_policy import publication_age_limit
 from publication_budget import CONTINUE_QUEUE, PublicationBudget
@@ -1008,12 +1009,21 @@ def main():
                 time.sleep(3)
             effective_date = parse_datetime(effective_youtube_publication_timestamp(video, video_published_date))
             
-            tg_message_id = send_public(
-                project['bot_token'],
-                project['channel_id'],
-                message, project['name'], video['video_id'],
-                published_at=effective_date.timestamp() if effective_date else None,
-            )
+            try:
+                tg_message_id = send_public(
+                    project['bot_token'],
+                    project['channel_id'],
+                    message, project['name'], video['video_id'],
+                    published_at=effective_date.timestamp() if effective_date else None,
+                )
+            except DeliveryUncertain:
+                print('    ⏸️  Delivery uncertain; held for manual verification')
+                timestamp = format_timestamp()
+                log_entries.append([timestamp, project['name'], 'Delivery requires review', video['video_id'],
+                                    video.get('channel_id', ''), 'Telegram result uncertain', 'warning', source_method])
+                record_publication_status(video['video_id'], project['name'], status='review',
+                                          error='Telegram delivery uncertain; manual verification required')
+                continue
             
             if tg_message_id:
                 print(f"    ✅ Published (msg: {tg_message_id})")
