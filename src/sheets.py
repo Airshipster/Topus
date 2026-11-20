@@ -1492,6 +1492,19 @@ def update_video_publication_status_batch(sheet, entries):
                 print(f"  Could not find video row to update: {video_id} / {project_name}")
                 continue
             target_row, target_data = target
+            if entry.get('status') == 'review':
+                if first_value(target_data, ['TG message_id', 'Дата публикации TG GMT+4']):
+                    print(f"  Preserving confirmed publication: {video_id} / {project_name}")
+                    continue
+                method, _ = status_method_from_text(first_value(target_data, ['Системный статус']))
+                if 'Системный статус' not in indexes:
+                    raise ValueError('Global Videos is missing Системный статус column')
+                updates.append({
+                    'range': gspread.utils.rowcol_to_a1(target_row, indexes['Системный статус']),
+                    'values': [[combined_status('review', entry.get('error', ''), method)]],
+                })
+                matched += 1
+                continue
             video = entry.get('video')
             tg_message_id = entry.get('tg_message_id')
             mark_tg_published = entry.get('mark_tg_published', False)

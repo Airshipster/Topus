@@ -76,6 +76,27 @@ class RecoveryPolicyTests(unittest.TestCase):
         self.assertEqual(updates['I3'],sheets.sheet_datetime_value(entries[1]['timestamp']))
         self.assertIn('RSS [YouTube API backup]: published',updates['K3'])
 
+    def test_uncertain_review_changes_only_status_and_never_overwrites_a_receipt(self):
+        first=['SciTopus','Channel','https://youtube.com/channel/channel',
+               'One','https://youtube.com/watch?v=abcdefghijk',
+               '17.11.2026 09:00:00','17.11.2026 09:00:00','','','','Push: failed']
+        second=list(first)
+        second[3:5]=['Two','https://youtube.com/watch?v=bcdefghijkl']
+        second[8:11]=['17.11.2026 09:20:00','123','Push: published']
+        values=[sheets.VIDEO_HEADERS,first,second]
+        entries=[{'video_id':v,'project_name':'SciTopus','status':'review',
+                  'error':'Telegram delivery uncertain; manual verification required'}
+                 for v in ('abcdefghijk','bcdefghijkl')]
+        with patch.object(sheets,'ensure_videos_worksheet',return_value=SimpleNamespace()), \
+             patch.object(sheets,'get_values_with_quota_retry',side_effect=[values,[['Проект'],['SciTopus'],['SciTopus']]]), \
+             patch.object(sheets,'batch_update_with_quota_retry') as write:
+            self.assertEqual(sheets.update_video_publication_status_batch(None,entries),1)
+        updates=[item for call in write.call_args_list for item in call.args[1]]
+        self.assertEqual(len(updates),1)
+        self.assertEqual(updates[0]['range'],'K2')
+        self.assertEqual(sheets.status_name_from_text(updates[0]['values'][0][0]),'review')
+        self.assertTrue(sheets.row_status_blocks_retry('review'))
+
     def test_old_notification_pending_expires_without_resending(self):
         old=['SciTopus','Channel','https://youtube.com/channel/channel','One',
              'https://youtube.com/watch?v=abcdefghijk','01.09.2026 09:00:00',

@@ -11,6 +11,10 @@ class ControlUnavailable(RuntimeError):
     pass
 
 
+class DeliveryUncertain(RuntimeError):
+    """The coordinator retained a Telegram send with no confirmed outcome."""
+
+
 def configured():
     return bool(os.environ.get('TOPUS_CONTROL_URL') or os.environ.get('TOPUS_CONTROL_REQUIRED') == 'true')
 
@@ -57,6 +61,8 @@ class ControlClient:
         while True:
             result = self.request('/send', payload)
             if result.get('state') != 'paced':
+                if result.get('state') == 'uncertain':
+                    raise DeliveryUncertain('TELEGRAM_DELIVERY_UNCERTAIN')
                 return result.get('message_id') if result.get('state') == 'sent' else None
             retry_at = result.get('retry_at')
             if type(retry_at) not in (int, float) or not math.isfinite(retry_at):
